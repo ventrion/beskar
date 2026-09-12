@@ -98,8 +98,16 @@ impl Error {
         Error::PathSafety(message.to_string())
     }
 
+    pub fn library(message: impl fmt::Display) -> Self {
+        Error::Library(message.to_string())
+    }
+
     pub fn profile(message: impl fmt::Display) -> Self {
         Error::Profile(message.to_string())
+    }
+
+    pub fn profile_attachment(message: impl fmt::Display) -> Self {
+        Error::ProfileAttachment(message.to_string())
     }
 
     pub fn registry(message: impl fmt::Display) -> Self {
@@ -118,8 +126,24 @@ impl Error {
         Error::Git(message.to_string())
     }
 
+    pub fn remote_auth(message: impl fmt::Display) -> Self {
+        Error::RemoteAuth(message.to_string())
+    }
+
     pub fn unsupported_state(message: impl fmt::Display) -> Self {
         Error::UnsupportedState(message.to_string())
+    }
+}
+
+/// Git backend failures flow into the typed core model without text parsing
+/// (spec §115): `Git` stays `Git`, authentication stays `RemoteAuth`.
+impl From<beskar_git::Error> for Error {
+    fn from(value: beskar_git::Error) -> Self {
+        match value {
+            beskar_git::Error::Git(message) => Error::Git(message),
+            beskar_git::Error::Auth(message) => Error::RemoteAuth(message),
+            beskar_git::Error::Io(io) => Error::Io(io),
+        }
     }
 }
 
@@ -143,5 +167,16 @@ mod tests {
         let err: Error = std::io::Error::other("boom").into();
         assert!(matches!(err, Error::Io(_)));
         assert_eq!(err.code(), "io");
+    }
+
+    #[test]
+    fn git_backend_errors_convert_without_text_parsing() {
+        let git_err: Error = beskar_git::Error::Git("fetch failed".into()).into();
+        assert!(matches!(git_err, Error::Git(_)));
+        assert_eq!(git_err.code(), "git");
+
+        let auth_err: Error = beskar_git::Error::Auth("bad token".into()).into();
+        assert!(matches!(auth_err, Error::RemoteAuth(_)));
+        assert_eq!(auth_err.code(), "remote_auth");
     }
 }

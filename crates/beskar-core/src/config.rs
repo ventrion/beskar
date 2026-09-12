@@ -146,6 +146,11 @@ impl PlatformDirs {
             .map(PathBuf::from)
             .or_else(|| Some(self.data_dir.join("library")))
     }
+
+    /// The machine-local Registry file location (§25, §85).
+    pub fn registry_file(&self) -> PathBuf {
+        self.data_dir.join("registry.json")
+    }
 }
 
 #[cfg(test)]

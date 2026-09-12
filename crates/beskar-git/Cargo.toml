@@ -9,7 +9,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-beskar-core = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

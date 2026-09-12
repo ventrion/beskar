@@ -39,7 +39,9 @@ impl Catalog {
         }
     }
 
-    /// Parses `catalog.toml` bytes. Unsupported schemas fail closed (§129).
+    /// Parses `catalog.toml` bytes. Unsupported schemas fail closed (§129);
+    /// skill keys must be valid skill names — catalog data is keyed by
+    /// canonical identity and never copied into installations (§14).
     pub fn parse_toml(raw: &str) -> crate::Result<Self> {
         let catalog: Self = toml::from_str(raw).map_err(|e| crate::Error::schema(e.to_string()))?;
         if catalog.schema != SCHEMA {
@@ -47,6 +49,11 @@ impl Catalog {
                 "unsupported catalog schema {} (supported: {SCHEMA})",
                 catalog.schema
             )));
+        }
+        for key in catalog.skills.keys() {
+            crate::ids::SkillName::parse(key).map_err(|e| {
+                crate::Error::validation(format!("invalid catalog key {key:?}: {e}"))
+            })?;
         }
         Ok(catalog)
     }
@@ -96,6 +103,15 @@ notes = "sharpens prose"
         assert!(matches!(
             Catalog::parse_toml("schema = 2\n"),
             Err(crate::Error::Schema(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_keys_that_are_not_valid_skill_names() {
+        let raw = "schema = 1\n[skills.\"..\"]\ntags = [\"x\"]\n";
+        assert!(matches!(
+            Catalog::parse_toml(raw),
+            Err(crate::Error::Validation(_))
         ));
     }
 

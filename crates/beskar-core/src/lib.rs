@@ -13,12 +13,16 @@ pub mod config;
 pub mod drift;
 pub mod error;
 pub mod ids;
+pub mod library;
 pub mod membership;
+pub mod paths;
 pub mod plan;
 pub mod profile;
 pub mod registry;
 pub mod skill;
 pub mod stamp;
+pub mod status;
 
 pub use error::{Error, Result};
 pub use ids::{InstallationId, LibraryId, ProfileId, SkillName};
+pub use library::Library;

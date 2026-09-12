@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{ProfileId, SkillName};
+use crate::paths::validate_relative_path;
 
 /// Current profile file schema version (spec §15, §129).
 pub const SCHEMA: i64 = 1;
@@ -35,7 +36,8 @@ impl Profile {
         }
     }
 
-    /// Validates basic invariants: schema support and duplicate entries (§15).
+    /// Validates basic invariants: schema support, name shape, and duplicate
+    /// entries (§15).
     pub fn validate(&self) -> crate::Result<()> {
         if self.schema != SCHEMA {
             return Err(crate::Error::schema(format!(
@@ -43,6 +45,7 @@ impl Profile {
                 self.schema
             )));
         }
+        validate_profile_name(&self.name)?;
         let mut seen = std::collections::BTreeSet::new();
         for skill in &self.skills {
             if !seen.insert(skill.as_str()) {
@@ -68,6 +71,30 @@ impl Profile {
         self.validate()?;
         toml::to_string_pretty(self).map_err(|e| crate::Error::profile(e.to_string()))
     }
+}
+
+/// Validates a human-facing profile name: it doubles as the file stem under
+/// `profiles/` (`<name>.toml`), so it must be a single portable path segment.
+pub fn validate_profile_name(name: &str) -> crate::Result<()> {
+    if name.is_empty() {
+        return Err(crate::Error::profile("profile name must not be empty"));
+    }
+    if name.len() > 100 {
+        return Err(crate::Error::profile(
+            "profile name must not exceed 100 characters",
+        ));
+    }
+    if name.contains('/') || name.contains("\\") {
+        return Err(crate::Error::profile(
+            "profile name must be a single path segment",
+        ));
+    }
+    if name.starts_with(' ') || name.ends_with(' ') {
+        return Err(crate::Error::profile(
+            "profile name must not start or end with a space",
+        ));
+    }
+    validate_relative_path(name).map_err(|e| crate::Error::profile(e.to_string()))
 }
 
 #[cfg(test)]
@@ -112,5 +139,31 @@ mod tests {
         let mut profile = sample();
         profile.schema = 42;
         assert!(matches!(profile.validate(), Err(crate::Error::Schema(_))));
+    }
+
+    #[test]
+    fn profile_id_is_immutable_across_serialization() {
+        // §125 "Profile ID stability": the UUID survives a roundtrip; a
+        // rename keeps the ID so attachments follow IDs, never names (§28).
+        let profile = sample();
+        let id = profile.id;
+        let raw = profile.to_toml().expect("serialize");
+        assert_eq!(Profile::parse_toml(&raw).expect("parse").id, id);
+
+        let mut renamed = profile.clone();
+        renamed.name = "dev-core".to_owned();
+        assert_eq!(renamed.id, id);
+    }
+
+    #[test]
+    fn rejects_unsafe_profile_names() {
+        for name in ["", "a/b", "..", "con", "trailing.", " lead"] {
+            assert!(
+                validate_profile_name(name).is_err(),
+                "profile name {name:?} should be invalid"
+            );
+        }
+        assert!(validate_profile_name("rust-development").is_ok());
+        assert!(validate_profile_name("dev.v2").is_ok());
     }
 }
