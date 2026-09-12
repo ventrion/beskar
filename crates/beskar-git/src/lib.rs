@@ -157,6 +157,10 @@ pub trait GitBackend: fmt::Debug + Send + Sync {
 
     /// Working-tree status: branch, staged/unstaged/untracked (§66, §72).
     fn status(&self, repo: &Path) -> Result<GitStatus>;
+
+    /// The configured URL of a remote, credential-redacted for storage and
+    /// display (§30, §67). `None` when the remote is not configured.
+    fn remote_url(&self, repo: &Path, remote: &str) -> Result<Option<String>>;
 }
 
 /// v1 backend: delegates to the user's installed Git implementation
@@ -225,6 +229,24 @@ impl GitBackend for SystemGitBackend {
             return Err(git_failure("status", &output));
         }
         parse_status_porcelain(&output.stdout)
+    }
+
+    fn remote_url(&self, repo: &Path, remote: &str) -> Result<Option<String>> {
+        reject_unsafe_arg(remote, "remote")?;
+        let output = run_git(repo, &["remote", "get-url", remote])?;
+        if !output.status.success() {
+            // An unconfigured remote is informational (§30), not a failure.
+            return Ok(None);
+        }
+        let url = String::from_utf8(output.stdout)
+            .map_err(|e| Error::Git(format!("non-UTF-8 git output: {e}")))?
+            .trim()
+            .to_owned();
+        if url.is_empty() {
+            return Ok(None);
+        }
+        // Credential-bearing URLs are stored sanitized only (§30, §67).
+        Ok(Some(redact_url(&url)))
     }
 }
 
@@ -462,6 +484,33 @@ mod tests {
     fn non_repositories_resolve_to_none() {
         let plain = TempRoot::new();
         assert_eq!(discover_repo(plain.path()).expect("no error"), None);
+    }
+
+    #[test]
+    fn remote_url_is_absent_or_redacted() {
+        // §30/§67: repair metadata stores sanitized URLs only.
+        let repo = TestRepo::new();
+        let backend = SystemGitBackend;
+        assert_eq!(
+            backend.remote_url(repo.path(), "origin").expect("no error"),
+            None
+        );
+        git_ok(
+            repo.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://user:secret@example.com/skills.git",
+            ],
+        );
+        assert_eq!(
+            backend
+                .remote_url(repo.path(), "origin")
+                .expect("no error")
+                .as_deref(),
+            Some("https://example.com/skills.git")
+        );
     }
 
     #[test]

@@ -231,6 +231,7 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "beskar-core",
+ "beskar-test-support",
  "beskar-tui",
  "clap",
  "predicates",

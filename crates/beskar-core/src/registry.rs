@@ -244,23 +244,29 @@ impl RegistryStore {
     /// Persists the Registry atomically (spec §29):
     /// exclusive lock → temp file → write → sync → rename → dir sync.
     pub fn save(&self, registry: &Registry) -> crate::Result<()> {
+        let lock = self.lock_exclusive()?;
+        self.save_with_lock(registry, &lock)
+    }
+
+    /// Acquires the exclusive §29 advisory lock and returns the guard that
+    /// holds it. Lifecycle operations hold this lock across plan → execute →
+    /// persist (§88) and pass the guard to [`RegistryStore::save_with_lock`]
+    /// so the lock is never released mid-operation.
+    pub fn lock_exclusive(&self) -> crate::Result<std::fs::File> {
+        crate::lock::lock_file_exclusive(&self.path.with_extension("lock"), "registry")
+    }
+
+    /// Writes the Registry while already holding the lock guard returned by
+    /// [`RegistryStore::lock_exclusive`] (spec §29): temp file → write →
+    /// flush/sync → atomic rename. Partially written files never replace
+    /// valid Registry state; the guard releases when the caller drops it.
+    pub fn save_with_lock(&self, registry: &Registry, _lock: &std::fs::File) -> crate::Result<()> {
         let parent = self
             .path
             .parent()
             .ok_or_else(|| crate::Error::registry("registry path has no parent"))?;
-        std::fs::create_dir_all(parent)?;
 
-        let lock_path = self.path.with_extension("lock");
-        let lock = std::fs::File::create(&lock_path)?;
-        lock.try_lock().map_err(|_| {
-            crate::Error::lock(format!(
-                "registry is locked by another process: {}",
-                lock_path.display()
-            ))
-        })?;
-
-        // Temp file → write → flush → sync → atomic rename (§29). The lock
-        // releases when `lock` drops, including on early returns.
+        // Temp file → write → flush → sync → atomic rename (§29).
         let json = registry.to_json()?;
         let mut temp = tempfile::NamedTempFile::new_in(parent)?;
         temp.write_all(json.as_bytes())?;
@@ -268,7 +274,6 @@ impl RegistryStore {
         temp.as_file().sync_all()?;
         temp.persist(&self.path)
             .map_err(|e| crate::Error::registry(e.to_string()))?;
-        drop(lock);
         // Best-effort directory sync so the rename survives crashes.
         if let Ok(dir) = std::fs::File::open(parent) {
             let _ = dir.sync_all();

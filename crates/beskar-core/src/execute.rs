@@ -86,16 +86,7 @@ pub fn execute(
     // §88: exclusive advisory lock for the duration of target mutation. The
     // OS releases it automatically if the process dies, so stale locks never
     // wedge recovery (§128: rerunning is the normal recovery mechanism).
-    if let Some(parent) = target_lock.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let lock = std::fs::File::create(target_lock)?;
-    lock.try_lock().map_err(|_| {
-        crate::Error::lock(format!(
-            "installation target is locked by another operation: {}",
-            target_lock.display()
-        ))
-    })?;
+    let lock = crate::lock::lock_file_exclusive(target_lock, "installation target")?;
 
     // Gather EVERY incoming file before touching the target so blob failures
     // abort before any write (§45: no target writes before planning

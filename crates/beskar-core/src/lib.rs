@@ -15,6 +15,8 @@ pub mod error;
 pub mod execute;
 pub mod ids;
 pub mod library;
+pub mod lifecycle;
+pub mod lock;
 pub mod membership;
 pub mod paths;
 pub mod plan;
