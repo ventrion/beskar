@@ -52,7 +52,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 directories = "6"
 tempfile = "3"
 walkdir = "2"
-# fs2 is unmaintained; fs4 is its maintained successor (sync file locks, §29/§88).
+# fs2 is unmaintained; fs4 is its maintained successor. Beskar currently uses
+# std's `File::try_lock` (advisory flock, §29/§88) instead; this key is kept
+# as a drop-in fallback and is currently unreferenced (see
+# docs/IMPLEMENTATION.md, remaining limitations).
 fs4 = "1"
 
 # TUI (beskar-tui); `crossterm_0_29` keeps a single crossterm version.
