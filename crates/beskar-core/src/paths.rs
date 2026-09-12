@@ -118,6 +118,13 @@ pub fn split_leaf(path: &str) -> (&str, &str) {
     }
 }
 
+/// Converts a `/`-separated relative path into a native [`PathBuf`] at the
+/// filesystem boundary (spec §119). Serialized paths always use `/`;
+/// conversion to native separators happens only here.
+pub fn to_native_path(relative: &str) -> std::path::PathBuf {
+    relative.split('/').collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +213,14 @@ mod tests {
     fn split_leaf_separates_parent_and_leaf() {
         assert_eq!(split_leaf("skills/a/b"), ("skills/a", "b"));
         assert_eq!(split_leaf("leaf"), ("", "leaf"));
+    }
+
+    #[test]
+    fn to_native_path_converts_at_fs_boundary() {
+        assert_eq!(to_native_path("a/b/c"), std::path::PathBuf::from("a/b/c"));
+        let native = to_native_path("a/b");
+        #[cfg(unix)]
+        assert_eq!(native, std::path::PathBuf::from("a/b"));
+        assert_eq!(native.iter().count(), 2);
     }
 }

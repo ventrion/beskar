@@ -47,6 +47,9 @@ pub enum BlockerKind {
     MissingRef,
     /// An attached profile is absent from the resolved Library (§39).
     MissingProfile,
+    /// The registered workspace directory does not exist (§38
+    /// "Missing-workspace"); Beskar never creates workspaces itself (§4).
+    MissingWorkspace,
     /// A required skill is absent from the resolved Library (§58).
     MissingSkill,
     /// An ambiguous or invalid skill was encountered (§60).
@@ -62,6 +65,9 @@ pub struct Blocker {
     /// Skill the blocker applies to, when scoped to one skill.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill: Option<SkillName>,
+    /// Profile the blocker applies to, when scoped to one attachment (§39).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<crate::ids::ProfileId>,
     /// Stable machine identifiers of affected paths, `/`-separated (§119).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
@@ -74,6 +80,11 @@ pub struct SkillAction {
     pub skill: SkillName,
     /// Expected resulting state once the action applies.
     pub resulting_state: DriftState,
+    /// Contextual paths, `/`-separated (§119): files whose local versions a
+    /// forced operation discards (§47), extras preserved (§8.6), or the
+    /// unmanaged directory replaced (§49). Empty when not applicable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
 }
 
 /// A planned attachment change (spec §89).
@@ -90,8 +101,17 @@ pub struct ProfileChange {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReconciliationPlan {
     pub installation_id: InstallationId,
+    /// The exact Library commit the plan resolved against, when the source
+    /// ref resolved (§19); `None` for plans blocked before resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_commit: Option<String>,
     pub profile_changes: Vec<ProfileChange>,
     pub skill_actions: Vec<SkillAction>,
+    /// Installation-level state actions that are neither profile changes nor
+    /// skill operations — e.g. [`PlanAction::UpdateRegistry`] (§89). Later
+    /// phases add `CommitLibraryPaths`, `FastForwardBranch`, `PushBranch`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub state_actions: Vec<PlanAction>,
     /// Non-empty plans are not executable without explicit consent (§47).
     pub blockers: Vec<Blocker>,
 }
@@ -122,8 +142,10 @@ mod tests {
     fn empty_plan_is_a_no_op_and_not_blocked() {
         let plan = ReconciliationPlan {
             installation_id: InstallationId::generate(),
+            resolved_commit: None,
             profile_changes: vec![],
             skill_actions: vec![],
+            state_actions: vec![],
             blockers: vec![],
         };
         assert!(plan.is_no_op());
@@ -134,6 +156,7 @@ mod tests {
     fn plan_roundtrips_through_json() {
         let plan = ReconciliationPlan {
             installation_id: InstallationId::generate(),
+            resolved_commit: Some("abc123".to_owned()),
             profile_changes: vec![ProfileChange {
                 action: PlanAction::DetachProfile,
                 profile_id: crate::ids::ProfileId::generate(),
@@ -143,10 +166,13 @@ mod tests {
                 action: PlanAction::RetireSkill,
                 skill: SkillName::parse("git").expect("valid"),
                 resulting_state: DriftState::ProfileRemoved,
+                paths: vec![],
             }],
+            state_actions: vec![PlanAction::UpdateRegistry],
             blockers: vec![Blocker {
                 kind: BlockerKind::ModifiedContent,
                 skill: Some(SkillName::parse("testing").expect("valid")),
+                profile: None,
                 paths: vec!["testing/SKILL.md".to_owned()],
             }],
         };
@@ -155,5 +181,19 @@ mod tests {
             serde_json::from_str::<ReconciliationPlan>(&json).expect("parse"),
             plan
         );
+    }
+
+    #[test]
+    fn new_fields_roundtrip_with_serde_defaults() {
+        // JSON without `resolved_commit`/`state_actions` (and blockers
+        // without `profile`) still deserializes; the new fields are stable
+        // API going forward.
+        let old = "{\"installation_id\":\"550e8400-e29b-41d4-a716-446655440000\",\
+            \"profile_changes\":[],\"skill_actions\":[],\"blockers\":[]}";
+        let plan: ReconciliationPlan = serde_json::from_str(old).expect("parse legacy");
+        assert_eq!(plan.resolved_commit, None);
+        assert!(plan.state_actions.is_empty());
+        assert!(plan.skill_actions.is_empty());
+        assert!(plan.blockers.is_empty());
     }
 }

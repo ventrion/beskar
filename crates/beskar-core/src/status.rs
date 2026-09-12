@@ -427,6 +427,29 @@ fn exec_bit_differs(observed: bool, recorded: bool) -> bool {
     }
 }
 
+/// Scans every directory entry of `target` as a candidate skill directory
+/// (read-only). Shared by the status classifier and the reconciliation
+/// planner/executor so both observe the target identically. Returns the
+/// inspected directories keyed by leaf name plus target entries Beskar
+/// cannot manage (symlinks/special, §12).
+pub fn scan_installed(
+    target: &Path,
+    installation: &Installation,
+    library_id: &LibraryId,
+) -> crate::Result<(BTreeMap<String, InstalledDir>, Vec<String>)> {
+    scan_target(target, installation, library_id)
+}
+
+/// Inspects one candidate skill directory (read-only); the executor uses
+/// this to re-verify planning-time assumptions before writing.
+pub fn inspect_skill_dir(
+    dir: &Path,
+    installation: &Installation,
+    library_id: &LibraryId,
+) -> crate::Result<InstalledDir> {
+    inspect_dir(dir, installation, library_id)
+}
+
 /// Gathers [`StatusInputs`] for one installation from the real filesystem
 /// and the Library revision resolved through `backend` (spec §41).
 ///
