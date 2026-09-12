@@ -1447,6 +1447,70 @@ mod tests {
     }
 
     #[test]
+    fn drifted_skills_render_their_state_glyphs() {
+        // §38: every per-skill drift state is visible from the synthetic
+        // InstallationStatus fixture — the view renders typed core data.
+        let mut app = crate::app::App::new();
+        crate::reduce::reduce(
+            &mut app,
+            Event::Loaded(Ok(Box::new(crate::testkit::drifted_snapshot()))),
+        );
+        crate::reduce::take_effects();
+        app.screen = Screen::Installations;
+        let drawn = draw(&app);
+        // The detail pane draws `<glyph> <skill-name>` per row (the TUI's
+        // terminal-safe glyph table; states sharing a glyph differ by
+        // color and the §130 state ids).
+        for (glyph, name) in [
+            ("✓", "current-skill"),
+            ("↑", "outdated-skill"),
+            ("!", "modified-skill"),
+            ("+", "extra-skill"),
+            ("?", "gap-skill"),
+            ("?", "unstamped-skill"),
+            ("×", "foreign-skill"),
+            ("×", "orphaned-skill"),
+        ] {
+            assert!(
+                drawn.contains(&format!("{glyph} {name}")),
+                "skill {name} must render with its {glyph} glyph:\n{drawn}"
+            );
+        }
+        // The installation list line carries the §42 outdated counter
+        // (the modified counter may truncate on narrow backends; the
+        // dashboard counts are asserted at the reducer level).
+        assert!(drawn.contains("↑1"), "outdated counter:\n{drawn}");
+    }
+
+    #[test]
+    fn missing_profile_protection_renders() {
+        // §39: the unresolvable attachment is displayed as a protected
+        // missing profile — never silently dropped or emptied.
+        let mut app = crate::app::App::new();
+        crate::reduce::reduce(
+            &mut app,
+            Event::Loaded(Ok(
+                Box::new(crate::testkit::snapshot_with_missing_profile()),
+            )),
+        );
+        crate::reduce::take_effects();
+        app.screen = Screen::Installations;
+        let drawn = draw(&app);
+        assert!(
+            drawn.contains("missing (protected, §39)"),
+            "the missing attachment must be flagged:\n{drawn}"
+        );
+        assert!(
+            drawn.contains("rust-development"),
+            "the last-known name stays visible:\n{drawn}"
+        );
+        // The dashboard still counts the attachment (§103: visible state).
+        let metrics = app.snapshot.as_ref().expect("snapshot").dashboard();
+        assert_eq!(metrics.attachments, 2);
+        assert_eq!(metrics.missing_profiles, 1);
+    }
+
+    #[test]
     fn dialogs_render_over_the_screen() {
         use crate::app::{ConfirmDialog, Dialog, MessageDialog, PlannedChange};
         let mut app = app_with_snapshot();

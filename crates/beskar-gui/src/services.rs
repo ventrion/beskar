@@ -318,8 +318,45 @@ pub fn attachment_preview(
         &proposed_profiles,
     )?;
 
+    // §39/§40: detaching a MISSING attachment must preview as a real
+    // change, never as a no-op. The desired-state builder cannot see the
+    // skills a missing profile owns (it never treats a missing profile as
+    // empty, §39), so enrich the BEFORE side with the last-applied
+    // membership those attachments still hold — exactly the protection
+    // data §39 keeps available, and what §40 says the explicit detach
+    // releases for retirement. Core execution resolves these attachments
+    // by last-known name/ID (§40) and computes the same retirements.
+    let resolved_profile_ids: std::collections::BTreeSet<ProfileId> =
+        resolved.profiles.keys().copied().collect();
+    let mut before_map = before.membership();
+    let mut released_names: BTreeMap<ProfileId, String> = BTreeMap::new();
+    if mode == PreviewMode::Detach {
+        for name in selection {
+            let Some(attachment) = installation
+                .profiles
+                .iter()
+                .find(|a| ProfileId::parse(name).is_ok_and(|id| a.id == id) || a.name == *name)
+            else {
+                continue;
+            };
+            if resolved_profile_ids.contains(&attachment.id) {
+                continue;
+            }
+            for (skill, owners) in &installation.last_applied.skill_membership.skill_profiles {
+                if owners.contains(&attachment.id) {
+                    let entry = before_map.entry(skill.clone()).or_default();
+                    if !entry.contains(&attachment.id) {
+                        entry.push(attachment.id);
+                    }
+                }
+            }
+            released_names.insert(attachment.id, attachment.name.clone());
+        }
+    }
+
     // §28/§93: display names prefer the resolved revision, falling back to
-    // the attachment's last-known name.
+    // the attachment's last-known name — including the §39 attachments the
+    // selection releases.
     let mut names: BTreeMap<ProfileId, String> = proposed_profiles
         .iter()
         .map(|a| (a.id, a.name.clone()))
@@ -327,10 +364,11 @@ pub fn attachment_preview(
     for (id, profile) in &resolved.profiles {
         names.insert(*id, profile.name.clone());
     }
+    names.extend(released_names);
 
     Ok(preview::membership_preview(
         &names,
-        &before.membership(),
+        &before_map,
         &after.membership(),
         &after,
     ))
@@ -612,6 +650,9 @@ fn update_all_lines(outcome: &UpdateAllOutcome) -> Vec<String> {
     }
     if outcome.refused {
         lines.push("At least one installation is blocked; nothing would be applied.".to_owned());
+    }
+    if !outcome.results.is_empty() && outcome.results.iter().all(|result| result.plan.is_no_op()) {
+        lines.push("nothing to do — every installation is up to date (§44)".to_owned());
     }
     lines
 }

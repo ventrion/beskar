@@ -251,6 +251,77 @@ pub fn snapshot() -> Snapshot {
     }
 }
 
+/// A synthetic §38 drift gallery: one skill per per-skill drift state,
+/// shaped exactly like `status::compute_status` output. Used to prove the
+/// reducer/view render every drift glyph from typed core data alone.
+pub fn drifted_status_fixture() -> InstallationStatus {
+    use beskar_core::drift::DriftState;
+    let states: [(DriftState, &str); 8] = [
+        (DriftState::Current, "current-skill"),
+        (DriftState::Outdated, "outdated-skill"),
+        (DriftState::Modified, "modified-skill"),
+        (DriftState::Extra, "extra-skill"),
+        (DriftState::Gap, "gap-skill"),
+        (DriftState::Unstamped, "unstamped-skill"),
+        (DriftState::Foreign, "foreign-skill"),
+        (DriftState::OrphanedManaged, "orphaned-skill"),
+    ];
+    let mut status = status_fixture();
+    status.skills.clear();
+    for (state, name) in states {
+        let (key, mut entry) = skill_status(name, state, vec![dev_id()]);
+        if state == DriftState::Extra {
+            entry.extra_files = vec!["notes.md".to_owned()];
+        }
+        status.skills.insert(key, entry);
+    }
+    status
+}
+
+/// The standard snapshot with the drifted §38 gallery in place of the
+/// clean installation status.
+pub fn drifted_snapshot() -> Snapshot {
+    let mut snapshot = snapshot();
+    let row = &mut snapshot.installations[0];
+    let mut status = drifted_status_fixture();
+    status.workspace = row.installation.workspace.clone();
+    row.status = Some(status);
+    snapshot
+}
+
+/// A §39 missing-profile snapshot: `rust-development` can no longer be
+/// resolved by ID after a library synchronization. Its attachment (with
+/// the §28 last-known name) is still present, the skills it owns stay
+/// protected, and nothing is retired automatically.
+pub fn snapshot_with_missing_profile() -> Snapshot {
+    let mut snapshot = snapshot();
+    let row = &mut snapshot.installations[0];
+    let mut status = status_fixture();
+    status.workspace = row.installation.workspace.clone();
+    // The attachment survives with its last-known name; the profile behind
+    // it is gone from the resolved revision.
+    status.profiles[1].profile = None;
+    // Skills the missing profile still owns are protected (§39).
+    if let Some(entry) = status
+        .skills
+        .get_mut(&SkillName::parse("testing").expect("valid"))
+    {
+        entry.protected_by_missing_profile = true;
+        entry.last_required_by = vec![rust_id()];
+        entry.required_by.retain(|id| *id != rust_id());
+    }
+    if let Some(entry) = status
+        .skills
+        .get_mut(&SkillName::parse("rust").expect("valid"))
+    {
+        entry.protected_by_missing_profile = true;
+        entry.last_required_by = vec![rust_id()];
+        entry.required_by.clear();
+    }
+    row.status = Some(status);
+    snapshot
+}
+
 /// A minimal `beskar: remove skill` library plan for confirm-dialog tests.
 pub fn removal_plan() -> beskar_core::editing::LibraryPlan {
     beskar_core::editing::LibraryPlan {

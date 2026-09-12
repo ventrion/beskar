@@ -1990,7 +1990,172 @@ mod tests {
         );
     }
 
-    // ---- installations ------------------------------------------------------
+    // ---- drift + protection visibility (§38, §39) ----------------------------
+
+    #[test]
+    fn dashboard_counts_drift_and_missing_profiles_from_the_snapshot() {
+        // §38: per-skill drift states surface as dashboard counts.
+        let mut app = crate::app::App::new();
+        reduce(
+            &mut app,
+            Event::Loaded(Ok(Box::new(testkit::drifted_snapshot()))),
+        );
+        take_effects();
+        let metrics = app.snapshot.as_ref().expect("snapshot").dashboard();
+        assert_eq!(metrics.outdated, 1, "one outdated installation");
+        assert_eq!(metrics.modified, 1, "one modified installation");
+        assert_eq!(metrics.installations, 1);
+
+        // §39: a missing attached profile is a protected, broken state —
+        // never an empty profile.
+        let mut app = crate::app::App::new();
+        reduce(
+            &mut app,
+            Event::Loaded(Ok(Box::new(testkit::snapshot_with_missing_profile()))),
+        );
+        take_effects();
+        let snapshot = app.snapshot.as_ref().expect("snapshot");
+        let metrics = snapshot.dashboard();
+        assert_eq!(metrics.missing_profiles, 1);
+        assert_eq!(metrics.broken, 1);
+        let status = snapshot.installations[0].status.as_ref().expect("status");
+        assert!(status.profiles[1].profile.is_none(), "§39: unresolvable");
+        assert!(status.profiles[0].profile.is_some());
+    }
+
+    #[test]
+    fn the_membership_popup_for_a_shared_skill_loads_all_owners() {
+        // §100/§37: the shared skill `testing` is listed once and the §100
+        // view resolves ALL requiring profiles for it.
+        let mut app = app_with_snapshot();
+        keys(&mut app, &[Key::Char('4'), Key::Right]);
+        // Detail rows: profiles 0-1, then skills sorted: git (2), rust (3),
+        // testing (4).
+        keys(&mut app, &[Key::Down, Key::Down, Key::Down, Key::Down]);
+        assert_eq!(app.installations.cursor, Some(4));
+        let effects = keys(&mut app, &[Key::Enter]);
+        assert!(matches!(
+            &effects[0],
+            Effect::Membership { skill, .. } if skill == "testing"
+        ));
+        reduce(
+            &mut app,
+            Event::MembershipLoaded(Ok(Box::new(crate::app::MembershipView {
+                installation: testkit::installation_id(),
+                skill: "testing".to_owned(),
+                required_by: vec![
+                    (testkit::dev_id(), "dev-core".to_owned()),
+                    (testkit::rust_id(), "rust-development".to_owned()),
+                ],
+                last_required_by: vec![],
+                source_ref: "main".to_owned(),
+                library_commit: Some("def456".to_owned()),
+                skill_commit: Some("abc123".to_owned()),
+                state: Some(beskar_core::drift::DriftState::Current),
+                membership_drift: None,
+            }))),
+        );
+        take_effects();
+        let Dialog::Membership(view) = dialog_of(&app) else {
+            panic!("expected the §100 membership popup");
+        };
+        assert_eq!(view.required_by.len(), 2, "both owners are visible");
+    }
+
+    #[test]
+    fn detach_picker_offers_the_missing_profile_by_last_known_name() {
+        // §40: an unresolvable attachment is still explicitly detachable by
+        // its last-known Registry name.
+        let mut app = crate::app::App::new();
+        reduce(
+            &mut app,
+            Event::Loaded(Ok(Box::new(testkit::snapshot_with_missing_profile()))),
+        );
+        take_effects();
+        keys(&mut app, &[Key::Char('4'), Key::Char('d')]);
+        let Dialog::Pick(pick) = dialog_of(&app) else {
+            panic!("expected the detach picker");
+        };
+        assert_eq!(
+            pick.values,
+            vec!["dev-core".to_owned(), "rust-development".to_owned()],
+            "the missing profile is offered under its last-known name"
+        );
+        keys(&mut app, &[Key::Down, Key::Enter]);
+        assert!(matches!(
+            app.planning.as_ref().map(|(action, _)| action),
+            Some(PendingAction::DetachProfile { profile, .. }) if profile == "rust-development"
+        ));
+    }
+
+    #[test]
+    fn ref_set_input_plans_the_change_before_applying() {
+        // §56: changing the source ref is planned (implications computed)
+        // before it can be applied.
+        let mut app = app_with_snapshot();
+        keys(&mut app, &[Key::Char('4')]);
+        keys(&mut app, &[Key::Char('R')]);
+        let Dialog::Input(input) = dialog_of(&app) else {
+            panic!("expected the ref-set input dialog");
+        };
+        assert!(matches!(input.kind, crate::app::InputKind::RefSet { .. }));
+        for c in "next".chars() {
+            keys(&mut app, &[Key::Char(c)]);
+        }
+        let effects = keys(&mut app, &[Key::Enter]);
+        let Effect::Plan { action, options } = &effects[0] else {
+            panic!("expected a plan effect");
+        };
+        let PendingAction::RefSet { new_ref, .. } = action.as_ref() else {
+            panic!("expected a ref-set action");
+        };
+        assert_eq!(new_ref, "next");
+        assert_eq!(*options, ReconcileOptions::default());
+    }
+
+    #[test]
+    fn blocked_plan_lists_every_blocker_with_exact_paths() {
+        // §47: ALL blockers surface in one planning pass, each with the
+        // exact managed paths, before any force consent is offered.
+        let mut app = app_with_snapshot();
+        app.planning = Some((
+            PendingAction::UpdateInstallation {
+                workspace: std::path::PathBuf::from("/fixtures/workspace"),
+                target: None,
+            },
+            ReconcileOptions::default(),
+        ));
+        let sid = |name: &str| beskar_core::ids::SkillName::parse(name).expect("valid");
+        let mut blocked = empty_plan();
+        blocked.blockers = vec![
+            Blocker {
+                kind: BlockerKind::ModifiedContent,
+                skill: Some(sid("git")),
+                profile: None,
+                paths: vec!["git/SKILL.md".to_owned()],
+            },
+            Blocker {
+                kind: BlockerKind::ModifiedContent,
+                skill: Some(sid("testing")),
+                profile: None,
+                paths: vec!["testing/SKILL.md".to_owned()],
+            },
+        ];
+        reduce(&mut app, Event::Planned(Ok(Box::new(plan(blocked)))));
+        take_effects();
+        let Dialog::Confirm(confirm) = dialog_of(&app) else {
+            panic!("expected the confirm dialog");
+        };
+        for path in ["git/SKILL.md", "testing/SKILL.md"] {
+            assert!(
+                confirm.summary.iter().any(|line| line.contains(path)),
+                "blocker for {path} must be listed: {:?}",
+                confirm.summary
+            );
+        }
+        assert_eq!(confirm.choices.len(), 2);
+        assert!(confirm.choices[0].label.contains("Force"));
+    }
 
     #[test]
     fn detach_flow_targets_the_selected_installation() {

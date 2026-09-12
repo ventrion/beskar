@@ -900,7 +900,10 @@ impl GuiState {
                 self.open_library_confirm(&title, plan, notes, action)
             }
             Planned::Summary { lines, .. } => {
-                if lines.iter().any(|line| line.contains("nothing")) {
+                // Only the service's explicit no-op line suppresses the
+                // dialog — never prose matching beyond it (the update-all
+                // summary says "all-or-nothing mode", §48).
+                if lines.iter().any(|line| line.contains("nothing to do")) {
                     self.toast = Some(format!("{title}: nothing to do"));
                     return;
                 }
@@ -1857,6 +1860,87 @@ mod tests {
     fn comma_separated_splits_and_trims() {
         assert_eq!(comma_separated("a, b ,,c"), vec!["a", "b", "c"]);
         assert!(comma_separated(" , ").is_empty());
+    }
+
+    #[test]
+    fn drift_states_surface_glyphs_and_dashboard_counts() {
+        // §38: every per-skill drift state renders a glyph, and a synthetic
+        // InstallationStatus drives the dashboard counts (§96) the
+        // Installations page displays (§103, §133.13).
+        use beskar_core::drift::DriftState;
+        use beskar_core::ids::{InstallationId as Iid, LibraryId as Lid, SkillName as Sid};
+        use beskar_core::status::SkillStatus;
+        let gallery: [(DriftState, &str, &str); 8] = [
+            (DriftState::Current, "current-skill", "✓"),
+            (DriftState::Outdated, "outdated-skill", "↑"),
+            (DriftState::Modified, "modified-skill", "!"),
+            (DriftState::Extra, "extra-skill", "+"),
+            (DriftState::Gap, "gap-skill", "?"),
+            (DriftState::Unstamped, "unstamped-skill", "○"),
+            (DriftState::Foreign, "foreign-skill", "✗"),
+            (DriftState::OrphanedManaged, "orphaned-skill", "∅"),
+        ];
+        for (state, _, glyph) in gallery {
+            assert_eq!(drift_glyph(state), glyph, "{state:?} glyph");
+        }
+
+        let installation_id = Iid::parse("11111111-2222-3333-4444-555555555555").expect("id");
+        let mut status = InstallationStatus {
+            installation_id,
+            library_id: Lid::parse("550e8400-e29b-41d4-a716-446655440000").expect("id"),
+            workspace: PathBuf::from("/ws"),
+            target: ".agents/skills".to_owned(),
+            source_ref: "main".to_owned(),
+            installation_state: None,
+            resolved_commit: Some("abc1234".to_owned()),
+            profiles: Vec::new(),
+            skills: gallery
+                .iter()
+                .map(|(state, name, _)| {
+                    (
+                        Sid::parse(name).expect("valid name"),
+                        SkillStatus {
+                            state: *state,
+                            membership_drift: beskar_core::drift::MembershipDrift::Unchanged,
+                            required_by: Vec::new(),
+                            last_required_by: Vec::new(),
+                            extra_files: Vec::new(),
+                            protected_by_missing_profile: false,
+                        },
+                    )
+                })
+                .collect(),
+            unmanaged: Vec::new(),
+            unsafe_paths: Vec::new(),
+        };
+        let mut snap = snapshot();
+        snap.installations.push(InstallationRow {
+            installation: Installation {
+                id: installation_id,
+                library_id: status.library_id,
+                workspace: PathBuf::from("/ws"),
+                target: ".agents/skills".to_owned(),
+                adapter: beskar_core::registry::Adapter::Agents,
+                source_ref: "main".to_owned(),
+                profiles: Vec::new(),
+                last_applied: Default::default(),
+                workspace_info: None,
+                installed_at: time::OffsetDateTime::from_unix_timestamp(0).expect("time"),
+                updated_at: time::OffsetDateTime::from_unix_timestamp(0).expect("time"),
+            },
+            status: Some(status.clone()),
+            error: None,
+        });
+        let mut state = GuiState::new();
+        state.loaded(snap);
+        let metrics = state.snapshot.as_ref().expect("snapshot").dashboard();
+        assert_eq!(metrics.outdated, 1);
+        assert_eq!(metrics.modified, 1);
+        assert_eq!(metrics.installations, 1);
+
+        // Installation-level breakage surfaces through the §130 id.
+        status.installation_state = Some(DriftState::MissingWorkspace);
+        assert_eq!(status.installation_state_id(), Some("missing_workspace"));
     }
 
     #[test]
