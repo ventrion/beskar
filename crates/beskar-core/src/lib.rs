@@ -16,6 +16,7 @@ pub mod editing;
 pub mod error;
 pub mod execute;
 pub mod ids;
+pub mod init;
 pub mod library;
 pub mod lifecycle;
 pub mod lock;

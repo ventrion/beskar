@@ -1198,3 +1198,62 @@ fn finalized_installation_persists_and_replans_cleanly() {
     let again = fx.plan(&[dev_attachment()], options(false, false));
     assert!(again.plan.is_no_op(), "got {:?}", again.plan);
 }
+
+// ---- §127 extra-file rows ----------------------------------------------------
+
+#[test]
+fn extra_files_survive_current_and_outdated_updates() {
+    let mut fx = Fixture::new();
+    fx.reconcile(&[dev_attachment()], options(false, false));
+
+    // §127 "extra file + current": extras are informational (§38 Extra,
+    // §8.6) — they never trigger actions and nothing rewrites them.
+    write_file(&fx.skill_dir("testing"), "notes/personal.md", "mine\n");
+    write_file(&fx.skill_dir("code-review"), "scratch.txt", "user data\n");
+    let planned = fx.plan(&[dev_attachment()], options(false, false));
+    assert!(
+        planned.plan.is_no_op(),
+        "current skills with extras must not change: {:?}",
+        planned.plan.skill_actions
+    );
+    assert_eq!(
+        std::fs::read_to_string(fx.skill_dir("testing").join("notes/personal.md")).expect("extra"),
+        "mine\n"
+    );
+
+    // §127 "extra file + outdated": the update applies; the extra survives
+    // and is surfaced as a PreserveExtra action (§59.4, §8.6).
+    write_skill_tree(fx.repo.path(), "quality", "testing", "Upstream v2.");
+    fx.repo.commit_all("beskar: update testing");
+    let planned = fx.plan(&[dev_attachment()], options(false, false));
+    let kinds = action_kinds(&planned);
+    assert!(
+        kinds.contains(&(PlanAction::UpdateSkill, "testing".to_owned())),
+        "kinds: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&(PlanAction::PreserveExtra, "testing".to_owned())),
+        "the extra is explicitly preserved in the plan: {kinds:?}"
+    );
+    fx.apply(&planned);
+
+    let body = std::fs::read_to_string(fx.skill_dir("testing").join("SKILL.md")).expect("body");
+    assert!(body.contains("Upstream v2."));
+    assert_eq!(
+        std::fs::read_to_string(fx.skill_dir("testing").join("notes/personal.md")).expect("extra"),
+        "mine\n",
+        "the extra file survived the update (§8.6)"
+    );
+    assert!(
+        !fx.read_stamp("testing")
+            .files
+            .contains_key("notes/personal.md"),
+        "extras stay untracked by the stamp (§8.6)"
+    );
+    // The untouched current skill's extra was never disturbed either.
+    assert_eq!(
+        std::fs::read_to_string(fx.skill_dir("code-review").join("scratch.txt")).expect("extra"),
+        "user data\n"
+    );
+    fx.assert_converged();
+}

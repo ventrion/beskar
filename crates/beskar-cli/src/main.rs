@@ -22,6 +22,7 @@ use beskar_core::reconcile::ReconcileOptions;
 use beskar_core::registry::Adapter;
 use beskar_core::remote::{FetchRequest, PushRequest, Remote};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
+use serde_json::json;
 
 /// Program exit codes (spec §94). The full contract is defined here so all
 /// phases map consistently.
@@ -289,6 +290,28 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Machine-local Registry maintenance (spec §84).
+    Registry {
+        #[command(subcommand)]
+        action: RegistryAction,
+    },
+    /// Create, clone, or adopt the user-level skill Library (spec §87).
+    Init {
+        /// Where to create or clone the Library (default: the current
+        /// directory). Ignored with `--library`.
+        dir: Option<PathBuf>,
+        /// Clone an existing Library from this Git URL instead of creating
+        /// a new one (§87 "clone existing Library").
+        #[arg(long, conflicts_with = "library_path")]
+        remote: Option<String>,
+        /// Adopt an already valid Library at this path instead of creating
+        /// one (§87 "adopt existing local Library"). Read-only.
+        #[arg(long = "library", conflicts_with = "remote")]
+        library_path: Option<PathBuf>,
+        /// Emit only structured JSON on stdout (§92, §130).
+        #[arg(long)]
+        json: bool,
+    },
     /// Migrate a legacy skill-manager Home (spec §120-§124, §87).
     Migrate {
         #[command(subcommand)]
@@ -296,6 +319,22 @@ enum Command {
     },
     /// Launch the interactive terminal UI (spec §95).
     Tui,
+}
+
+#[derive(Debug, Subcommand)]
+enum RegistryAction {
+    /// Repoint a registered installation at its workspace's new location
+    /// (spec §84, §30 — the recovery for a moved workspace; §137.30).
+    /// Registry bookkeeping only: target contents are never touched.
+    Move {
+        /// The installation ID (visible via `beskar status --json`).
+        id: String,
+        /// The workspace's new path.
+        new_path: PathBuf,
+        /// Emit only structured JSON on stdout (§92, §130).
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1080,6 +1119,57 @@ fn dispatch(command: Command) -> ExitCode {
                 ExitCode::from(exit_codes::SUCCESS)
             }
         }
+        Command::Init {
+            dir,
+            remote,
+            library_path,
+            json,
+        } => {
+            let ctx = Ctx {
+                command: "init",
+                json,
+            };
+            let target = dir.unwrap_or_else(|| PathBuf::from("."));
+            let request = beskar_core::init::InitRequest {
+                dir: &target,
+                remote: remote.as_deref(),
+                adopt: library_path.as_deref(),
+            };
+            match beskar_core::init::init_library(&beskar_git::SystemGitBackend, &request) {
+                Ok(outcome) => {
+                    if json {
+                        println!(
+                            "{}",
+                            json_out::envelope(
+                                "init",
+                                true,
+                                json!({
+                                    "kind": outcome.kind.id(),
+                                    "path": outcome.path.display().to_string(),
+                                    "library_id": outcome.library_id.to_string(),
+                                    "default_ref": outcome.default_ref,
+                                    "head": outcome.head,
+                                })
+                            )
+                        );
+                    } else {
+                        let verb = match outcome.kind {
+                            beskar_core::init::InitKind::Created => "Initialized",
+                            beskar_core::init::InitKind::Cloned => "Cloned",
+                            beskar_core::init::InitKind::Adopted => "Adopted",
+                        };
+                        println!("{} library at {}", verb, outcome.path.display());
+                        println!("  library id: {}", outcome.library_id);
+                        println!("  default ref: {}", outcome.default_ref);
+                        if let Some(head) = &outcome.head {
+                            println!("  HEAD: {}", &head[..head.len().min(12)]);
+                        }
+                    }
+                    ExitCode::from(exit_codes::SUCCESS)
+                }
+                Err(err) => ctx.fail(&err),
+            }
+        }
         Command::Migrate {
             action:
                 MigrateAction::Skm {
@@ -1104,6 +1194,44 @@ fn dispatch(command: Command) -> ExitCode {
                         println!("{}", json_out::migration(&outcome));
                     } else {
                         render::migration(&outcome);
+                    }
+                    ExitCode::from(exit_codes::SUCCESS)
+                }
+                Err(err) => ctx.fail(&err),
+            }
+        }
+        Command::Registry {
+            action: RegistryAction::Move { id, new_path, json },
+        } => {
+            let ctx = Ctx {
+                command: "registry move",
+                json,
+            };
+            let lifecycle = match ctx.lifecycle() {
+                Ok(l) => l,
+                Err(code) => return code,
+            };
+            match lifecycle.registry_move(beskar_core::lifecycle::RegistryMoveRequest {
+                id: &id,
+                new_path: &new_path,
+            }) {
+                Ok(installation) => {
+                    if json {
+                        println!(
+                            "{}",
+                            json_out::envelope(
+                                "registry move",
+                                true,
+                                json!({ "installation": json_out::installation(&installation) })
+                            )
+                        );
+                    } else {
+                        println!(
+                            "Installation {} now owns {} / {}",
+                            installation.id,
+                            installation.workspace.display(),
+                            installation.target
+                        );
                     }
                     ExitCode::from(exit_codes::SUCCESS)
                 }

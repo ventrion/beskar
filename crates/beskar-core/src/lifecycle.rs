@@ -479,6 +479,68 @@ impl Lifecycle {
         })
     }
 
+    /// Repoints a registered installation at its workspace's new location
+    /// (spec §84 `registry move`, the §30/§137.30 recovery for moved
+    /// workspaces). Registry bookkeeping only — target contents are never
+    /// touched. The new path must exist and must not collide with another
+    /// installation owning the same `(workspace, target)` (§26).
+    pub fn registry_move(&self, request: RegistryMoveRequest<'_>) -> Result<Installation> {
+        let id = InstallationId::parse(request.id)
+            .map_err(|e| Error::validation(format!("invalid installation id: {e}")))?;
+        let mut lock_guard = None;
+        let mut registry = self.begin(false, &mut lock_guard)?;
+        let registered = registry
+            .installations
+            .iter()
+            .find(|installation| installation.id == id)
+            .cloned()
+            .ok_or_else(|| {
+                Error::registry(format!(
+                    "no installation with id {id} is registered on this machine"
+                ))
+            })?;
+
+        // The new workspace must exist (§26: installations own real
+        // directories; moving to a nonexistent path would fabricate a
+        // broken registration).
+        if !request.new_path.is_dir() {
+            return Err(Error::validation(format!(
+                "new workspace path {} does not exist or is not a directory",
+                request.new_path.display()
+            )));
+        }
+        let new_path = request.new_path.canonicalize().map_err(|e| {
+            Error::path_safety(format!(
+                "cannot resolve new workspace path {}: {e}",
+                request.new_path.display()
+            ))
+        })?;
+        if new_path != registered.workspace
+            && self
+                .installations_at(&registry, &new_path)
+                .iter()
+                .any(|other| other.id != registered.id && other.target == registered.target)
+        {
+            return Err(Error::registry(format!(
+                "another installation already owns {} / {} (§26)",
+                new_path.display(),
+                registered.target
+            )));
+        }
+
+        let mut moved = registered.clone();
+        moved.workspace = new_path;
+        // §30: refresh the informational repair metadata at the new
+        // location; plain directories keep registering without metadata.
+        moved.workspace_info = Some(self.workspace_info(&moved.workspace));
+        moved.updated_at = now();
+
+        let lock = lock_guard.expect("mutating registry move holds the lock");
+        upsert(&mut registry, moved.clone())?;
+        self.store.save_with_lock(&registry, &lock)?;
+        Ok(moved)
+    }
+
     // ---- status (§41-§42) -------------------------------------------------
 
     /// Computes read-only status for the installations a status command
@@ -1038,6 +1100,16 @@ pub struct ReorderOutcome {
     pub installation: Installation,
     pub executed: bool,
     pub dry_run: bool,
+}
+
+/// `beskar registry move` arguments (§84): repoint one installation at its
+/// workspace's new location (§30, §137.30 recovery).
+#[derive(Debug, Clone)]
+pub struct RegistryMoveRequest<'a> {
+    /// The installation ID (§25; visible via `beskar status --json`).
+    pub id: &'a str,
+    /// The workspace's new absolute (or cwd-relative) path.
+    pub new_path: &'a Path,
 }
 
 /// `beskar update --all` arguments (§48).

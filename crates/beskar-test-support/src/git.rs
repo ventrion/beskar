@@ -133,6 +133,19 @@ pub fn git_ok(dir: &Path, args: &[&str]) -> String {
         .to_owned()
 }
 
+/// Prepares an empty target directory so that Beskar's own backend can
+/// commit inside it: `git init` (idempotent on existing repositories —
+/// `create_library` runs it again) plus a repo-local identity, so commits
+/// never depend on the machine's global Git configuration (§86, §125).
+/// Tests that drive `beskar init` call this first; it never touches the
+/// user's home or global config.
+pub fn seed_repo_identity(dir: &Path) {
+    std::fs::create_dir_all(dir).expect("create target");
+    git_ok(dir, &["init", "--quiet", "--initial-branch=main"]);
+    git_ok(dir, &["config", "user.name", "Beskar Tests"]);
+    git_ok(dir, &["config", "user.email", "beskar@example.invalid"]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1047,3 +1047,78 @@ fn reorder_attachments_rejects_non_permutations() {
 
     let _ = rust;
 }
+
+// ---- registry move (§84, §30, §137.30) --------------------------------------
+
+#[test]
+fn registry_move_repairs_a_moved_workspace() {
+    let env = Env::new();
+    env.add("dev-core");
+    assert_eq!(env.status().count(DriftState::Current), 3);
+
+    let moved = env._ws_root.child("moved");
+    std::fs::rename(&env.workspace, &moved).expect("move workspace");
+
+    let lifecycle = env.lifecycle();
+    let registry = lifecycle.load_registry().expect("registry");
+    let id = registry.installations[0].id.to_string();
+
+    // §84: the move is explicit repair — bookkeeping only (§30).
+    let moved_installation = lifecycle
+        .registry_move(beskar_core::lifecycle::RegistryMoveRequest {
+            id: &id,
+            new_path: &moved,
+        })
+        .expect("registry move");
+    assert_eq!(
+        moved_installation.workspace,
+        moved.canonicalize().expect("canonical")
+    );
+
+    // The installation is fully alive at the new path; file contents were
+    // never touched.
+    assert!(moved.join(".agents/skills/testing/SKILL.md").is_file());
+    let registry = lifecycle.load_registry().expect("registry");
+    let installation = lifecycle
+        .find_installation(&registry, &moved, None)
+        .expect("lookup")
+        .expect("installation found at the new path");
+    let status =
+        beskar_core::status::compute_status(lifecycle.backend(), &env.library, &installation)
+            .expect("status");
+    assert_eq!(status.count(DriftState::Current), 3);
+    assert_eq!(status.installation_state, None);
+}
+
+#[test]
+fn registry_move_refuses_unknown_ids_and_missing_paths() {
+    let env = Env::new();
+    env.add("dev-core");
+    let lifecycle = env.lifecycle();
+
+    // Unknown installation id (§84: registry-scoped, typed refusal).
+    let nowhere = env._ws_root.path().join("nowhere");
+    let err = lifecycle
+        .registry_move(beskar_core::lifecycle::RegistryMoveRequest {
+            id: "00000000-0000-4000-8000-000000000000",
+            new_path: &nowhere,
+        })
+        .expect_err("unknown id");
+    assert!(matches!(err, Error::Registry(_)));
+
+    // Known id but nonexistent destination (§26: installations own real
+    // directories; fabricating a broken registration is refused).
+    let registry = lifecycle.load_registry().expect("registry");
+    let id = registry.installations[0].id.to_string();
+    let err = lifecycle
+        .registry_move(beskar_core::lifecycle::RegistryMoveRequest {
+            id: &id,
+            new_path: &nowhere,
+        })
+        .expect_err("missing destination");
+    assert!(matches!(err, Error::Validation(_)));
+
+    // The registration is untouched after both refusals.
+    let registry = lifecycle.load_registry().expect("registry");
+    assert_eq!(registry.installations[0].workspace, env.workspace);
+}

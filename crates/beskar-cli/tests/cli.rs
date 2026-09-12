@@ -74,3 +74,43 @@ fn tui_subcommand_fails_cleanly_without_a_library() {
         "stderr should carry the typed error: {stderr}"
     );
 }
+
+/// `beskar init` creates a valid Library in an empty directory and refuses
+/// — with typed JSON and a non-zero exit — when the target has content
+/// (spec §87, §94, §130).
+#[test]
+fn init_creates_a_library_and_refuses_non_empty_targets() {
+    let root = tempfile::tempdir().expect("tmp");
+    let dir = root.path().join("lib");
+
+    let output = beskar()
+        .env("BESKAR_HOME", root.path().join("home"))
+        .env("GIT_AUTHOR_NAME", "CLI Tests")
+        .env("GIT_AUTHOR_EMAIL", "cli@example.invalid")
+        .env("GIT_COMMITTER_NAME", "CLI Tests")
+        .env("GIT_COMMITTER_EMAIL", "cli@example.invalid")
+        .args(["init"])
+        .arg(&dir)
+        .args(["--json"])
+        .output()
+        .expect("run beskar init");
+    assert!(output.status.success(), "init in an empty directory");
+    let created: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(created["kind"], "created");
+    assert_eq!(created["ok"], true);
+    assert!(dir.join("beskar.toml").is_file());
+
+    // A second init over the now-populated Library is refused (§4: the
+    // safer choice; §94: exit 1 with a typed error code).
+    let output = beskar()
+        .env("BESKAR_HOME", root.path().join("home"))
+        .args(["init"])
+        .arg(&dir)
+        .args(["--json"])
+        .output()
+        .expect("run beskar init");
+    assert_eq!(output.status.code(), Some(1), "§94: general failure");
+    let refused: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(refused["ok"], false);
+    assert_eq!(refused["error"]["code"], "validation");
+}

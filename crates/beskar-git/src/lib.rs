@@ -263,6 +263,16 @@ pub trait GitBackend: fmt::Debug + Send + Sync {
     /// the network (spec §65.3 "determine remote state"). `None` when the
     /// remote branch does not exist. Push-time only (§8.8).
     fn ls_remote_branch(&self, repo: &Path, remote: &str, branch: &str) -> Result<Option<String>>;
+
+    /// Initializes a fresh Git repository at `dir` (spec §87 "new Library").
+    /// Local-only; creates the initial branch as `main` (§10 default ref).
+    fn init_repo(&self, dir: &Path) -> Result<()>;
+
+    /// Clones `url` into `dir` (spec §87 "clone existing Library"). The only
+    /// ref-cloning network operation; authentication is delegated to system
+    /// Git (§67) and prompts are disabled, so a credential helper that needs
+    /// interaction fails as [`Error::Auth`]. URLs in errors are redacted.
+    fn clone_repo(&self, url: &str, dir: &Path) -> Result<()>;
 }
 
 /// v1 backend: delegates to the user's installed Git implementation
@@ -578,6 +588,32 @@ impl GitBackend for SystemGitBackend {
             Some(1) => Ok(false),
             _ => Err(git_failure("merge-base --is-ancestor", &output)),
         }
+    }
+
+    fn init_repo(&self, dir: &Path) -> Result<()> {
+        std::fs::create_dir_all(dir)?;
+        let output = run_git(dir, &["init", "--quiet", "--initial-branch=main"])?;
+        if !output.status.success() {
+            return Err(git_failure("git init", &output));
+        }
+        Ok(())
+    }
+
+    fn clone_repo(&self, url: &str, dir: &Path) -> Result<()> {
+        reject_unsafe_arg(url, "remote url")?;
+        // git creates the target directory itself; run from the parent,
+        // which must exist (created by the caller when needed).
+        let parent = dir.parent().ok_or_else(|| {
+            Error::Git(format!(
+                "cannot clone into {}: no parent directory",
+                dir.display()
+            ))
+        })?;
+        let output = run_git(parent, &["clone", "--quiet", url, &dir.to_string_lossy()])?;
+        if !output.status.success() {
+            return Err(network_failure("git clone", &output));
+        }
+        Ok(())
     }
 
     fn ls_remote_branch(&self, repo: &Path, remote: &str, branch: &str) -> Result<Option<String>> {
