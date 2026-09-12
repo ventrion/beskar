@@ -14,7 +14,12 @@ workspace = true
 
 [dependencies]
 beskar-core = { workspace = true }
+beskar-git = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
+time = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+beskar-test-support = { workspace = true }

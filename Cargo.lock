@@ -276,8 +276,11 @@ name = "beskar-gui"
 version = "0.1.0"
 dependencies = [
  "beskar-core",
+ "beskar-git",
+ "beskar-test-support",
  "eframe",
  "egui",
+ "time",
  "tracing",
  "tracing-subscriber",
 ]
