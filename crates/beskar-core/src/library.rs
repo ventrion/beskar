@@ -432,11 +432,11 @@ fn scan_skills_dir(skills_path: &Path, skills_dir_name: &str) -> crate::Result<V
                 entry.path().display()
             )));
         }
-        let relative = parent
-            .strip_prefix(skills_path)
-            .map_err(|_| crate::Error::path_safety("skill root escaped skills dir"))?
-            .to_str()
-            .ok_or_else(|| crate::Error::path_safety("non-UTF-8 skill path"))?;
+        let relative = crate::paths::to_slash_path(
+            parent
+                .strip_prefix(skills_path)
+                .map_err(|_| crate::Error::path_safety("skill root escaped skills dir"))?,
+        )?;
         roots.push(format!("{skills_dir_name}/{relative}"));
     }
     reject_nested_roots(&roots)?;
@@ -453,7 +453,7 @@ fn scan_skills_dir(skills_path: &Path, skills_dir_name: &str) -> crate::Result<V
         validate_bucket(&bucket)?;
 
         let skill_path = skills_path
-            .join(root[bucket_start.len()..].replace('/', std::path::MAIN_SEPARATOR_STR))
+            .join(crate::paths::to_native_path(&root[bucket_start.len()..]))
             .join(SKILL_FILE);
         let bytes = std::fs::read(&skill_path)?;
         let frontmatter = SkillFrontmatter::parse_bytes(&bytes)?;

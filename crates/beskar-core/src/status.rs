@@ -575,16 +575,19 @@ fn inspect_dir(
             )
         })?;
         let file_type = entry.file_type();
-        let relative = entry
-            .path()
-            .strip_prefix(dir)
-            .map_err(|_| crate::Error::path_safety("path escaped skill directory"))?
-            .to_str()
-            .ok_or_else(|| crate::Error::path_safety("non-UTF-8 path in target"))?;
+        let relative = crate::paths::to_slash_path(
+            entry
+                .path()
+                .strip_prefix(dir)
+                .map_err(|_| crate::Error::path_safety("path escaped skill directory"))?,
+        )?;
         if relative.is_empty() {
             continue;
         }
-        validate_relative_path(relative)?;
+        // `to_slash_path` already produced the §119 serialized form; this
+        // re-check rejects traversal/reserved shapes that never enter
+        // stamps or reports regardless of platform separator behavior.
+        validate_relative_path(&relative)?;
         if file_type.is_symlink() || (!file_type.is_file() && !file_type.is_dir()) {
             // Tracked-but-now-special files surface as modified (§12, §38).
             files.insert(
@@ -1143,6 +1146,38 @@ mod tests {
         let status = classify(&inputs);
         assert_eq!(status.unmanaged, vec!["random-notes".to_owned()]);
         assert_eq!(status.unsafe_paths, vec!["sneaky-link".to_owned()]);
+    }
+
+    #[test]
+    fn case_differing_skill_directory_never_silently_collides() {
+        // §119: path comparison must not blindly assume case sensitivity.
+        // Desired skill names are canonical lowercase; an on-disk directory
+        // spelled with different case is NOT matched against them. The
+        // desired skill simply counts as not-yet-installed and the odd-
+        // spelled directory is reported as unmanaged — no silent collision,
+        // no silent duplication (§4). On case-insensitive filesystems a
+        // genuine clash fails loudly at creation time instead.
+        let inst = installation(vec![attachment(pid(1), "dev")]);
+        let mut inputs = base_inputs(inst.clone());
+        inputs
+            .profiles
+            .insert(pid(1), profile(pid(1), "dev", &["testing"]));
+        inputs
+            .revision_skills
+            .insert(sid("testing"), "c1".to_owned());
+        inputs.installed.insert(
+            "Testing".to_owned(),
+            InstalledDir {
+                stamp: StampInspection::Absent,
+                files: BTreeMap::new(),
+            },
+        );
+        let status = classify(&inputs);
+        assert_eq!(
+            status.skills[&sid("testing")].state,
+            DriftState::ProfileAdded
+        );
+        assert_eq!(status.unmanaged, vec!["Testing".to_owned()]);
     }
 
     #[test]

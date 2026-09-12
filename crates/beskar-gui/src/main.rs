@@ -13,6 +13,17 @@
 //! explicit-consent force re-plans (§47, §49); nothing is ever silently
 //! overwritten. Launching without a display fails gracefully with a typed
 //! message (§4, §102).
+//!
+//! # Backends
+//!
+//! Default features build eframe with x11/glow only — no Wayland libraries
+//! needed, so headless machines and CI compile and run the test suite
+//! green. The optional non-default `wayland` feature enables eframe's
+//! Wayland backend for native Wayland sessions (§125):
+//!
+//! ```text
+//! cargo build -p beskar-gui --features wayland   # needs libwayland-dev
+//! ```
 
 mod action;
 mod app;

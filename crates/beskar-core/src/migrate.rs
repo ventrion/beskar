@@ -900,11 +900,11 @@ fn validate_skills_working_tree(
                 entry.path().display()
             )));
         }
-        let relative = parent
-            .strip_prefix(skills_root)
-            .map_err(|_| Error::path_safety("skill root escaped skills dir"))?
-            .to_str()
-            .ok_or_else(|| Error::path_safety("non-UTF-8 skill path"))?;
+        let relative = crate::paths::to_slash_path(
+            parent
+                .strip_prefix(skills_root)
+                .map_err(|_| Error::path_safety("skill root escaped skills dir"))?,
+        )?;
         roots.push(format!("{skills_dir_name}/{relative}"));
     }
 

@@ -125,6 +125,25 @@ pub fn to_native_path(relative: &str) -> std::path::PathBuf {
     relative.split('/').collect()
 }
 
+/// Converts a native relative path into its `/`-separated string form at the
+/// filesystem boundary (spec §119) — the inverse of [`to_native_path`].
+/// Native `PathBuf` stringification must never be assumed to round-trip
+/// through the serialized form: on Windows `to_str()` yields backslash
+/// separators, which validation and stamps reject. This is the only
+/// sanctioned native → serialized conversion; non-UTF-8 paths fail closed
+/// (§4) instead of being lossily mangled into serialized state.
+pub fn to_slash_path(native: &std::path::Path) -> crate::Result<String> {
+    Ok(native
+        .iter()
+        .map(|component| {
+            component
+                .to_str()
+                .ok_or_else(|| crate::Error::path_safety("non-UTF-8 path at a filesystem boundary"))
+        })
+        .collect::<crate::Result<Vec<_>>>()?
+        .join("/"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +226,72 @@ mod tests {
                 "path {bad:?} should be invalid"
             );
         }
+    }
+
+    #[test]
+    fn windows_style_backslash_inputs_are_rejected_as_serialized_paths() {
+        // §119: serialized paths always use '/'. Windows-native forms must
+        // never be accepted as serialized state, so a native path that
+        // slipped through unconverted fails loudly here instead of silently
+        // corrupting registry entries, stamps, or installed layouts.
+        for bad in [
+            "skills\\testing",          // plain backslash separator
+            "skills\\nested\\SKILL.md", // deep backslash path
+            "a\\..\\b",                 // traversal via backslashes
+            "C:\\Users\\x",             // drive-absolute
+            "C:skills",                 // drive-relative
+            "\\\\server\\share",        // UNC prefix
+            "\\absolute",               // backslash-rooted
+            "trailing\\",               // trailing separator
+            "skills\\CON",              // reserved name, backslash form
+            "skills\\aux.txt",          // reserved base, backslash form
+            "skills\\trailing.",        // trailing dot, backslash form
+            "skills\\trailing ",        // trailing space, backslash form
+        ] {
+            assert!(
+                validate_relative_path(bad).is_err(),
+                "path {bad:?} should be invalid"
+            );
+        }
+        // The forward-slash equivalents stay acceptable (pure validation on
+        // the string level — provable on every platform).
+        validate_relative_path("skills/testing/SKILL.md").expect("portable form");
+        validate_relative_path("skills/trailing.dot-free").expect("dot inside is fine");
+    }
+
+    #[test]
+    fn windows_reserved_and_hostile_shapes_rejected_for_all_paths() {
+        // §13 rules apply to every Beskar-named path, not just buckets.
+        for bad in [
+            "aux", "AUX", "aux.txt", "com1", "end.", "end ", "ok/CON", "a/b/nul",
+        ] {
+            assert!(
+                validate_relative_path(bad).is_err(),
+                "path {bad:?} should be invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn to_slash_path_normalizes_native_separators() {
+        // §119 inverse of to_native_path: built component-wise so the input
+        // uses the platform separator idiomatically; the output must always
+        // be the '/'-separated serialized form.
+        let native = std::path::PathBuf::from("a").join("b").join("SKILL.md");
+        assert_eq!(to_slash_path(&native).expect("utf-8"), "a/b/SKILL.md");
+        assert_eq!(
+            to_slash_path(std::path::Path::new("leaf")).expect("utf-8"),
+            "leaf"
+        );
+        assert_eq!(to_slash_path(std::path::Path::new("")).expect("utf-8"), "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn to_slash_path_fails_closed_on_non_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let native = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"a/\xff\xfe"));
+        assert!(to_slash_path(&native).is_err());
     }
 
     #[test]

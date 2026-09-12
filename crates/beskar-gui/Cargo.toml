@@ -5,6 +5,14 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+# Optional non-default backends (spec §125 CI): `wayland` enables eframe's
+# Wayland backend for native Wayland sessions. It is OFF by default so the
+# shipped build (x11/glow) stays buildable headless and in CI without
+# libwayland. Enable with: cargo build -p beskar-gui --features wayland
+# (needs libwayland-dev/libxkbcommon-dev on Linux).
+[features]
+wayland = ["eframe/wayland"]
+
 [[bin]]
 name = "beskar-gui"
 path = "src/main.rs"

@@ -1,0 +1,77 @@
+# Beskar CI (spec §125: test Linux, Windows, macOS; §114: pinned toolchain).
+#
+# Everything here is boring on purpose:
+# - stable Rust, no exotic components, no custom images;
+# - tests are fully hermetic (tempfile roots, BESKAR_HOME/BESKAR_LIBRARY
+#   child-env overrides, local path remotes only — spec §86, §125) and need
+#   NO network access and no service containers; only `git` is required,
+#   which GitHub runners provide on all three operating systems;
+# - each job caches cargo builds with Swatinem/rust-cache keyed on Cargo.lock.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+      # Hermetic, offline tests (spec §125): temp directories, local git
+      # fixtures, no network. `git` is preinstalled on all runner images.
+      - run: cargo test --workspace
+
+  # Optional backend coverage (spec §119/§125 portability): the default
+  # beskar-gui build is x11/glow so the matrix above never needs Wayland
+  # libraries. This isolated job additionally type-checks the opt-in
+  # `wayland` feature so it cannot rot silently. Keep it a separate job so
+  # any toolchain hiccup here never blocks the required matrix.
+  gui-wayland:
+    name: gui wayland feature
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Wayland development libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev
+      - run: cargo check -p beskar-gui --features wayland

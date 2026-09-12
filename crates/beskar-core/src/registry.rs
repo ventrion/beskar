@@ -149,8 +149,11 @@ pub struct Installation {
 
 impl Installation {
     /// Whether this Installation owns the given `(workspace, target)` pair
-    /// (spec §26). Paths compare as given; registration canonicalizes
-    /// workspaces before persisting.
+    /// (spec §26). Both sides compare exactly as registered: workspaces are
+    /// canonicalized at registration (normalizing case on case-insensitive
+    /// filesystems), and targets are lowercase-portable vocabulary (§24),
+    /// so exact comparison is consistent everywhere; ambiguous near-
+    /// duplicates are refused at [`Registry::insert`] time (§119, §4).
     pub fn owns(&self, workspace: &Path, target: &str) -> bool {
         self.target == target && self.workspace == workspace
     }
@@ -215,6 +218,12 @@ impl Registry {
 
     /// Inserts an Installation, enforcing `(workspace, target)` uniqueness
     /// (spec §26): two Installations MUST NOT own the same Target.
+    /// Uniqueness is case-insensitive on the target (§119: path comparison
+    /// must not blindly assume case sensitivity): on Windows and the macOS
+    /// default filesystem, targets differing only in ASCII case are the
+    /// same directory, so registering both would silently duplicate one
+    /// real installation. Refusing is the safer behavior (§4) and costs
+    /// nothing — Beskar-controlled targets are lowercase (§24).
     pub fn insert(&mut self, installation: Installation) -> crate::Result<()> {
         if let Some(existing) = self.find(&installation.workspace, &installation.target) {
             return Err(crate::Error::profile_attachment(format!(
@@ -222,6 +231,20 @@ impl Registry {
                 installation.workspace.display(),
                 installation.target,
                 existing.id
+            )));
+        }
+        if let Some(existing) = self.installations.iter().find(|existing| {
+            existing.workspace == installation.workspace
+                && existing.target.eq_ignore_ascii_case(&installation.target)
+        }) {
+            return Err(crate::Error::profile_attachment(format!(
+                "(workspace, target) pair ({}, {}) collides case-insensitively \
+                 with installation {} owning {:?} (§119): on case-insensitive \
+                 filesystems both spellings are the same directory",
+                installation.workspace.display(),
+                installation.target,
+                existing.id,
+                existing.target
             )));
         }
         self.installations.push(installation);
@@ -397,6 +420,58 @@ mod tests {
         assert!(
             registry
                 .find(&installation.workspace, ".claude/skills")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn case_differing_targets_must_not_silently_duplicate() {
+        // §119 + §4: on case-insensitive filesystems (Windows, macOS
+        // default) `.AGENTS/SKILLS` and `.agents/skills` are one directory;
+        // two registrations would silently double-install into it. The
+        // registry refuses instead of guessing which spelling is meant.
+        let mut registry = Registry::new();
+        let mut first = sample_installation();
+        first.target = ".agents/skills".to_owned();
+        registry.insert(first.clone()).expect("insert first");
+
+        let mut upper = first.clone();
+        upper.id = InstallationId::generate();
+        upper.target = ".AGENTS/SKILLS".to_owned();
+        let err = registry
+            .insert(upper)
+            .expect_err("case-differing duplicate must be refused");
+        assert!(matches!(err, crate::Error::ProfileAttachment(_)));
+        assert!(err.to_string().contains("case-insensitively"));
+
+        // Mixed-case partial overlap is caught too.
+        let mut mixed = first.clone();
+        mixed.id = InstallationId::generate();
+        mixed.target = ".agents/Skills".to_owned();
+        assert!(registry.insert(mixed).is_err());
+
+        assert_eq!(registry.installations.len(), 1);
+
+        // A genuinely different target under the same workspace stays fine.
+        let mut second = first;
+        second.id = InstallationId::generate();
+        second.target = ".claude/skills".to_owned();
+        registry.insert(second).expect("different target");
+        assert_eq!(registry.installations.len(), 2);
+    }
+
+    #[test]
+    fn lookups_stay_exact_even_though_insertion_refuses_near_duplicates() {
+        // Registration refuses case-differing duplicates, so lookups never
+        // face the ambiguity and compare exactly (§26: the registry stores
+        // exactly what was registered).
+        let mut registry = Registry::new();
+        let mut installation = sample_installation();
+        installation.target = ".agents/skills".to_owned();
+        registry.insert(installation.clone()).expect("insert");
+        assert!(
+            registry
+                .find(&installation.workspace, ".AGENTS/SKILLS")
                 .is_none()
         );
     }

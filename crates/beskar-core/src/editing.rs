@@ -799,13 +799,13 @@ impl LibraryEditor {
             if !entry.file_type().is_file() {
                 continue;
             }
-            let relative = entry
-                .path()
-                .strip_prefix(&native_root)
-                .map_err(|_| Error::path_safety("skill file escaped its root"))?
-                .to_str()
-                .ok_or_else(|| Error::path_safety("non-UTF-8 skill file path"))?;
-            files.push(relative.replace(std::path::MAIN_SEPARATOR, "/"));
+            let relative = crate::paths::to_slash_path(
+                entry
+                    .path()
+                    .strip_prefix(&native_root)
+                    .map_err(|_| Error::path_safety("skill file escaped its root"))?,
+            )?;
+            files.push(relative);
         }
         files.sort();
         Ok(SkillDetail { listing, files })
@@ -1236,16 +1236,17 @@ impl LibraryEditor {
     }
 
     /// Converts an absolute path inside the Library to its Library-relative
-    /// `/`-separated form (§119).
+    /// `/`-separated form (§119). Serialization happens BEFORE validation:
+    /// the native form may contain `\` separators that serialized paths
+    /// must never carry (§119), so converting first keeps the check on the
+    /// canonical string shape.
     fn library_relative(&self, absolute: &Path) -> Result<String> {
         let relative = absolute
             .strip_prefix(self.library.root())
             .map_err(|_| Error::path_safety("path escapes the library root"))?;
-        let text = relative
-            .to_str()
-            .ok_or_else(|| Error::path_safety("non-UTF-8 library path"))?;
-        validate_committed_path(text)?;
-        Ok(text.replace(std::path::MAIN_SEPARATOR, "/"))
+        let text = crate::paths::to_slash_path(relative)?;
+        validate_committed_path(&text)?;
+        Ok(text)
     }
 
     /// The frontmatter description of a working-tree skill (§11).
@@ -1530,13 +1531,12 @@ fn inspect_incoming_skill(root: PathBuf) -> Result<IncomingSkill> {
         if !file_type.is_file() {
             continue;
         }
-        let relative = entry
-            .path()
-            .strip_prefix(&root)
-            .map_err(|_| Error::path_safety("ingested file escaped its skill root"))?
-            .to_str()
-            .ok_or_else(|| Error::path_safety("non-UTF-8 ingested path"))?
-            .replace(std::path::MAIN_SEPARATOR, "/");
+        let relative = crate::paths::to_slash_path(
+            entry
+                .path()
+                .strip_prefix(&root)
+                .map_err(|_| Error::path_safety("ingested file escaped its skill root"))?,
+        )?;
         validate_committed_path(&relative)?;
         if STRIPPED_INGEST_FILES.contains(&relative.as_str()) {
             continue;
