@@ -9,9 +9,12 @@
 //! Read operations (ref resolution, committed tree/blob access with exact
 //! bytes (§8.1, §33), per-path last-commit lookup (§35), working-tree
 //! status, branch listing) are joined by the Phase 4 library-editing
-//! mutations: scoped commits (§72) and branch convenience wrappers (§82).
-//! Network operations (`fetch`, `push`) remain owned by the remote phase
-//! (§62, §65).
+//! mutations (scoped commits §72, branch wrappers §82) and the Phase 5
+//! networked operations: `fetch` (§62), `push_branch` (§65), and the
+//! strict fast-forward helpers the remote phase layers §63 rules on top
+//! of. Network activity exists ONLY in `fetch`/`push_branch`/`ls_remote_branch`
+//! (§8.8); authentication is delegated to system Git (§67) and
+//! credential-bearing URLs are redacted from every error.
 
 use std::fmt;
 use std::path::Path;
@@ -147,12 +150,12 @@ impl GitStatus {
 
 /// The Git backend abstraction (spec §68).
 ///
-/// Read operations are implemented this phase; the networked/mutating
-/// surface (`fetch`, `push`, `commit_paths`, `move_path`) is added by the
-/// phases that own those behaviors (§62, §65, §69, §73). All paths are
-/// repository-relative and `/`-separated (§119); implementations MUST use
-/// process argument arrays, never shell strings (§12), and MUST redact
-/// credential-bearing URLs from errors (§67).
+/// All paths are repository-relative and `/`-separated (§119);
+/// implementations MUST use process argument arrays, never shell strings
+/// (§12), and MUST redact credential-bearing URLs from errors (§67).
+/// Network operations are only `fetch`, `push_branch`, and
+/// `ls_remote_branch` (§8.8); there is no force-push or merge primitive —
+/// callers implement §63/§65 policy in beskar-core.
 pub trait GitBackend: fmt::Debug + Send + Sync {
     /// Resolves a branch, tag, or commit-ish to the exact full commit hash
     /// it names (§18, §19). Fails when the ref cannot resolve to a commit.
@@ -209,6 +212,57 @@ pub trait GitBackend: fmt::Debug + Send + Sync {
     /// `commit`'s history ever touched `path`.
     fn last_commit_info(&self, repo: &Path, commit: &str, path: &str)
     -> Result<Option<CommitInfo>>;
+
+    /// Fetches refs and tags from `remote` and prunes deleted
+    /// remote-tracking refs (spec §62.1-3 — all three are defaults, not
+    /// options). The only ref-mutating network operation besides
+    /// [`GitBackend::push_branch`] (§8.8); authentication is delegated to
+    /// system Git (§67) and never prompts (a credential helper that needs
+    /// interaction fails as [`Error::Auth`]).
+    fn fetch(&self, repo: &Path, remote: &str) -> Result<()>;
+
+    /// Pushes local branch `branch` to the same-named branch on `remote`
+    /// (spec §65.5), configuring tracking when `set_upstream` (§65.6).
+    /// There is deliberately no force parameter — Beskar v1 never
+    /// force-pushes (§65, §135.27). Non-fast-forward rejections by Git
+    /// itself surface as typed [`Error::Git`]; policy refusals happen in
+    /// beskar-core before this is called.
+    fn push_branch(
+        &self,
+        repo: &Path,
+        remote: &str,
+        branch: &str,
+        set_upstream: bool,
+    ) -> Result<()>;
+
+    /// Strict fast-forward of the checked-out branch to `commitish`
+    /// (spec §63). Refuses — leaving the branch and worktree untouched —
+    /// when that would require a merge commit (§8.9: never merges).
+    fn merge_ff_only(&self, repo: &Path, commitish: &str) -> Result<()>;
+
+    /// Moves a NON-checked-out branch ref to `new_head` only while it
+    /// still points at `expected_old` — a compare-and-swap fast-forward
+    /// with no working tree to update (spec §63 "non-checked-out branch:
+    /// strict fast-forward only"). Fails closed when the branch moved
+    /// since the caller computed the relation.
+    fn update_branch_ref(
+        &self,
+        repo: &Path,
+        branch: &str,
+        new_head: &str,
+        expected_old: &str,
+    ) -> Result<()>;
+
+    /// Whether `ancestor` is reachable from `descendant` — the
+    /// fast-forward admissibility check for push (spec §65.4). Fails when
+    /// either object is unknown locally (callers treat that as "refuse and
+    /// ask for a fetch").
+    fn is_ancestor(&self, repo: &Path, ancestor: &str, descendant: &str) -> Result<bool>;
+
+    /// The current head of `refs/heads/<branch>` on `remote`, read over
+    /// the network (spec §65.3 "determine remote state"). `None` when the
+    /// remote branch does not exist. Push-time only (§8.8).
+    fn ls_remote_branch(&self, repo: &Path, remote: &str, branch: &str) -> Result<Option<String>>;
 }
 
 /// v1 backend: delegates to the user's installed Git implementation
@@ -451,6 +505,98 @@ impl GitBackend for SystemGitBackend {
             })
         }))
     }
+
+    fn fetch(&self, repo: &Path, remote: &str) -> Result<()> {
+        reject_unsafe_arg(remote, "remote")?;
+        // §62.1-3: refs + tags, pruning deleted tracking refs by default.
+        let output = run_git(repo, &["fetch", "--prune", "--tags", remote])?;
+        if !output.status.success() {
+            return Err(network_failure("fetch", &output));
+        }
+        Ok(())
+    }
+
+    fn push_branch(
+        &self,
+        repo: &Path,
+        remote: &str,
+        branch: &str,
+        set_upstream: bool,
+    ) -> Result<()> {
+        reject_unsafe_arg(remote, "remote")?;
+        reject_unsafe_arg(branch, "branch")?;
+        let mut args: Vec<&str> = Vec::new();
+        args.push("push");
+        if set_upstream {
+            args.push("--set-upstream");
+        }
+        args.push(remote);
+        args.push(branch);
+        let output = run_git(repo, &args)?;
+        if !output.status.success() {
+            return Err(network_failure("push", &output));
+        }
+        Ok(())
+    }
+
+    fn merge_ff_only(&self, repo: &Path, commitish: &str) -> Result<()> {
+        reject_unsafe_arg(commitish, "commit-ish")?;
+        let output = run_git(repo, &["merge", "--ff-only", commitish])?;
+        if !output.status.success() {
+            return Err(git_failure("merge --ff-only", &output));
+        }
+        Ok(())
+    }
+
+    fn update_branch_ref(
+        &self,
+        repo: &Path,
+        branch: &str,
+        new_head: &str,
+        expected_old: &str,
+    ) -> Result<()> {
+        reject_unsafe_arg(branch, "branch")?;
+        reject_unsafe_arg(new_head, "commit")?;
+        reject_unsafe_arg(expected_old, "commit")?;
+        let ref_name = format!("refs/heads/{branch}");
+        // CAS form of update-ref: fails when the branch is no longer at
+        // `expected_old`, so a concurrent move can never be clobbered.
+        let output = run_git(repo, &["update-ref", &ref_name, new_head, expected_old])?;
+        if !output.status.success() {
+            return Err(git_failure("update-ref", &output));
+        }
+        Ok(())
+    }
+
+    fn is_ancestor(&self, repo: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+        reject_unsafe_arg(ancestor, "commit")?;
+        reject_unsafe_arg(descendant, "commit")?;
+        let output = run_git(repo, &["merge-base", "--is-ancestor", ancestor, descendant])?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            // Exit 1 is the documented "not an ancestor" answer.
+            Some(1) => Ok(false),
+            _ => Err(git_failure("merge-base --is-ancestor", &output)),
+        }
+    }
+
+    fn ls_remote_branch(&self, repo: &Path, remote: &str, branch: &str) -> Result<Option<String>> {
+        reject_unsafe_arg(remote, "remote")?;
+        reject_unsafe_arg(branch, "branch")?;
+        let spec = format!("refs/heads/{branch}");
+        let output = run_git(repo, &["ls-remote", remote, &spec])?;
+        if !output.status.success() {
+            return Err(network_failure("ls-remote", &output));
+        }
+        let text = String::from_utf8(output.stdout)
+            .map_err(|e| Error::Git(format!("non-UTF-8 git output: {e}")))?;
+        Ok(text
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().next())
+            .map(str::to_owned)
+            .filter(|oid| !oid.is_empty()))
+    }
 }
 
 impl SystemGitBackend {
@@ -528,6 +674,34 @@ fn git_failure(operation: &str, output: &std::process::Output) -> Error {
         "{operation} failed: {}",
         redacted.join("\n").trim()
     ))
+}
+
+/// Classifies a failed NETWORK operation (spec §67, §115): authentication
+/// problems surface as [`Error::Auth`], everything else as a redacted
+/// [`Error::Git`]. This is the backend translating process output into
+/// typed errors — UI shells classify by type, never by text (§115).
+fn network_failure(operation: &str, output: &std::process::Output) -> Error {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let auth_failed = [
+        "authentication failed",
+        "could not read Username",
+        "could not read Password",
+        // What GIT_TERMINAL_PROMPT=0 produces when a credential helper
+        // would need an interactive prompt (§67: prompts are disabled).
+        "terminal prompts disabled",
+        "Permission denied (publickey",
+        "no supported authentication",
+    ]
+    .iter()
+    .any(|needle| stderr.contains(needle));
+    if auth_failed {
+        let redacted: Vec<String> = stderr.lines().map(redact_url).collect();
+        return Error::Auth(format!(
+            "{operation} failed: {}",
+            redacted.join("\n").trim()
+        ));
+    }
+    git_failure(operation, output)
 }
 
 /// First line of UTF-8 command output.
@@ -914,6 +1088,251 @@ mod tests {
         assert_eq!(staged.staged.len(), 1);
         assert_eq!(staged.staged[0].index_status, 'M');
         assert!(staged.has_staged());
+    }
+
+    #[test]
+    fn fetch_pulls_refs_tags_and_prunes_deleted_tracking_refs() {
+        let seed = TestRepo::new();
+        write_file(seed.path(), "skills/testing/SKILL.md", "v1");
+        seed.commit_all("seed");
+        let server = TestRepo::new_bare();
+        git_ok(
+            seed.path(),
+            &["push", &server.path().to_string_lossy(), "main"],
+        );
+        let library = TestRepo::clone_from(server.path());
+        let backend = SystemGitBackend;
+        assert!(backend.fetch(library.path(), "origin").is_ok());
+
+        // New remote head and tag arrive together.
+        write_file(seed.path(), "skills/testing/SKILL.md", "v2");
+        let v2 = seed.commit_all("v2");
+        git_ok(seed.path(), &["tag", "v2"]);
+        git_ok(seed.path(), &["branch", "tmp"]);
+        git_ok(
+            seed.path(),
+            &[
+                "push",
+                &server.path().to_string_lossy(),
+                "main",
+                "tmp",
+                "v2",
+            ],
+        );
+        backend.fetch(library.path(), "origin").expect("fetch");
+        assert_eq!(
+            backend
+                .resolve_ref(library.path(), "refs/remotes/origin/main")
+                .expect("tracking ref"),
+            v2
+        );
+        assert!(backend.resolve_ref(library.path(), "v2").is_ok());
+
+        // §62.3: deleting the remote branch prunes its tracking ref.
+        git_ok(
+            seed.path(),
+            &["push", &server.path().to_string_lossy(), "--delete", "tmp"],
+        );
+        backend.fetch(library.path(), "origin").expect("fetch");
+        assert!(
+            backend
+                .resolve_ref(library.path(), "refs/remotes/origin/tmp")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn fetch_fails_for_unconfigured_remote() {
+        let repo = TestRepo::new();
+        write_file(repo.path(), "a.txt", "a");
+        repo.commit_all("seed");
+        let backend = SystemGitBackend;
+        let err = backend.fetch(repo.path(), "nowhere").expect_err("fails");
+        assert!(matches!(err, Error::Git(_)));
+    }
+
+    #[test]
+    fn push_branch_publishes_and_sets_upstream() {
+        let seed = TestRepo::new();
+        write_file(seed.path(), "skills/testing/SKILL.md", "v1");
+        seed.commit_all("seed");
+        let server = TestRepo::new_bare();
+        let library = TestRepo::clone_from(server.path());
+        write_file(library.path(), "skills/testing/SKILL.md", "v1");
+        let head = library.commit_all("local work");
+        let backend = SystemGitBackend;
+        backend
+            .push_branch(library.path(), "origin", "main", true)
+            .expect("push");
+        // The bare server now holds the branch (§65.5) and tracking is
+        // configured (§65.6).
+        let remote_head = backend
+            .ls_remote_branch(library.path(), "origin", "main")
+            .expect("ls-remote")
+            .expect("remote branch exists");
+        assert_eq!(remote_head, head);
+        let branches = backend.list_branches(library.path()).expect("branches");
+        assert_eq!(branches[0].upstream.as_deref(), Some("origin/main"));
+    }
+
+    #[test]
+    fn push_branch_surfaces_non_fast_forward_rejections() {
+        let seed = TestRepo::new();
+        write_file(seed.path(), "skills/testing/SKILL.md", "v1");
+        seed.commit_all("seed");
+        let server = TestRepo::new_bare();
+        git_ok(
+            seed.path(),
+            &["push", &server.path().to_string_lossy(), "main"],
+        );
+        let library = TestRepo::clone_from(server.path());
+        // Diverge: a commit on the remote the library does not have.
+        write_file(seed.path(), "skills/testing/SKILL.md", "upstream");
+        seed.commit_all("upstream work");
+        git_ok(
+            seed.path(),
+            &["push", &server.path().to_string_lossy(), "main"],
+        );
+        write_file(library.path(), "skills/other/SKILL.md", "local");
+        library.commit_all("local work");
+        let backend = SystemGitBackend;
+        let err = backend
+            .push_branch(library.path(), "origin", "main", false)
+            .expect_err("non-ff push is rejected");
+        assert!(matches!(err, Error::Git(_)));
+    }
+
+    #[test]
+    fn merge_ff_only_fast_forwards_checked_out_branch_and_refuses_divergence() {
+        let seed = TestRepo::new();
+        write_file(seed.path(), "skills/testing/SKILL.md", "v1");
+        seed.commit_all("seed");
+        let server = TestRepo::new_bare();
+        git_ok(
+            seed.path(),
+            &["push", &server.path().to_string_lossy(), "main"],
+        );
+        let library = TestRepo::clone_from(server.path());
+        let backend = SystemGitBackend;
+
+        // Upstream advances; the clean checked-out branch strict-ffs.
+        write_file(seed.path(), "skills/testing/SKILL.md", "v2");
+        let v2 = seed.commit_all("upstream");
+        git_ok(
+            seed.path(),
+            &["push", &server.path().to_string_lossy(), "main"],
+        );
+        backend.fetch(library.path(), "origin").expect("fetch");
+        backend
+            .merge_ff_only(library.path(), "refs/remotes/origin/main")
+            .expect("ff");
+        assert_eq!(
+            backend.resolve_ref(library.path(), "main").expect("head"),
+            v2
+        );
+
+        // Diverged: --ff-only refuses and leaves HEAD untouched (§8.9).
+        write_file(library.path(), "skills/local/SKILL.md", "local");
+        let local = library.commit_all("local");
+        write_file(seed.path(), "skills/testing/SKILL.md", "v3");
+        let v3 = seed.commit_all("upstream again");
+        git_ok(
+            seed.path(),
+            &["push", &server.path().to_string_lossy(), "main"],
+        );
+        backend.fetch(library.path(), "origin").expect("fetch");
+        assert!(
+            backend
+                .merge_ff_only(library.path(), "refs/remotes/origin/main")
+                .is_err()
+        );
+        assert_eq!(
+            backend.resolve_ref(library.path(), "main").expect("head"),
+            local
+        );
+        assert_ne!(local, v3);
+    }
+
+    #[test]
+    fn update_branch_ref_is_a_compare_and_swap_move() {
+        let seed = TestRepo::new();
+        write_file(seed.path(), "skills/testing/SKILL.md", "v1");
+        let v1 = seed.commit_all("v1");
+        // `side` starts at v1 while `main` advances to v2.
+        git_ok(seed.path(), &["branch", "side"]);
+        write_file(seed.path(), "skills/testing/SKILL.md", "v2");
+        let v2 = seed.commit_all("v2");
+        let backend = SystemGitBackend;
+        // Correct expectation: the ref moves.
+        backend
+            .update_branch_ref(seed.path(), "side", &v2, &v1)
+            .expect("cas move");
+        assert_eq!(backend.resolve_ref(seed.path(), "side").expect("side"), v2);
+        // Stale expectation: refused, ref untouched.
+        write_file(seed.path(), "skills/testing/SKILL.md", "v3");
+        let v3 = seed.commit_all("v3");
+        assert!(
+            backend
+                .update_branch_ref(seed.path(), "side", &v3, &v1)
+                .is_err()
+        );
+        assert_eq!(backend.resolve_ref(seed.path(), "side").expect("side"), v2);
+    }
+
+    #[test]
+    fn is_ancestor_answers_reachability() {
+        let repo = TestRepo::new();
+        write_file(repo.path(), "a.txt", "1");
+        let first = repo.commit_all("first");
+        write_file(repo.path(), "a.txt", "2");
+        let second = repo.commit_all("second");
+        let backend = SystemGitBackend;
+        assert!(
+            backend
+                .is_ancestor(repo.path(), &first, &second)
+                .expect("ancestor")
+        );
+        assert!(
+            !backend
+                .is_ancestor(repo.path(), &second, &first)
+                .expect("not")
+        );
+        // An object unknown locally cannot be evaluated — callers refuse
+        // (§65: never push without a verified fast-forward).
+        assert!(
+            backend
+                .is_ancestor(
+                    repo.path(),
+                    "0123456789012345678901234567890123456789",
+                    &second
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn ls_remote_branch_reports_absent_remote_branches() {
+        let seed = TestRepo::new();
+        write_file(seed.path(), "skills/testing/SKILL.md", "v1");
+        seed.commit_all("seed");
+        let server = TestRepo::new_bare();
+        git_ok(
+            seed.path(),
+            &["push", &server.path().to_string_lossy(), "main"],
+        );
+        let backend = SystemGitBackend;
+        assert_eq!(
+            backend
+                .ls_remote_branch(seed.path(), &server.path().to_string_lossy(), "main")
+                .expect("ls-remote"),
+            Some(seed.head())
+        );
+        assert_eq!(
+            backend
+                .ls_remote_branch(seed.path(), &server.path().to_string_lossy(), "absent")
+                .expect("ls-remote"),
+            None
+        );
     }
 
     #[test]

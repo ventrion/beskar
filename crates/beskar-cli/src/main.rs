@@ -20,6 +20,7 @@ use beskar_core::lifecycle::{
 };
 use beskar_core::reconcile::ReconcileOptions;
 use beskar_core::registry::Adapter;
+use beskar_core::remote::{FetchRequest, PushRequest, Remote};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
 
 /// Program exit codes (spec §94). The full contract is defined here so all
@@ -195,6 +196,49 @@ enum Command {
         #[arg(long)]
         best_effort: bool,
         /// Plan and validate without writing anything (§91).
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit only structured JSON on stdout (§92, §130).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Fetch refs and tags from a library remote, then fast-forward every
+    /// relevant local branch — never merges or rebases (spec §62-§64,
+    /// §8.8: the only networked read operation).
+    Fetch {
+        /// Remote to fetch from (default: origin).
+        #[arg(long)]
+        remote: Option<String>,
+        /// Explicitly request pruning; deleted remote-tracking refs are
+        /// pruned by default (§62.3), so this changes nothing.
+        #[arg(long)]
+        prune: bool,
+        /// Plan from the last-fetched state — contacts no remote and
+        /// writes nothing (§91).
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit only structured JSON on stdout (§92, §130).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Push a library branch to a remote; refuses non-fast-forward pushes
+    /// and dirty libraries, never force-pushes (spec §65, §66, §135.27).
+    Push {
+        /// Branch to push (default: the library's current branch).
+        branch: Option<String>,
+        /// Remote to push to (default: the branch's upstream remote, else
+        /// origin).
+        #[arg(long)]
+        remote: Option<String>,
+        /// Configure the branch to track the pushed remote branch (§65.6).
+        #[arg(long)]
+        set_upstream: bool,
+        /// Push only already-created commits despite uncommitted library
+        /// changes (§66).
+        #[arg(long)]
+        allow_dirty: bool,
+        /// Plan from the last-fetched state — contacts no remote and
+        /// writes nothing (§91).
         #[arg(long)]
         dry_run: bool,
         /// Emit only structured JSON on stdout (§92, §130).
@@ -579,6 +623,11 @@ impl Ctx {
         LibraryEditor::from_env().map_err(|err| self.fail(&err))
     }
 
+    /// Opens the remote-synchronization session (§86).
+    fn remote(&self) -> Result<Remote, ExitCode> {
+        Remote::from_env().map_err(|err| self.fail(&err))
+    }
+
     /// The exit code for a finished mutation outcome: blocked plans demand
     /// action (§94 exit 3); otherwise success.
     fn done(&self, outcome: &beskar_core::lifecycle::OperationOutcome, dry_run: bool) -> ExitCode {
@@ -869,6 +918,81 @@ fn dispatch(command: Command) -> ExitCode {
             };
             match lifecycle.update_one(request) {
                 Ok(outcome) => ctx.done(&outcome, dry_run),
+                Err(err) => ctx.fail(&err),
+            }
+        }
+        Command::Fetch {
+            remote,
+            prune: _,
+            dry_run,
+            json,
+        } => {
+            let ctx = Ctx {
+                command: "fetch",
+                json,
+            };
+            // §62.3: pruning deleted tracking refs is the default; --prune
+            // merely states it explicitly.
+            let sync = match ctx.remote() {
+                Ok(sync) => sync,
+                Err(code) => return code,
+            };
+            let request = FetchRequest {
+                remote: remote
+                    .as_deref()
+                    .unwrap_or(beskar_core::remote::DEFAULT_REMOTE),
+                dry_run,
+            };
+            match sync.fetch(request) {
+                Ok(outcome) => {
+                    if json {
+                        println!("{}", json_out::fetch(&outcome));
+                    } else {
+                        render::fetch(&outcome);
+                    }
+                    // §94: divergence / dirty checked-out branches demand
+                    // action (exit 3); everything else succeeded.
+                    if outcome.is_action_required() {
+                        ExitCode::from(exit_codes::ACTION_REQUIRED)
+                    } else {
+                        ExitCode::from(exit_codes::SUCCESS)
+                    }
+                }
+                Err(err) => ctx.fail(&err),
+            }
+        }
+        Command::Push {
+            branch,
+            remote,
+            set_upstream,
+            allow_dirty,
+            dry_run,
+            json,
+        } => {
+            let ctx = Ctx {
+                command: "push",
+                json,
+            };
+            let sync = match ctx.remote() {
+                Ok(sync) => sync,
+                Err(code) => return code,
+            };
+            let request = PushRequest {
+                branch: branch.as_deref(),
+                remote: remote.as_deref(),
+                set_upstream,
+                allow_dirty,
+                dry_run,
+            };
+            match sync.push(request) {
+                Ok(outcome) => {
+                    if json {
+                        println!("{}", json_out::push(&outcome));
+                    } else {
+                        render::push(&outcome);
+                    }
+                    ExitCode::from(exit_codes::SUCCESS)
+                }
                 Err(err) => ctx.fail(&err),
             }
         }

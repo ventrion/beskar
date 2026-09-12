@@ -15,6 +15,7 @@ use beskar_core::lifecycle::{InstallationReport, OperationOutcome, UpdateAllOutc
 use beskar_core::plan::{PlanAction, ReconciliationPlan};
 use beskar_core::profile::Profile;
 use beskar_core::registry::Installation;
+use beskar_core::remote::{BranchSyncState, FetchOutcome, PushOutcome, PushState, RefSource};
 use beskar_core::status::InstallationStatus;
 
 use crate::json_out::blocker_kind;
@@ -688,6 +689,156 @@ pub fn branches(branches: &[BranchDisplay]) {
         }
         println!("{line}");
     }
+}
+
+/// `beskar fetch` (§62-§64).
+pub fn fetch(outcome: &FetchOutcome) {
+    if outcome.dry_run {
+        println!(
+            "Fetch plan for {:?} (dry-run — nothing contacted or written):",
+            outcome.remote
+        );
+    } else {
+        println!("Fetched {:?} from {}:", outcome.remote, outcome.remote_url);
+    }
+    if outcome.branches.is_empty() {
+        println!("  No relevant local branches to synchronize.");
+    }
+    for branch in &outcome.branches {
+        let relevance = branch
+            .relevance
+            .iter()
+            .map(describe_ref_source)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut line = format!("  {:<24} {}", branch.branch, describe_sync_state(branch));
+        if !relevance.is_empty() {
+            line.push_str(&format!("  [{relevance}]"));
+        }
+        println!("{line}");
+        if let Some(note) = &branch.note {
+            println!("      {note}");
+        }
+    }
+    let diverged = outcome
+        .branches
+        .iter()
+        .filter(|b| b.state == BranchSyncState::Diverged)
+        .count();
+    let moved = outcome
+        .branches
+        .iter()
+        .filter(|b| b.state == BranchSyncState::FastForwarded)
+        .count();
+    println!();
+    println!(
+        "{} relevant branche(s); {moved} fast-forwarded; {diverged} diverged",
+        outcome.branches.len()
+    );
+    if outcome.is_action_required() {
+        println!(
+            "Action required: diverged branches are never merged — integrate \
+             them manually (§63)."
+        );
+    }
+}
+
+/// `beskar push` (§65, §66).
+pub fn push(outcome: &PushOutcome) {
+    match outcome.state {
+        PushState::Pushed => {
+            let created = if outcome.created_remote_branch {
+                " (new remote branch)"
+            } else {
+                ""
+            };
+            println!(
+                "Pushed {:?} to {:?}{created}.",
+                outcome.branch, outcome.remote
+            );
+        }
+        PushState::Current => {
+            println!(
+                "{:?} is up to date on {:?} — nothing to push.",
+                outcome.branch, outcome.remote
+            );
+        }
+        PushState::Planned => {
+            let commits = match outcome.ahead {
+                Some(ahead) => format!("({ahead} commit(s)) "),
+                None => String::new(),
+            };
+            println!(
+                "Would push {:?} to {:?} {commits}(dry-run — nothing pushed).",
+                outcome.branch, outcome.remote
+            );
+        }
+        PushState::Unverified => {
+            println!(
+                "The remote state of {:?} on {:?} is unknown offline; a real \
+                 push will consult the remote.",
+                outcome.branch, outcome.remote
+            );
+        }
+    }
+    match (&outcome.upstream_before, &outcome.upstream_after) {
+        (_, Some(after)) if Some(after) != outcome.upstream_before.as_ref() => {
+            println!("Upstream: {after}");
+        }
+        (Some(before), _) => println!("Upstream: {before}"),
+        (None, _) => {}
+    }
+}
+
+/// Why a branch was relevant (§62.4, §64).
+fn describe_ref_source(source: &RefSource) -> String {
+    match source {
+        RefSource::DefaultRef => "default_ref".to_owned(),
+        RefSource::CheckedOut => "checked out".to_owned(),
+        RefSource::Installation { workspace, target } => {
+            format!("installation {} ({target})", workspace.display())
+        }
+    }
+}
+
+/// The §63 rule outcome for one branch, with the relation data.
+fn describe_sync_state(branch: &beskar_core::remote::BranchOutcome) -> String {
+    let relation = match (branch.ahead, branch.behind) {
+        (Some(ahead), Some(behind)) if ahead != 0 || behind != 0 => {
+            format!(" (+{ahead}/-{behind}) ")
+        }
+        _ => String::new(),
+    };
+    let short = |head: &Option<String>| {
+        head.as_ref()
+            .map(|hash| hash.chars().take(7).collect::<String>())
+            .unwrap_or_else(|| "?".to_owned())
+    };
+    let state = match branch.state {
+        BranchSyncState::Current => "current".to_owned(),
+        BranchSyncState::FastForwarded => {
+            format!(
+                "fast-forwarded {} -> {}",
+                short(&branch.old_head),
+                short(&branch.new_head)
+            )
+        }
+        BranchSyncState::Planned => {
+            format!(
+                "would fast-forward {} -> {}",
+                short(&branch.old_head),
+                short(&branch.new_head)
+            )
+        }
+        BranchSyncState::Ahead => "ahead; untouched".to_owned(),
+        BranchSyncState::Diverged => "diverged; untouched — integrate manually".to_owned(),
+        BranchSyncState::DirtyCheckedOut => {
+            "behind, but checked out with local changes — not moved".to_owned()
+        }
+        BranchSyncState::Unpublished => "no remote branch".to_owned(),
+        BranchSyncState::Unknown => "remote state unknown".to_owned(),
+    };
+    format!("{state}{relation}")
 }
 
 /// `beskar doctor` (§83).

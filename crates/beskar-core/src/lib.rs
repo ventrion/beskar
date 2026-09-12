@@ -25,6 +25,7 @@ pub mod plan;
 pub mod profile;
 pub mod reconcile;
 pub mod registry;
+pub mod remote;
 pub mod skill;
 pub mod stamp;
 pub mod status;

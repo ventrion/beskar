@@ -12,7 +12,10 @@ use crate::TempRoot;
 
 /// A disposable local Git repository.
 pub struct TestRepo {
-    root: TempRoot,
+    _root: TempRoot,
+    /// The repository itself — the temp root for `new`/`new_bare`, or the
+    /// `clone/` child for [`TestRepo::clone_from`].
+    workdir: std::path::PathBuf,
 }
 
 impl TestRepo {
@@ -28,12 +31,54 @@ impl TestRepo {
             root.path(),
             &["config", "user.email", "beskar@example.invalid"],
         );
-        Self { root }
+        let workdir = root.path().to_path_buf();
+        Self {
+            _root: root,
+            workdir,
+        }
     }
 
-    /// Path of the repository working tree.
+    /// Creates a bare repository — a push/fetch target for remote-sync
+    /// tests (spec §125: real temp Git repositories, no network).
+    pub fn new_bare() -> Self {
+        let root = TempRoot::new();
+        git_ok(root.path(), &["init", "--bare", "--initial-branch=main"]);
+        let workdir = root.path().to_path_buf();
+        Self {
+            _root: root,
+            workdir,
+        }
+    }
+
+    /// Clones `source` into the temp root with a local, hermetic identity;
+    /// the clone's `origin` remote points at `source`. Works for bare and
+    /// non-bare sources.
+    pub fn clone_from(source: &Path) -> Self {
+        let root = TempRoot::new();
+        let workdir = root.path().join("clone");
+        git_ok(
+            root.path(),
+            &[
+                "clone",
+                &source.to_string_lossy(),
+                &workdir.to_string_lossy(),
+            ],
+        );
+        git_ok(&workdir, &["config", "user.name", "Beskar Tests"]);
+        git_ok(
+            &workdir,
+            &["config", "user.email", "beskar@example.invalid"],
+        );
+        Self {
+            _root: root,
+            workdir,
+        }
+    }
+
+    /// Path of the repository working tree (the bare directory for
+    /// [`TestRepo::new_bare`]).
     pub fn path(&self) -> &Path {
-        self.root.path()
+        &self.workdir
     }
 
     /// Stage all changes and create a commit with `message`.
@@ -63,7 +108,9 @@ fn isolated_env(command: &mut Command) {
         .env("GIT_TERMINAL_PROMPT", "0");
 }
 
-/// Runs git in `dir`, returning trimmed stdout; panics on failure.
+/// Runs git in `dir`, returning trimmed stdout; panics on failure. Local
+/// path arguments are fine; `file://` URLs would need
+/// `protocol.file.allow` since Git 2.38 and are intentionally avoided.
 pub fn git_ok(dir: &Path, args: &[&str]) -> String {
     let mut command = Command::new("git");
     isolated_env(&mut command);
@@ -99,6 +146,23 @@ mod tests {
         let first = repo.commit_all("beskar: seed");
         assert_eq!(repo.head(), first);
         assert_eq!(first.len(), 40);
+    }
+
+    #[test]
+    fn bare_repos_accept_pushes_and_clones() {
+        let seed = TestRepo::new();
+        write_file(seed.path(), "skills/testing/SKILL.md", "x");
+        seed.commit_all("seed");
+        let server = TestRepo::new_bare();
+        git_ok(
+            seed.path(),
+            &["push", &server.path().to_string_lossy(), "main"],
+        );
+        let clone = TestRepo::clone_from(server.path());
+        assert_eq!(clone.head(), seed.head());
+        // The clone's origin points back at the bare server.
+        let origin = git_ok(clone.path(), &["remote", "get-url", "origin"]);
+        assert_eq!(origin, server.path().to_string_lossy());
     }
 
     #[test]

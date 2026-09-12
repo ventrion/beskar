@@ -293,6 +293,63 @@ fn owners(owners: &[(ProfileId, String)]) -> Value {
     )
 }
 
+// ---- remote synchronization (spec §62-§67, §130) -----------------------------
+
+/// `beskar fetch` (§62): the per-branch §63 outcomes plus the serializable
+/// plan (§89). `ok` is false when any relevant branch demands action
+/// (diverged, dirty checked-out) — matching the exit code.
+pub fn fetch(outcome: &beskar_core::remote::FetchOutcome) -> String {
+    let branches: Vec<Value> = outcome
+        .branches
+        .iter()
+        .map(|branch| {
+            json!({
+                "branch": branch.branch,
+                "relevance": branch.relevance,
+                "state": branch.state,
+                "ahead": branch.ahead,
+                "behind": branch.behind,
+                "old_head": branch.old_head,
+                "new_head": branch.new_head,
+                "note": branch.note,
+            })
+        })
+        .collect();
+    envelope(
+        "fetch",
+        !outcome.is_action_required(),
+        json!({
+            "remote": outcome.remote,
+            "remote_url": outcome.remote_url,
+            "fetched": outcome.fetched,
+            "dry_run": outcome.dry_run,
+            "branches": branches,
+            "plan": outcome.plan,
+        }),
+    )
+}
+
+/// `beskar push` (§65): stable state identifiers plus the serializable
+/// plan (§89). The remote URL is credential-redacted (§30, §67).
+pub fn push(outcome: &beskar_core::remote::PushOutcome) -> String {
+    envelope(
+        "push",
+        true,
+        json!({
+            "branch": outcome.branch,
+            "remote": outcome.remote,
+            "remote_url": outcome.remote_url,
+            "state": outcome.state,
+            "upstream_before": outcome.upstream_before,
+            "upstream_after": outcome.upstream_after,
+            "created_remote_branch": outcome.created_remote_branch,
+            "ahead": outcome.ahead,
+            "dry_run": outcome.dry_run,
+            "plan": outcome.plan,
+        }),
+    )
+}
+
 // ---- library editing (spec §69-§83, §130) -----------------------------------
 
 /// One library-editing outcome: the serializable plan (§89), execution and
