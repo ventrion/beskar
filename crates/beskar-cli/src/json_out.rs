@@ -6,11 +6,17 @@
 //! core serde types. Human prose is not stable API; these shapes are.
 
 use beskar_core::Error;
+use beskar_core::doctor::DoctorReport;
+use beskar_core::editing::{
+    BranchDisplay, InstallationRef, LibraryOutcome, LibraryPlan, ProfileValidation, SkillDetail,
+    SkillListing, SkillRemovalOutcome,
+};
 use beskar_core::ids::ProfileId;
 use beskar_core::lifecycle::{
     InstallationReport, InstallationUpdate, OperationOutcome, UpdateAllOutcome, WhyAnswer,
 };
 use beskar_core::plan::{BlockerKind, ReconciliationPlan};
+use beskar_core::profile::Profile;
 use beskar_core::registry::Installation;
 use beskar_core::status::InstallationStatus;
 use serde_json::{Map, Value, json};
@@ -284,5 +290,153 @@ fn owners(owners: &[(ProfileId, String)]) -> Value {
             .iter()
             .map(|(id, name)| json!({"profile_id": id, "profile_name": name}))
             .collect(),
+    )
+}
+
+// ---- library editing (spec §69-§83, §130) -----------------------------------
+
+/// One library-editing outcome: the serializable plan (§89), execution and
+/// commit identity (§72), and advisories.
+pub fn library_outcome(command: &str, outcome: &LibraryOutcome, dry_run: bool) -> String {
+    let mut fields = Map::new();
+    fields.insert("dry_run".into(), json!(dry_run));
+    fields.insert("executed".into(), json!(outcome.executed));
+    fields.insert("commit".into(), json!(outcome.commit));
+    fields.insert("message".into(), json!(outcome.plan.message));
+    fields.insert("ops".into(), plan_ops(&outcome.plan));
+    if !outcome.warnings.is_empty() {
+        fields.insert("warnings".into(), json!(outcome.warnings));
+    }
+    envelope(command, true, Value::Object(fields))
+}
+
+/// `beskar skill remove` adds the referencing profiles (§75).
+pub fn skill_removal(command: &str, outcome: &SkillRemovalOutcome, dry_run: bool) -> String {
+    let mut fields = Map::new();
+    fields.insert("dry_run".into(), json!(dry_run));
+    fields.insert("executed".into(), json!(outcome.outcome.executed));
+    fields.insert("commit".into(), json!(outcome.outcome.commit));
+    fields.insert("message".into(), json!(outcome.outcome.plan.message));
+    fields.insert("ops".into(), plan_ops(&outcome.outcome.plan));
+    fields.insert(
+        "referencing_profiles".into(),
+        json!(outcome.referencing_profiles),
+    );
+    if !outcome.outcome.warnings.is_empty() {
+        fields.insert("warnings".into(), json!(outcome.outcome.warnings));
+    }
+    envelope(command, true, Value::Object(fields))
+}
+
+fn plan_ops(plan: &LibraryPlan) -> Value {
+    Value::Array(
+        plan.ops
+            .iter()
+            .map(|op| {
+                let mut map = Map::new();
+                map.insert("kind".into(), json!(op.kind));
+                map.insert("path".into(), json!(op.path));
+                if let Some(from) = &op.from {
+                    map.insert("from".into(), json!(from));
+                }
+                Value::Object(map)
+            })
+            .collect(),
+    )
+}
+
+/// `beskar skill list` (§80).
+pub fn skill_list(command: &str, listings: &[SkillListing]) -> String {
+    let skills: Vec<Value> = listings
+        .iter()
+        .map(|listing| {
+            json!({
+                "name": listing.name,
+                "path": listing.path,
+                "bucket": listing.bucket,
+                "description": listing.description,
+                "tags": listing.tags,
+                "rank": listing.rank,
+                "profiles": listing.profiles,
+                "last_commit": listing.last_commit,
+            })
+        })
+        .collect();
+    envelope(command, true, json!({"skills": skills}))
+}
+
+/// `beskar skill show`.
+pub fn skill_show(command: &str, detail: &SkillDetail) -> String {
+    let mut value = serde_json::to_value(detail).unwrap_or(Value::Null);
+    if let Value::Object(map) = &mut value {
+        map.insert("files".into(), json!(detail.files));
+    }
+    envelope(command, true, value)
+}
+
+/// `beskar profile list` (§76).
+pub fn profile_list(command: &str, profiles: &[Profile]) -> String {
+    let entries: Vec<Value> = profiles
+        .iter()
+        .map(|profile| {
+            json!({
+                "id": profile.id,
+                "name": profile.name,
+                "description": profile.description,
+                "skills": profile.skills,
+            })
+        })
+        .collect();
+    envelope(command, true, json!({"profiles": entries}))
+}
+
+/// `beskar profile show` with the local installations attaching it (§76).
+pub fn profile_show(command: &str, profile: &Profile, attached: &[InstallationRef]) -> String {
+    envelope(
+        command,
+        true,
+        json!({
+            "id": profile.id,
+            "name": profile.name,
+            "description": profile.description,
+            "skills": profile.skills,
+            "attached_installations": attached,
+        }),
+    )
+}
+
+/// `beskar profile validate` (§76). Returns the document plus validity.
+pub fn profile_validate(command: &str, reports: &[ProfileValidation]) -> (String, bool) {
+    let valid = reports.iter().all(|report| report.valid);
+    (
+        envelope(command, valid, json!({"valid": valid, "profiles": reports})),
+        valid,
+    )
+}
+
+/// `beskar library status` (§81).
+pub fn library_status(command: &str, report: &beskar_core::editing::LibraryStatusReport) -> String {
+    envelope(
+        command,
+        true,
+        serde_json::to_value(report).unwrap_or(Value::Null),
+    )
+}
+
+/// `beskar library branch` (§82).
+pub fn branches(command: &str, branches: &[BranchDisplay]) -> String {
+    envelope(command, true, json!({"branches": branches}))
+}
+
+/// `beskar doctor` (§83). Returns the document plus health.
+pub fn doctor(command: &str, report: &DoctorReport) -> (String, bool) {
+    let healthy = !report.has_errors();
+    (
+        envelope(
+            command,
+            healthy,
+            json!({"healthy": healthy, "checks": report.checks}),
+        ),
+        healthy,
     )
 }

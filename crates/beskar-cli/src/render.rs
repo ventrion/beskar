@@ -4,10 +4,16 @@
 //! API (§130) — the stable identifiers (state ids, blocker kinds) come from
 //! the core types so humans and machines read the same vocabulary.
 
+use beskar_core::doctor::{DoctorReport, Severity};
 use beskar_core::drift::DriftState;
+use beskar_core::editing::{
+    BranchDisplay, InstallationRef, LibraryOutcome, ProfileValidation, SkillDetail, SkillListing,
+    SkillRemovalOutcome,
+};
 use beskar_core::ids::ProfileId;
 use beskar_core::lifecycle::{InstallationReport, OperationOutcome, UpdateAllOutcome, WhyAnswer};
 use beskar_core::plan::{PlanAction, ReconciliationPlan};
+use beskar_core::profile::Profile;
 use beskar_core::registry::Installation;
 use beskar_core::status::InstallationStatus;
 
@@ -404,4 +410,314 @@ pub fn update_all(outcome: &UpdateAllOutcome) {
     let applied = outcome.results.iter().filter(|r| r.executed).count();
     let skipped = outcome.results.iter().filter(|r| r.skipped).count();
     println!("{applied} applied, {skipped} skipped");
+}
+
+// ---- library editing (spec §69-§83, §132) ------------------------------------
+
+fn describe_op(kind: beskar_core::editing::LibraryOpKind) -> &'static str {
+    match kind {
+        beskar_core::editing::LibraryOpKind::Write => "write",
+        beskar_core::editing::LibraryOpKind::Edit => "edit",
+        beskar_core::editing::LibraryOpKind::Replace => "replace",
+        beskar_core::editing::LibraryOpKind::Remove => "remove",
+        beskar_core::editing::LibraryOpKind::Move => "move",
+    }
+}
+
+/// Renders one library-editing outcome (plan, execution, commit, warnings).
+pub fn library_outcome(command: &str, outcome: &LibraryOutcome, dry_run: bool) {
+    let plan = &outcome.plan;
+    if plan.is_no_op() {
+        println!("Nothing to do — the library already has that state.");
+        return;
+    }
+    if dry_run {
+        println!("Dry run — no changes written (§91):");
+    } else {
+        println!("{command}:");
+    }
+    for op in &plan.ops {
+        let mut line = format!("  {:<8} {}", describe_op(op.kind), op.path);
+        if let Some(from) = &op.from {
+            line.push_str(&format!("  (from {from})"));
+        }
+        println!("{line}");
+    }
+    if dry_run {
+        println!("Commit message would be: {}", plan.message);
+    } else {
+        match &outcome.commit {
+            Some(commit) => println!("Committed as {commit}: {}", plan.message),
+            None => println!("No commit needed — the working tree already matched."),
+        }
+    }
+    for warning in &outcome.warnings {
+        eprintln!("warning: {warning}");
+    }
+}
+
+/// `beskar skill remove` (§75).
+pub fn skill_removal(outcome: &SkillRemovalOutcome, dry_run: bool) {
+    if !outcome.referencing_profiles.is_empty() {
+        println!(
+            "Removed from profiles: {}",
+            outcome.referencing_profiles.join(", ")
+        );
+    }
+    library_outcome("skill remove", &outcome.outcome, dry_run);
+}
+
+/// `beskar skill list` (§80).
+pub fn skill_list(listings: &[SkillListing]) {
+    if listings.is_empty() {
+        println!("No skills in the library.");
+        return;
+    }
+    let width = listings
+        .iter()
+        .map(|listing| listing.name.as_str().len())
+        .max()
+        .unwrap_or(4)
+        .max(12);
+    for listing in listings {
+        let mut line = format!(
+            "{:<width$}  {:<22}",
+            listing.name.as_str(),
+            if listing.bucket.is_empty() {
+                "-"
+            } else {
+                &listing.bucket
+            },
+            width = width
+        );
+        if let Some(rank) = listing.rank {
+            line.push_str(&format!(" r{rank}"));
+        }
+        if !listing.tags.is_empty() {
+            line.push_str(&format!("  [{}]", listing.tags.join(", ")));
+        }
+        if !listing.profiles.is_empty() {
+            line.push_str(&format!("  {{{}}}", listing.profiles.join(", ")));
+        }
+        println!("{}  {}", line.trim_end(), listing.description);
+    }
+    println!();
+    println!("{} skills", listings.len());
+}
+
+/// `beskar skill show`.
+pub fn skill_show(detail: &SkillDetail) {
+    let listing = &detail.listing;
+    println!("{}", listing.name);
+    println!("  path:      {}", listing.path);
+    println!(
+        "  bucket:    {}",
+        if listing.bucket.is_empty() {
+            "-"
+        } else {
+            &listing.bucket
+        }
+    );
+    println!("  description: {}", listing.description);
+    if !listing.tags.is_empty() {
+        println!("  tags:      {}", listing.tags.join(", "));
+    }
+    if let Some(rank) = listing.rank {
+        println!("  rank:      {rank}");
+    }
+    if let Some(notes) = &listing.notes {
+        println!("  notes:     {notes}");
+    }
+    if !listing.profiles.is_empty() {
+        println!("  profiles:  {}", listing.profiles.join(", "));
+    }
+    if let Some(commit) = &listing.last_commit {
+        println!("  last commit: {} ({})", commit.hash, commit.unix_time);
+    }
+    println!("  files:");
+    for file in &detail.files {
+        println!("    {file}");
+    }
+}
+
+/// `beskar profile list` (§76).
+pub fn profile_list(profiles: &[Profile]) {
+    if profiles.is_empty() {
+        println!("No profiles in the library.");
+        return;
+    }
+    let width = profiles
+        .iter()
+        .map(|profile| profile.name.len())
+        .max()
+        .unwrap_or(7)
+        .max(8);
+    for profile in profiles {
+        println!(
+            "{:<width$}  {:>2} skills  {}",
+            profile.name,
+            profile.skills.len(),
+            profile.description.as_deref().unwrap_or("-"),
+            width = width
+        );
+    }
+}
+
+/// `beskar profile show` (§76) with local attachment info (§98).
+pub fn profile_show(profile: &Profile, attached: &[InstallationRef]) {
+    println!("{}", profile.name);
+    println!("  id:          {}", profile.id);
+    println!(
+        "  description: {}",
+        profile.description.as_deref().unwrap_or("-")
+    );
+    println!("  skills:");
+    if profile.skills.is_empty() {
+        println!("    (none)");
+    }
+    for skill in &profile.skills {
+        println!("    {skill}");
+    }
+    if attached.is_empty() {
+        println!("  attached installations: (none)");
+    } else {
+        println!("  attached installations:");
+        for installation in attached {
+            println!(
+                "    {} ({}) @ {}",
+                installation.workspace.display(),
+                installation.target,
+                installation.source_ref
+            );
+        }
+    }
+}
+
+/// `beskar profile validate` (§76).
+pub fn profile_validate(reports: &[ProfileValidation]) {
+    for report in reports {
+        let marker = if report.valid { "ok" } else { "!" };
+        println!("{marker} {} ({})", report.profile, report.profile);
+        if let Some(id) = &report.id {
+            println!("   id: {id}");
+        }
+        for problem in &report.problems {
+            println!("   problem: {problem}");
+        }
+        for missing in &report.missing_skills {
+            println!("   missing skill: {missing}");
+        }
+    }
+    let invalid = reports.iter().filter(|report| !report.valid).count();
+    println!();
+    if invalid == 0 {
+        println!("{} profile(s) valid", reports.len());
+    } else {
+        println!("{invalid} profile(s) with problems");
+    }
+}
+
+/// `beskar library status` (§81).
+pub fn library_status(report: &beskar_core::editing::LibraryStatusReport) {
+    println!("{}", report.path.display());
+    println!("  library id:   {}", report.library_id);
+    println!(
+        "  branch:       {}",
+        report.branch.as_deref().unwrap_or("(detached HEAD)")
+    );
+    println!(
+        "  HEAD:         {}",
+        report.head.as_deref().unwrap_or("(no commits yet)")
+    );
+    if let Some(upstream) = &report.upstream {
+        println!("  upstream:     {upstream}");
+        if let (Some(ahead), Some(behind)) = (report.ahead, report.behind) {
+            println!("  ahead/behind: {ahead}/{behind}");
+        }
+    }
+    println!("  default ref:  {}", report.default_ref);
+    println!(
+        "  remote:       {}",
+        report.remote.as_deref().unwrap_or("(none)")
+    );
+    if report.dirty {
+        println!("  dirty: yes");
+        for change in &report.staged {
+            println!("    staged:   {} {}", change.index_status, change.path);
+        }
+        for change in &report.unstaged {
+            println!("    unstaged: {} {}", change.worktree_status, change.path);
+        }
+        for path in &report.untracked {
+            println!("    untracked: {path}");
+        }
+    } else {
+        println!("  dirty: no");
+    }
+    if report.installations.is_empty() {
+        println!("  installations: (none registered)");
+    } else {
+        println!("  installations:");
+        for installation in &report.installations {
+            println!(
+                "    {} ({}) @ {}",
+                installation.workspace.display(),
+                installation.target,
+                installation.source_ref
+            );
+        }
+    }
+}
+
+/// `beskar library branch` (§82).
+pub fn branches(branches: &[BranchDisplay]) {
+    if branches.is_empty() {
+        println!("No branches.");
+        return;
+    }
+    for branch in branches {
+        let marker = if branch.current { "*" } else { " " };
+        let mut line = format!("{marker} {}", branch.name);
+        if let Some(upstream) = &branch.upstream {
+            line.push_str(&format!("  -> {upstream}"));
+            if let (Some(ahead), Some(behind)) = (branch.ahead, branch.behind)
+                && (ahead != 0 || behind != 0)
+            {
+                line.push_str(&format!("  (+{ahead}/-{behind})"));
+            }
+        }
+        println!("{line}");
+    }
+}
+
+/// `beskar doctor` (§83).
+pub fn doctor(report: &DoctorReport) {
+    for diagnostic in &report.checks {
+        let marker = match diagnostic.severity {
+            Severity::Ok => "ok",
+            Severity::Warning => "!",
+            Severity::Error => "x",
+        };
+        println!("{marker} {:<26} {}", diagnostic.check, diagnostic.message);
+    }
+    println!();
+    let errors = report
+        .checks
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .count();
+    let warnings = report
+        .checks
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Warning)
+        .count();
+    if report.has_errors() {
+        println!(
+            "{errors} error(s), {warnings} warning(s) — doctor never repairs automatically (§83)"
+        );
+    } else if warnings > 0 {
+        println!("{warnings} warning(s), no errors");
+    } else {
+        println!("All checks passed.");
+    }
 }

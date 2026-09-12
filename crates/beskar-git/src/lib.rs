@@ -6,11 +6,12 @@
 //! §135.35-36); process arguments are always arrays, never shell strings
 //! (§12). Credential-bearing URLs MUST be redacted in errors and logs (§67).
 //!
-//! This phase implements read operations only: ref resolution, committed
-//! tree/blob access with exact bytes (§8.1, §33), per-path last-commit
-//! lookup (§35), and working-tree status. Mutation operations (`fetch`,
-//! `push`, `commit_paths`, `move_path`) are added by the phases that own
-//! them (§62, §65, §69, §73).
+//! Read operations (ref resolution, committed tree/blob access with exact
+//! bytes (§8.1, §33), per-path last-commit lookup (§35), working-tree
+//! status, branch listing) are joined by the Phase 4 library-editing
+//! mutations: scoped commits (§72) and branch convenience wrappers (§82).
+//! Network operations (`fetch`, `push`) remain owned by the remote phase
+//! (§62, §65).
 
 use std::fmt;
 use std::path::Path;
@@ -87,7 +88,7 @@ impl TreeEntry {
 }
 
 /// One changed path in a working tree (porcelain status, §66, §72, §81).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileChange {
     /// Porcelain index (staged) status character: `A`, `M`, `D`, `R`, ...
     pub index_status: char,
@@ -97,6 +98,25 @@ pub struct FileChange {
     pub path: String,
     /// Original path for renames/copies.
     pub orig_path: Option<String>,
+}
+
+/// One local branch (spec §82, §101).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BranchInfo {
+    /// Short branch name (e.g. `main`).
+    pub name: String,
+    /// Upstream branch in `remote/branch` short form, when configured.
+    pub upstream: Option<String>,
+}
+
+/// Identity and time of the most recent commit touching a path
+/// (spec §35, §80 `recent` sort).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CommitInfo {
+    /// Full commit hash.
+    pub hash: String,
+    /// Commit time in Unix seconds.
+    pub unix_time: i64,
 }
 
 /// Working-tree status of a repository (spec §8.1, §66, §72, §81).
@@ -161,6 +181,34 @@ pub trait GitBackend: fmt::Debug + Send + Sync {
     /// The configured URL of a remote, credential-redacted for storage and
     /// display (§30, §67). `None` when the remote is not configured.
     fn remote_url(&self, repo: &Path, remote: &str) -> Result<Option<String>>;
+
+    /// Creates one scoped commit staging exactly `paths` — including
+    /// deletions — with `message` (spec §72). Before creating the commit the
+    /// index is inspected: unrelated staged files are refused (typed error,
+    /// nothing is committed); unrelated unstaged/untracked files are left
+    /// untouched. Returns the new commit hash, or `None` when the staged
+    /// result is empty (idempotent re-runs). Never pushes (§135.34).
+    fn commit_paths(&self, repo: &Path, message: &str, paths: &[String]) -> Result<Option<String>>;
+
+    /// Every local branch with its configured upstream, if any (§82, §101).
+    fn list_branches(&self, repo: &Path) -> Result<Vec<BranchInfo>>;
+
+    /// Switches the working tree to an existing local branch (§82).
+    fn switch_branch(&self, repo: &Path, name: &str) -> Result<()>;
+
+    /// Creates a new branch at HEAD and switches to it (§82).
+    fn create_branch(&self, repo: &Path, name: &str) -> Result<()>;
+
+    /// Commits reachable only from `from` (ahead) and only from `to`
+    /// (behind) between two committishes (§81 ahead/behind). Both refs must
+    /// resolve locally; no network is involved.
+    fn ahead_behind(&self, repo: &Path, from: &str, to: &str) -> Result<(usize, usize)>;
+
+    /// Hash and time of the most recent commit at-or-before `commit`
+    /// touching `path` (§35, §80 `recent` sort). `None` when no commit in
+    /// `commit`'s history ever touched `path`.
+    fn last_commit_info(&self, repo: &Path, commit: &str, path: &str)
+    -> Result<Option<CommitInfo>>;
 }
 
 /// v1 backend: delegates to the user's installed Git implementation
@@ -247,6 +295,161 @@ impl GitBackend for SystemGitBackend {
         }
         // Credential-bearing URLs are stored sanitized only (§30, §67).
         Ok(Some(redact_url(&url)))
+    }
+
+    fn commit_paths(&self, repo: &Path, message: &str, paths: &[String]) -> Result<Option<String>> {
+        if paths.is_empty() {
+            return Ok(None);
+        }
+        if message.trim().is_empty() {
+            return Err(Error::Git("commit message must not be empty".into()));
+        }
+        for path in paths {
+            reject_unsafe_arg(path, "path")?;
+        }
+        // §72: inspect the index first; unrelated staged files are refused.
+        let status = self.status(repo)?;
+        for change in &status.staged {
+            let related = paths.iter().any(|owned| {
+                change.path == *owned
+                    || change.path.starts_with(&format!("{owned}/"))
+                    || owned.starts_with(&format!("{}/", change.path))
+            });
+            if !related {
+                return Err(Error::Git(format!(
+                    "refusing to commit: {:?} is staged but unrelated to this \
+                     operation — commit or unstage it first (§72)",
+                    change.path
+                )));
+            }
+        }
+        // Stage exactly the operation-owned paths; `-A` stages deletions of
+        // tracked files too. A path that neither exists nor is tracked has
+        // nothing to stage (e.g. the old side of a move of never-committed
+        // content) and is skipped.
+        for path in paths {
+            let tracked = run_git(repo, &["ls-files", "--", path])?;
+            if !tracked.status.success() {
+                return Err(git_failure("ls-files", &tracked));
+            }
+            let exists = repo.join(path).symlink_metadata().is_ok();
+            if tracked.stdout.is_empty() && !exists {
+                continue;
+            }
+            let added = run_git(repo, &["add", "-A", "--", path])?;
+            if !added.status.success() {
+                return Err(git_failure("add", &added));
+            }
+        }
+        // Idempotence: an empty staged result means nothing to commit.
+        let staged = run_git(repo, &["diff", "--cached", "--name-only", "-z"])?;
+        if !staged.status.success() {
+            return Err(git_failure("diff", &staged));
+        }
+        if staged.stdout.iter().all(|&byte| byte == 0) {
+            return Ok(None);
+        }
+        let commit = run_git(repo, &["commit", "-m", message])?;
+        if !commit.status.success() {
+            return Err(git_failure("commit", &commit));
+        }
+        let head = run_git(repo, &["rev-parse", "HEAD"])?;
+        if !head.status.success() {
+            return Err(git_failure("rev-parse", &head));
+        }
+        Ok(first_line(&head.stdout))
+    }
+
+    fn list_branches(&self, repo: &Path) -> Result<Vec<BranchInfo>> {
+        let output = run_git(
+            repo,
+            &[
+                "for-each-ref",
+                "refs/heads",
+                "--format=%(refname:short)%09%(upstream:short)",
+            ],
+        )?;
+        if !output.status.success() {
+            return Err(git_failure("for-each-ref", &output));
+        }
+        let text = String::from_utf8(output.stdout)
+            .map_err(|e| Error::Git(format!("non-UTF-8 git output: {e}")))?;
+        Ok(text
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                let (name, upstream) = line.split_once('\t').unwrap_or((line, ""));
+                BranchInfo {
+                    name: name.to_owned(),
+                    upstream: (!upstream.is_empty()).then(|| upstream.to_owned()),
+                }
+            })
+            .collect())
+    }
+
+    fn switch_branch(&self, repo: &Path, name: &str) -> Result<()> {
+        reject_unsafe_arg(name, "branch")?;
+        let output = run_git(repo, &["switch", name])?;
+        if !output.status.success() {
+            return Err(git_failure("switch", &output));
+        }
+        Ok(())
+    }
+
+    fn create_branch(&self, repo: &Path, name: &str) -> Result<()> {
+        reject_unsafe_arg(name, "branch")?;
+        let output = run_git(repo, &["switch", "-c", name])?;
+        if !output.status.success() {
+            return Err(git_failure("switch -c", &output));
+        }
+        Ok(())
+    }
+
+    fn ahead_behind(&self, repo: &Path, from: &str, to: &str) -> Result<(usize, usize)> {
+        reject_unsafe_arg(from, "ref")?;
+        reject_unsafe_arg(to, "ref")?;
+        let spec = format!("{from}...{to}");
+        let output = run_git(repo, &["rev-list", "--left-right", "--count", &spec])?;
+        if !output.status.success() {
+            return Err(git_failure("rev-list", &output));
+        }
+        let line = first_line(&output.stdout)
+            .ok_or_else(|| Error::Git("rev-list produced no output".into()))?;
+        let (ahead, behind) = line
+            .split_once('\t')
+            .ok_or_else(|| Error::Git(format!("malformed rev-list output: {line:?}")))?;
+        let parse = |raw: &str| {
+            raw.trim()
+                .parse::<usize>()
+                .map_err(|e| Error::Git(format!("malformed rev-list count: {e}")))
+        };
+        Ok((parse(ahead)?, parse(behind)?))
+    }
+
+    fn last_commit_info(
+        &self,
+        repo: &Path,
+        commit: &str,
+        path: &str,
+    ) -> Result<Option<CommitInfo>> {
+        reject_unsafe_arg(commit, "commit")?;
+        if path.is_empty() {
+            return Err(Error::Git("path must not be empty".into()));
+        }
+        let output = run_git(
+            repo,
+            &["log", "-n", "1", "--format=%H%x09%ct", commit, "--", path],
+        )?;
+        if !output.status.success() {
+            return Err(git_failure("log", &output));
+        }
+        Ok(first_line(&output.stdout).and_then(|line| {
+            let (hash, time) = line.split_once('\t')?;
+            Some(CommitInfo {
+                hash: hash.to_owned(),
+                unix_time: time.trim().parse().ok()?,
+            })
+        }))
     }
 }
 
@@ -418,6 +621,17 @@ fn parse_branch_line(line: &str) -> Option<String> {
     }
     let name = line.split("...").next().unwrap_or(line);
     Some(name.to_owned())
+}
+
+/// Version of the Git executable backing [`SystemGitBackend`]
+/// (spec §83 doctor). Fails when no usable Git executable is found.
+pub fn git_version() -> Result<String> {
+    let output = run_git(Path::new("."), &["--version"])
+        .map_err(|e| Error::Git(format!("git executable not found: {e}")))?;
+    if !output.status.success() {
+        return Err(git_failure("--version", &output));
+    }
+    first_line(&output.stdout).ok_or_else(|| Error::Git("git --version produced no output".into()))
 }
 
 /// Absolute path of the repository root containing `dir`, if any.

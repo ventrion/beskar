@@ -10,7 +10,9 @@
 
 pub mod catalog;
 pub mod config;
+pub mod doctor;
 pub mod drift;
+pub mod editing;
 pub mod error;
 pub mod execute;
 pub mod ids;

@@ -16,10 +16,18 @@ pub struct TestRepo {
 }
 
 impl TestRepo {
-    /// Creates a temp directory and runs `git init` in it.
+    /// Creates a temp directory and runs `git init` in it. A deterministic
+    /// identity is written to the repo's LOCAL config so commits work both
+    /// from test helpers and from Beskar's own backend invocations — the
+    /// user's global/system config is never read (hermeticity, §86).
     pub fn new() -> Self {
         let root = TempRoot::new();
         git_ok(root.path(), &["init", "--initial-branch=main"]);
+        git_ok(root.path(), &["config", "user.name", "Beskar Tests"]);
+        git_ok(
+            root.path(),
+            &["config", "user.email", "beskar@example.invalid"],
+        );
         Self { root }
     }
 
@@ -94,15 +102,21 @@ mod tests {
     }
 
     #[test]
-    fn git_config_is_isolated_from_user_home() {
+    fn repo_identity_is_local_and_hermetic() {
         let repo = TestRepo::new();
-        // With global/system config nulled, no user.name is configured.
+        // With global/system config nulled, the identity resolves ONLY from
+        // the repo-local config written by TestRepo::new — the real user
+        // home is never consulted, and commits are deterministic.
         let mut command = Command::new("git");
         isolated_env(&mut command);
         command
             .current_dir(repo.path())
             .args(["config", "user.name"]);
         let output = command.output().expect("spawn git");
-        assert!(!output.status.success());
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "Beskar Tests"
+        );
     }
 }

@@ -265,6 +265,7 @@ name = "beskar-git"
 version = "0.1.0"
 dependencies = [
  "beskar-test-support",
+ "serde",
  "thiserror 2.0.20",
  "tracing",
 ]
