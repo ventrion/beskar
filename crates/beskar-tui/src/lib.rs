@@ -1,87 +1,58 @@
 //! beskar-tui — the interactive terminal UI (spec §95-§101).
 //!
-//! Ratatui + Crossterm. Owns only TUI application state, navigation,
-//! rendering, dialogs, and invocation of core plans/actions (§112). It is a
-//! thin shell over beskar-core: UI state must never alter domain semantics
-//! (§105). Launched via `beskar tui`.
+//! Ratatui + Crossterm over the shared beskar-core/beskar-git APIs (§105,
+//! §112): this crate owns only TUI application state, navigation, rendering,
+//! dialogs, and the invocation of core plans/actions. Business logic lives
+//! exclusively in the core services (`Lifecycle`, `LibraryEditor`, `Remote`)
+//! the CLI also uses — the TUI can never drift from the normative CLI
+//! behavior.
+//!
+//! Architecture:
+//!
+//! - [`app`] — pure state: screens, panes, dialogs, snapshots;
+//! - [`event`] / [`effect`] — the reducer's inputs and outputs;
+//! - [`reduce`] — a pure state machine: `reduce(app, event) -> Vec<Effect>`;
+//!   every transition is unit-testable without a terminal;
+//! - [`service`] — the only code that touches core services, fulfilling
+//!   effects (refresh, dry-run plans, confirmed executions);
+//! - [`view`] — pure rendering of state onto a `Frame`;
+//! - [`terminal`] — TTY detection, raw mode, alt-screen, and the loop that
+//!   glues crossterm events and effect results together.
+//!
+//! Mutation flow (§89, §135.38-39): every mutation is first planned as a
+//! dry run through the same planner the CLI uses, confirmed against the
+//! real serializable plan in a dialog, then executed; blocked plans are
+//! displayed with all blockers and only offer explicit-consent force
+//! re-plans (§47, §49), never silent overwrites.
+//!
+//! Launched via `beskar tui`; fails closed with a typed error and a clear
+//! message when launched without an interactive terminal (§4, §94).
 
-use beskar_core::Error;
-
-/// Primary TUI screens (spec §95).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Screen {
-    Dashboard,
-    Skills,
-    Profiles,
-    Installations,
-    Git,
-    Activity,
-}
-
-/// Minimal TUI application state skeleton; the TUI phase builds this out
-/// against the core planner APIs (spec §89, §133).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct App {
-    screen: Screen,
-    quit_requested: bool,
-}
-
-impl App {
-    /// Starts on the Dashboard (spec §96).
-    pub fn new() -> Self {
-        Self {
-            screen: Screen::Dashboard,
-            quit_requested: false,
-        }
-    }
-
-    /// The currently displayed screen.
-    pub fn screen(&self) -> Screen {
-        self.screen
-    }
-
-    /// Requests a screen transition.
-    pub fn goto(&mut self, screen: Screen) {
-        self.screen = screen;
-    }
-
-    /// Requests quitting the TUI loop.
-    pub fn request_quit(&mut self) {
-        self.quit_requested = true;
-    }
-
-    /// Whether a quit was requested.
-    pub fn quit_requested(&self) -> bool {
-        self.quit_requested
-    }
-}
-
-impl Default for App {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Runs the TUI. The event loop is implemented by the TUI phase; until then
-/// this fails closed with a typed error (spec §4, §115).
-pub fn run() -> Result<(), Error> {
-    Err(Error::unsupported_state(
-        "the interactive TUI is not implemented yet",
-    ))
-}
-
+pub mod app;
+pub mod effect;
+pub mod event;
+pub mod input;
+pub mod reduce;
+pub mod service;
+mod terminal;
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub mod testkit;
+pub mod view;
 
-    #[test]
-    fn starts_on_dashboard_and_tracks_quit() {
-        let mut app = App::new();
-        assert_eq!(app.screen(), Screen::Dashboard);
-        assert!(!app.quit_requested());
-        app.goto(Screen::Installations);
-        assert_eq!(app.screen(), Screen::Installations);
-        app.request_quit();
-        assert!(app.quit_requested());
-    }
+pub use app::{App, PendingAction, Screen};
+pub use effect::Effect;
+pub use input::Key;
+
+use beskar_core::Result;
+
+/// Discovers the Library from the environment (§86), builds the service
+/// session, and runs the interactive loop until the user quits.
+///
+/// Errors are typed (§115): no Library discovered, no interactive terminal,
+/// or terminal I/O failures all fail closed with stable error codes the
+/// shell maps to §94 exit codes — never text parsing.
+pub fn run() -> Result<()> {
+    let services = service::Services::from_env()?;
+    let mut app = App::new();
+    terminal::run(&mut app, &services)
 }

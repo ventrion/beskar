@@ -409,6 +409,76 @@ impl Lifecycle {
         )
     }
 
+    // ---- attachment reorder (§79) -----------------------------------------
+
+    /// Reorders the attached profiles of one installation (§79). This is a
+    /// presentation-order change only: effective membership is untouched, so
+    /// no skill files are ever rewritten (§17, §79). The requested order must
+    /// be a permutation of the existing attachments' immutable IDs — never an
+    /// add or a drop (§135.9). Follows the §29 registry-write sequence and
+    /// supports dry-run (§91).
+    pub fn reorder_attachments(&self, request: ReorderRequest<'_>) -> Result<ReorderOutcome> {
+        let mut lock_guard = None;
+        let mut registry = self.begin(request.dry_run, &mut lock_guard)?;
+        let registered = self
+            .find_installation(&registry, request.workspace, request.target)?
+            .ok_or_else(|| no_installation(request.workspace, request.target))?;
+
+        // A permutation has the same length, no repeats, and only IDs the
+        // installation actually attaches.
+        let no_duplicates = {
+            let mut requested: Vec<&ProfileId> = request.order.iter().collect();
+            requested.sort();
+            requested.dedup();
+            requested.len() == request.order.len()
+        };
+        let is_permutation = no_duplicates
+            && request.order.len() == registered.profiles.len()
+            && request
+                .order
+                .iter()
+                .all(|id| registered.profiles.iter().any(|a| a.id == *id));
+        if !is_permutation {
+            let attached = registered
+                .profiles
+                .iter()
+                .map(|a| a.id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(Error::profile_attachment(format!(
+                "attachment reorder must be a permutation of the installation's \
+                 {} attached profile IDs (§79); attached: {attached}",
+                registered.profiles.len()
+            )));
+        }
+
+        let mut proposed = registered.clone();
+        proposed.profiles = request
+            .order
+            .iter()
+            .map(|id| {
+                registered
+                    .profiles
+                    .iter()
+                    .find(|a| a.id == *id)
+                    .expect("permutation membership checked above")
+                    .clone()
+            })
+            .collect();
+        proposed.updated_at = now();
+
+        if !request.dry_run {
+            let lock = lock_guard.expect("mutating reorder holds the lock");
+            upsert(&mut registry, proposed.clone())?;
+            self.store.save_with_lock(&registry, &lock)?;
+        }
+        Ok(ReorderOutcome {
+            installation: proposed,
+            executed: !request.dry_run,
+            dry_run: request.dry_run,
+        })
+    }
+
     // ---- status (§41-§42) -------------------------------------------------
 
     /// Computes read-only status for the installations a status command
@@ -946,6 +1016,27 @@ pub struct UpdateOneRequest<'a> {
     pub workspace: &'a Path,
     pub target: Option<&'a str>,
     pub options: ReconcileOptions,
+    pub dry_run: bool,
+}
+
+/// Attachment-reorder arguments (§79).
+#[derive(Debug, Clone)]
+pub struct ReorderRequest<'a> {
+    pub workspace: &'a Path,
+    pub target: Option<&'a str>,
+    /// The desired attachment order by immutable profile ID (§79); must be a
+    /// permutation of the installation's current attachments.
+    pub order: &'a [ProfileId],
+    pub dry_run: bool,
+}
+
+/// The outcome of an attachment reorder (§79): presentation order changed;
+/// skill files never did (§17).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReorderOutcome {
+    /// Post-state installation (registered state when `dry_run`).
+    pub installation: Installation,
+    pub executed: bool,
     pub dry_run: bool,
 }
 

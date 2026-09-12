@@ -11,7 +11,7 @@ use beskar_core::config::PlatformDirs;
 use beskar_core::drift::DriftState;
 use beskar_core::error::Error;
 use beskar_core::lifecycle::{
-    AddRequest, DetachRequest, Lifecycle, UpdateAllRequest, UpdateOneRequest,
+    AddRequest, DetachRequest, Lifecycle, ReorderRequest, UpdateAllRequest, UpdateOneRequest,
 };
 use beskar_core::reconcile::ReconcileOptions;
 use beskar_core::registry::{Adapter, RegistryStore};
@@ -958,4 +958,92 @@ fn update_one_on_unknown_target_is_a_typed_error() {
         })
         .expect_err("nothing registered");
     assert!(matches!(err, Error::ProfileAttachment(_)));
+}
+
+// ---- attachment reorder (§79, Phase 7 support) -----------------------------
+
+#[test]
+fn reorder_attachments_is_a_presentation_only_permutation() {
+    let env = Env::new();
+    env.add("dev-core");
+    env.add("rust-development");
+
+    let registry = env.store().load().expect("registry");
+    let installation = &registry.installations[0];
+    let dev = installation.profiles[0].id;
+    let rust = installation.profiles[1].id;
+    let skill_bytes = std::fs::read(env.skill_file("testing", "SKILL.md")).expect("read");
+
+    // Dry-run reflects the new order without persisting (§91).
+    let outcome = env
+        .lifecycle()
+        .reorder_attachments(ReorderRequest {
+            workspace: &env.workspace,
+            target: None,
+            order: &[rust, dev],
+            dry_run: true,
+        })
+        .expect("dry-run reorder");
+    assert!(!outcome.executed);
+    let registry = env.store().load().expect("registry");
+    assert_eq!(registry.installations[0].profiles[0].id, dev);
+
+    // The real run persists the new attachment order.
+    let outcome = env
+        .lifecycle()
+        .reorder_attachments(ReorderRequest {
+            workspace: &env.workspace,
+            target: None,
+            order: &[rust, dev],
+            dry_run: false,
+        })
+        .expect("reorder");
+    assert!(outcome.executed);
+    assert_eq!(outcome.installation.profiles[0].id, rust);
+    let registry = env.store().load().expect("registry");
+    assert_eq!(registry.installations[0].profiles[0].id, rust);
+    assert_eq!(registry.installations[0].profiles[1].id, dev);
+
+    // Presentation-only: skill files were never rewritten (§17, §79).
+    assert_eq!(
+        std::fs::read(env.skill_file("testing", "SKILL.md")).expect("read"),
+        skill_bytes
+    );
+}
+
+#[test]
+fn reorder_attachments_rejects_non_permutations() {
+    let env = Env::new();
+    env.add("dev-core");
+    env.add("rust-development");
+
+    let registry = env.store().load().expect("registry");
+    let dev = registry.installations[0].profiles[0].id;
+    let rust = registry.installations[0].profiles[1].id;
+
+    // Dropping an attachment is not a reorder (§135.9).
+    let err = env
+        .lifecycle()
+        .reorder_attachments(ReorderRequest {
+            workspace: &env.workspace,
+            target: None,
+            order: &[dev],
+            dry_run: false,
+        })
+        .expect_err("shorter order must be refused");
+    assert!(matches!(err, Error::ProfileAttachment(_)));
+
+    // Duplicating an ID is not a reorder either.
+    let err = env
+        .lifecycle()
+        .reorder_attachments(ReorderRequest {
+            workspace: &env.workspace,
+            target: None,
+            order: &[dev, dev],
+            dry_run: false,
+        })
+        .expect_err("duplicated id must be refused");
+    assert!(matches!(err, Error::ProfileAttachment(_)));
+
+    let _ = rust;
 }

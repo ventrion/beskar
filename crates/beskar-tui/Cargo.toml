@@ -10,6 +10,11 @@ workspace = true
 
 [dependencies]
 beskar-core = { workspace = true }
+beskar-git = { workspace = true }
 crossterm = { workspace = true }
 ratatui = { workspace = true }
 tracing = { workspace = true }
+time = { workspace = true }
+
+[dev-dependencies]
+beskar-test-support = { workspace = true }

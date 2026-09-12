@@ -24,3 +24,4 @@ tracing-subscriber = { workspace = true }
 assert_cmd = { workspace = true }
 beskar-test-support = { workspace = true }
 predicates = { workspace = true }
+tempfile = { workspace = true }

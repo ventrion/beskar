@@ -27,15 +27,50 @@ fn no_subcommand_prints_help() {
     );
 }
 
-/// The documented TUI subcommand exists and reports typed failure until the
-/// TUI phase implements it (spec §95).
+/// The documented TUI subcommand exists and fails gracefully without an
+/// interactive terminal: a clear message on stderr and a non-zero exit
+/// (spec §95, §94).
 #[test]
-fn tui_subcommand_reports_unimplemented() {
-    let output = beskar().arg("tui").output().expect("run beskar");
+fn tui_subcommand_fails_cleanly_without_a_tty() {
+    // A valid library lets the launch reach the TTY check; assert_cmd pipes
+    // stdout and nulls stdin, so neither is a TTY.
+    let root = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        root.path().join("beskar.toml"),
+        "schema = 1\nlibrary_id = \"550e8400-e29b-41d4-a716-446655440000\"\n",
+    )
+    .expect("write beskar.toml");
+    let output = beskar()
+        .env("BESKAR_LIBRARY", root.path())
+        .env("BESKAR_HOME", root.path().join("home"))
+        .arg("tui")
+        .output()
+        .expect("run beskar");
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).expect("utf-8");
     assert!(
-        stderr.contains("not implemented"),
-        "stderr should explain the state: {stderr}"
+        stderr.contains("terminal"),
+        "stderr should explain the terminal requirement: {stderr}"
+    );
+    assert!(
+        !output.stdout.contains(&b'\x1b'),
+        "a failed launch must not emit terminal control sequences"
+    );
+}
+
+/// Without a discoverable library, `beskar tui` fails closed with the typed
+/// configuration error (exit 5 per §94) — never a partial UI (§86, §4).
+#[test]
+fn tui_subcommand_fails_cleanly_without_a_library() {
+    let output = beskar()
+        .env("BESKAR_LIBRARY", "/nonexistent-beskar-library")
+        .arg("tui")
+        .output()
+        .expect("run beskar");
+    assert_eq!(output.status.code(), Some(5));
+    let stderr = String::from_utf8(output.stderr).expect("utf-8");
+    assert!(
+        stderr.contains("error:"),
+        "stderr should carry the typed error: {stderr}"
     );
 }
