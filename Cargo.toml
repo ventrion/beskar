@@ -1,0 +1,76 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/beskar-core",
+    "crates/beskar-git",
+    "crates/beskar-cli",
+    "crates/beskar-tui",
+    "crates/beskar-gui",
+    "crates/beskar-test-support",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+# Shared dependency keys — later phases must reference these verbatim via
+# `<name> = { workspace = true }`. Pinned to compatible major/minor ranges;
+# exact versions are recorded in Cargo.lock (spec §114).
+[workspace.dependencies]
+# Internal crates
+beskar-core = { path = "crates/beskar-core" }
+beskar-git = { path = "crates/beskar-git" }
+beskar-tui = { path = "crates/beskar-tui" }
+beskar-test-support = { path = "crates/beskar-test-support" }
+
+# CLI grammar (beskar-cli)
+clap = { version = "4.6", features = ["derive"] }
+
+# Serialization (beskar-core)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+# serde_yaml is deprecated; serde-saphyr is the actively maintained YAML
+# deserializer (panic-free, untrusted-input friendly) for SKILL.md frontmatter.
+serde-saphyr = { version = "1", default-features = false, features = ["deserialize"] }
+
+# Hashing / ids / time (beskar-core)
+sha2 = "0.11"
+uuid = { version = "1", features = ["v4", "serde"] }
+time = { version = "0.3", features = ["serde", "serde-well-known", "formatting", "parsing"] }
+
+# Errors / logging (beskar-core, beskar-git, all shells)
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Platform / filesystem (beskar-core)
+directories = "6"
+tempfile = "3"
+walkdir = "2"
+# fs2 is unmaintained; fs4 is its maintained successor (sync file locks, §29/§88).
+fs4 = "1"
+
+# TUI (beskar-tui); `crossterm_0_29` keeps a single crossterm version.
+ratatui = { version = "0.30", features = ["crossterm_0_29"] }
+crossterm = "0.29"
+
+# Desktop GUI (beskar-gui); glow renderer avoids link-time system deps.
+eframe = { version = "0.36", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "x11",
+] }
+egui = "0.36"
+
+# Dev / test support
+pretty_assertions = "1"
+assert_cmd = "2"
+predicates = "3"
+
+[profile.release]
+lto = "thin"

@@ -1,0 +1,159 @@
+//! Reconciliation planning types (spec §89, §90, §109).
+//!
+//! Every mutating domain operation separates planning, safety evaluation,
+//! confirmation, execution, and Registry finalization. Plans MUST be
+//! serializable; dry-run uses the exact same planner as real execution
+//! (§135.38-39). One plan is produced per Installation, never per Profile
+//! (§135.19).
+
+use serde::{Deserialize, Serialize};
+
+use crate::drift::DriftState;
+use crate::ids::{InstallationId, SkillName};
+
+/// Operation plan action types (spec §89).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanAction {
+    AttachProfile,
+    DetachProfile,
+    InstallSkill,
+    UpdateSkill,
+    ChangeSkillMembership,
+    RetireSkill,
+    PreserveExtra,
+    OverwriteModified,
+    ReplaceUnmanaged,
+    UpdateRegistry,
+    CommitLibraryPaths,
+    FastForwardBranch,
+    PushBranch,
+}
+
+/// Why a planned operation is blocked; blockers are typed, never prose
+/// (spec §115; UI code must not classify by parsing text).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockerKind {
+    /// Local modifications would be overwritten or removed (§47).
+    ModifiedContent,
+    /// An unmanaged same-name directory exists (§49).
+    UnmanagedCollision,
+    /// A foreign stamp claims the directory (§38 "Foreign").
+    ForeignStamp,
+    /// The Library identity mismatches the installation's (§38).
+    LibraryMismatch,
+    /// The source ref cannot be resolved (§38 "Missing-ref").
+    MissingRef,
+    /// An attached profile is absent from the resolved Library (§39).
+    MissingProfile,
+    /// A required skill is absent from the resolved Library (§58).
+    MissingSkill,
+    /// An ambiguous or invalid skill was encountered (§60).
+    InvalidSkill,
+    /// Diverged state requiring explicit user action (§63).
+    Diverged,
+}
+
+/// One safety blocker discovered during planning (spec §45, §47, §60).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Blocker {
+    pub kind: BlockerKind,
+    /// Skill the blocker applies to, when scoped to one skill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill: Option<SkillName>,
+    /// Stable machine identifiers of affected paths, `/`-separated (§119).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+}
+
+/// A planned filesystem/state change for one skill (spec §45, §89).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillAction {
+    pub action: PlanAction,
+    pub skill: SkillName,
+    /// Expected resulting state once the action applies.
+    pub resulting_state: DriftState,
+}
+
+/// A planned attachment change (spec §89).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileChange {
+    pub action: PlanAction,
+    pub profile_id: crate::ids::ProfileId,
+    /// Last known profile name for display (§28).
+    pub profile_name: String,
+}
+
+/// The complete deterministic plan for one Installation
+/// (spec §45, §109). No target writes occur before planning completes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReconciliationPlan {
+    pub installation_id: InstallationId,
+    pub profile_changes: Vec<ProfileChange>,
+    pub skill_actions: Vec<SkillAction>,
+    /// Non-empty plans are not executable without explicit consent (§47).
+    pub blockers: Vec<Blocker>,
+}
+
+impl ReconciliationPlan {
+    /// A plan is executable only when no safety blockers were found (§47).
+    pub fn is_blocked(&self) -> bool {
+        !self.blockers.is_empty()
+    }
+
+    /// Whether the plan would change nothing (dry-run "no-op", §22, §91).
+    pub fn is_no_op(&self) -> bool {
+        self.profile_changes.is_empty() && self.skill_actions.is_empty() && !self.is_blocked()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plan_actions_use_stable_serialization() {
+        let json = serde_json::to_value(PlanAction::ChangeSkillMembership).expect("serialize");
+        assert_eq!(json, serde_json::json!("change_skill_membership"));
+    }
+
+    #[test]
+    fn empty_plan_is_a_no_op_and_not_blocked() {
+        let plan = ReconciliationPlan {
+            installation_id: InstallationId::generate(),
+            profile_changes: vec![],
+            skill_actions: vec![],
+            blockers: vec![],
+        };
+        assert!(plan.is_no_op());
+        assert!(!plan.is_blocked());
+    }
+
+    #[test]
+    fn plan_roundtrips_through_json() {
+        let plan = ReconciliationPlan {
+            installation_id: InstallationId::generate(),
+            profile_changes: vec![ProfileChange {
+                action: PlanAction::DetachProfile,
+                profile_id: crate::ids::ProfileId::generate(),
+                profile_name: "dev-core".to_owned(),
+            }],
+            skill_actions: vec![SkillAction {
+                action: PlanAction::RetireSkill,
+                skill: SkillName::parse("git").expect("valid"),
+                resulting_state: DriftState::ProfileRemoved,
+            }],
+            blockers: vec![Blocker {
+                kind: BlockerKind::ModifiedContent,
+                skill: Some(SkillName::parse("testing").expect("valid")),
+                paths: vec!["testing/SKILL.md".to_owned()],
+            }],
+        };
+        let json = serde_json::to_string(&plan).expect("serialize");
+        assert_eq!(
+            serde_json::from_str::<ReconciliationPlan>(&json).expect("parse"),
+            plan
+        );
+    }
+}

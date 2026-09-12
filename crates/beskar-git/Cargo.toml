@@ -1,0 +1,17 @@
+[package]
+name = "beskar-git"
+description = "Beskar Git backend abstraction and system-Git implementation (spec §68, §110)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+beskar-core = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+beskar-test-support = { workspace = true }

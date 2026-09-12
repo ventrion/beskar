@@ -1,0 +1,27 @@
+[package]
+name = "beskar-core"
+description = "Beskar domain core: config, ids, skills, profiles, catalog, registry, stamps, membership, drift, plans (spec §107)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+serde-saphyr = { workspace = true }
+sha2 = { workspace = true }
+uuid = { workspace = true }
+time = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+directories = { workspace = true }
+tempfile = { workspace = true }
+walkdir = { workspace = true }
+fs4 = { workspace = true }
+
+[dev-dependencies]
+beskar-test-support = { workspace = true }
