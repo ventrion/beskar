@@ -872,3 +872,118 @@ pub fn doctor(report: &DoctorReport) {
         println!("All checks passed.");
     }
 }
+
+/// `beskar migrate skm` (§120-§124).
+pub fn migration(outcome: &beskar_core::migrate::MigrationOutcome) {
+    let plan = &outcome.plan;
+    println!("skill-manager home: {}", plan.home.display());
+    println!(
+        "Library: {} (new id {})",
+        plan.home.display(),
+        plan.library_id
+    );
+    println!();
+    println!("Profiles");
+    for profile in &plan.profiles {
+        let count = if profile.skills.len() == 1 {
+            "1 skill"
+        } else {
+            "skills"
+        };
+        if profile.valid {
+            println!("  {:<24} {} {count}", profile.name, profile.skills.len());
+        } else {
+            let missing: Vec<String> = profile
+                .missing_skills
+                .iter()
+                .map(|skill| skill.to_string())
+                .collect();
+            println!(
+                "  {:<24} {} {count}  invalid (missing: {})",
+                profile.name,
+                profile.skills.len(),
+                missing.join(", ")
+            );
+        }
+    }
+    if !plan.targets.is_empty() {
+        println!();
+        println!("Installations");
+        for report in &plan.targets {
+            println!(
+                "  {} {} {}",
+                report.workspace.display(),
+                report.target,
+                if report.source_ref_resolved {
+                    "@ resolved ref"
+                } else {
+                    "@ UNRESOLVED ref"
+                }
+            );
+            let installation = plan
+                .installations
+                .iter()
+                .find(|installation| installation.id == report.installation_id);
+            if let Some(installation) = installation {
+                let names: Vec<&str> = installation
+                    .profiles
+                    .iter()
+                    .map(|a| a.name.as_str())
+                    .collect();
+                println!("    profiles: {}", names.join(", "));
+            }
+            if !report.converted.is_empty() {
+                println!(
+                    "    stamps converted: {}",
+                    report
+                        .converted
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+            if report.needs_reconciliation {
+                let mut reasons: Vec<String> = report
+                    .unconverted
+                    .iter()
+                    .chain(report.missing.iter())
+                    .map(|s| s.to_string())
+                    .collect();
+                reasons.extend(report.unmanaged.iter().cloned());
+                println!("    needs reconciliation: {}", reasons.join(", "));
+            }
+        }
+    }
+    if !plan.warnings.is_empty() {
+        println!();
+        println!("Warnings");
+        for warning in &plan.warnings {
+            println!("  ! {warning}");
+        }
+    }
+    println!();
+    if outcome.dry_run {
+        println!("No changes written. (dry run)");
+    } else {
+        match &outcome.library_commit {
+            Some(commit) => {
+                let short = commit.get(..12).unwrap_or(commit);
+                println!("Migration commit: {short}");
+            }
+            None => println!("No library commit was necessary."),
+        }
+        if outcome.registry_written {
+            println!("Registry written: {}", outcome.registry_path.display());
+        }
+        if plan
+            .targets
+            .iter()
+            .any(|report| report.needs_reconciliation)
+        {
+            println!(
+                "Some installations are marked for reconciliation — run `beskar update --all`."
+            );
+        }
+    }
+}

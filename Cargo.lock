@@ -287,7 +287,9 @@ version = "0.1.0"
 dependencies = [
  "beskar-core",
  "pretty_assertions",
+ "serde_json",
  "tempfile",
+ "walkdir",
 ]
 
 [[package]]

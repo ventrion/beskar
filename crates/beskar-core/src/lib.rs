@@ -20,6 +20,7 @@ pub mod library;
 pub mod lifecycle;
 pub mod lock;
 pub mod membership;
+pub mod migrate;
 pub mod paths;
 pub mod plan;
 pub mod profile;

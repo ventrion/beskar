@@ -9,6 +9,7 @@
 
 pub mod fs;
 pub mod git;
+pub mod skm;
 
 pub use pretty_assertions::{assert_eq, assert_ne};
 

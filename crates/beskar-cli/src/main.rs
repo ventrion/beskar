@@ -289,8 +289,36 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Migrate a legacy skill-manager Home (spec §120-§124, §87).
+    Migrate {
+        #[command(subcommand)]
+        action: MigrateAction,
+    },
     /// Launch the interactive terminal UI (spec §95).
     Tui,
+}
+
+#[derive(Debug, Subcommand)]
+enum MigrateAction {
+    /// Convert a legacy skill-manager Home into a Beskar Library (in place,
+    /// preserving skill Git history and bucket layout) plus machine-local
+    /// Registry entries (spec §120-§124). Ambiguous legacy state stops the
+    /// migration before anything is written (§122).
+    Skm {
+        /// The legacy skill-manager Home directory (its skills Git
+        /// repository becomes the Beskar Library).
+        #[arg(long)]
+        home: PathBuf,
+        /// Legacy registry file (default: <home>/registry.json).
+        #[arg(long)]
+        registry: Option<PathBuf>,
+        /// Plan and validate without writing anything (§91).
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit only structured JSON on stdout (§92, §130).
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -584,6 +612,9 @@ fn exit_code(err: &Error) -> ExitCode {
         Error::Git(_) | Error::RemoteAuth(_) => exit_codes::GIT_FAILURE,
         Error::Io(_) => exit_codes::FS_STATE,
         Error::UnsupportedState(_) => exit_codes::FAILURE,
+        // §122: migration ambiguity demands explicit resolution — action
+        // required, and nothing was written.
+        Error::MigrationAmbiguity(_) => exit_codes::ACTION_REQUIRED,
     };
     ExitCode::from(code)
 }
@@ -1047,6 +1078,36 @@ fn dispatch(command: Command) -> ExitCode {
                 ExitCode::from(exit_codes::FAILURE)
             } else {
                 ExitCode::from(exit_codes::SUCCESS)
+            }
+        }
+        Command::Migrate {
+            action:
+                MigrateAction::Skm {
+                    home,
+                    registry,
+                    dry_run,
+                    json,
+                },
+        } => {
+            let ctx = Ctx {
+                command: "migrate skm",
+                json,
+            };
+            let migrator = beskar_core::migrate::Migrator::from_env();
+            match migrator.migrate_skm(beskar_core::migrate::MigrateSkmRequest {
+                home: &home,
+                registry: registry.as_deref(),
+                dry_run,
+            }) {
+                Ok(outcome) => {
+                    if json {
+                        println!("{}", json_out::migration(&outcome));
+                    } else {
+                        render::migration(&outcome);
+                    }
+                    ExitCode::from(exit_codes::SUCCESS)
+                }
+                Err(err) => ctx.fail(&err),
             }
         }
         Command::Tui => unreachable!("Tui is handled in main"),

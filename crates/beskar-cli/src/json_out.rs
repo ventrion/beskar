@@ -497,3 +497,62 @@ pub fn doctor(command: &str, report: &DoctorReport) -> (String, bool) {
         healthy,
     )
 }
+
+/// `beskar migrate skm` (§120-§124): the plan/outcome of one Home
+/// conversion. State identifiers (`needs_reconciliation`, `valid`) are
+/// stable; prose is not.
+pub fn migration(outcome: &beskar_core::migrate::MigrationOutcome) -> String {
+    use beskar_core::migrate::TargetMigrationReport;
+    let targets: Vec<Value> = outcome
+        .plan
+        .targets
+        .iter()
+        .map(|report: &TargetMigrationReport| {
+            json!({
+                "workspace": report.workspace,
+                "target": report.target,
+                "source_ref_resolved": report.source_ref_resolved,
+                "converted_skills": report.converted,
+                "unconverted_skills": report.unconverted,
+                "missing_skills": report.missing,
+                "unmanaged": report.unmanaged,
+                "needs_reconciliation": report.needs_reconciliation,
+            })
+        })
+        .collect();
+    let profiles: Vec<Value> = outcome
+        .plan
+        .profiles
+        .iter()
+        .map(|profile| {
+            json!({
+                "name": profile.name,
+                "id": profile.id,
+                "valid": profile.valid,
+                "missing_skills": profile.missing_skills,
+                "skills": profile.skills,
+            })
+        })
+        .collect();
+    envelope(
+        "migrate skm",
+        true,
+        json!({
+            "dry_run": outcome.dry_run,
+            "executed": outcome.executed,
+            "library": {
+                "path": outcome.plan.home,
+                "library_id": outcome.plan.library_id,
+                "commit": outcome.library_commit,
+            },
+            "registry": {
+                "path": outcome.registry_path,
+                "written": outcome.registry_written,
+            },
+            "profiles": profiles,
+            "installations": targets,
+            "stamps_converted": outcome.plan.stamps.len(),
+            "warnings": outcome.plan.warnings,
+        }),
+    )
+}

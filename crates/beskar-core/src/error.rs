@@ -55,6 +55,10 @@ pub enum Error {
     /// A state Beskar v1 does not support (fail closed, §4).
     #[error("unsupported state: {0}")]
     UnsupportedState(String),
+    /// Legacy migration found ambiguous state and MUST stop for explicit
+    /// resolution instead of guessing (spec §122, §4). No writes occurred.
+    #[error("migration is ambiguous and stopped without writing: {0}")]
+    MigrationAmbiguity(String),
 }
 
 impl Error {
@@ -76,6 +80,7 @@ impl Error {
             Error::RemoteAuth(_) => "remote_auth",
             Error::Io(_) => "io",
             Error::UnsupportedState(_) => "unsupported_state",
+            Error::MigrationAmbiguity(_) => "migration_ambiguous",
         }
     }
 }
@@ -133,6 +138,10 @@ impl Error {
     pub fn unsupported_state(message: impl fmt::Display) -> Self {
         Error::UnsupportedState(message.to_string())
     }
+
+    pub fn migration_ambiguity(message: impl fmt::Display) -> Self {
+        Error::MigrationAmbiguity(message.to_string())
+    }
 }
 
 /// Git backend failures flow into the typed core model without text parsing
@@ -159,6 +168,10 @@ mod tests {
         assert_eq!(
             Error::UnsupportedState("x".into()).code(),
             "unsupported_state"
+        );
+        assert_eq!(
+            Error::migration_ambiguity("x").code(),
+            "migration_ambiguous"
         );
     }
 
