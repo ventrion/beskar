@@ -13,11 +13,13 @@ use beskar_core::editing::{
 };
 use beskar_core::ids::ProfileId;
 use beskar_core::lifecycle::{
-    InstallationReport, InstallationUpdate, OperationOutcome, UpdateAllOutcome, WhyAnswer,
+    InstallationReport, InstallationUpdate, OperationOutcome, ReorderOutcome, UpdateAllOutcome,
+    WhyAnswer,
 };
 use beskar_core::plan::{BlockerKind, ReconciliationPlan};
 use beskar_core::profile::Profile;
-use beskar_core::registry::Installation;
+use beskar_core::registry::{Installation, ProfileAttachment, WorkspaceInfo};
+use beskar_core::registry_service::{PruneReport, RepairEntry, RepairReport, RepairStatus};
 use beskar_core::status::InstallationStatus;
 use serde_json::{Map, Value, json};
 
@@ -290,6 +292,227 @@ fn owners(owners: &[(ProfileId, String)]) -> Value {
             .iter()
             .map(|(id, name)| json!({"profile_id": id, "profile_name": name}))
             .collect(),
+    )
+}
+
+// ---- registry maintenance (spec §84, §130) ----------------------------------
+
+/// RFC 3339 timestamp rendering (the §25 wire form) inside ad-hoc values.
+pub fn rfc3339(value: &time::OffsetDateTime) -> Value {
+    use time::format_description::well_known::Rfc3339;
+    value
+        .format(&Rfc3339)
+        .map(Value::String)
+        .unwrap_or(Value::Null)
+}
+
+/// One attachment with its §28 identity and attachment timestamp (§84
+/// `registry show` / `installation profiles`).
+pub fn attachment(attachment: &ProfileAttachment) -> Value {
+    json!({
+        "profile_id": attachment.id,
+        "profile_name": attachment.name,
+        "attached_at": rfc3339(&attachment.attached_at),
+    })
+}
+
+/// Attachments in attachment order with 1-based positions (§17, §79).
+pub fn ordered_attachments(installation: &Installation) -> Vec<Value> {
+    installation
+        .profiles
+        .iter()
+        .enumerate()
+        .map(|(index, a)| {
+            let mut entry = attachment(a);
+            if let Value::Object(map) = &mut entry {
+                map.insert("position".into(), json!(index + 1));
+            }
+            entry
+        })
+        .collect()
+}
+
+/// Last-known attachment names by immutable ID (§28); detached owners of
+/// historical membership fall back to the bare ID (§27).
+fn names_by_id(installation: &Installation) -> std::collections::BTreeMap<ProfileId, String> {
+    installation
+        .profiles
+        .iter()
+        .map(|a| (a.id, a.name.clone()))
+        .collect()
+}
+
+fn owner_entries(
+    ids: &[ProfileId],
+    names: &std::collections::BTreeMap<ProfileId, String>,
+) -> Vec<Value> {
+    ids.iter()
+        .map(|id| {
+            json!({
+                "profile_id": id,
+                "profile_name": names.get(id).cloned().unwrap_or_else(|| id.to_string()),
+            })
+        })
+        .collect()
+}
+
+/// §30 workspace metadata, verbatim.
+fn workspace_info(info: &WorkspaceInfo) -> Value {
+    json!({
+        "git_root": info.git_root.as_ref().map(|p| p.display().to_string()),
+        "origin_url": info.origin_url,
+        "head_at_registration": info.head_at_registration,
+    })
+}
+
+/// The full §84 installation view: identity, adapter, attachments in
+/// attachment order, the §27 last-applied snapshot, and §30 metadata.
+pub fn installation_detail(installation: &Installation) -> Value {
+    let names = names_by_id(installation);
+    let membership: Vec<Value> = installation
+        .last_applied
+        .skill_membership
+        .skill_profiles
+        .iter()
+        .map(|(skill, ids)| {
+            json!({
+                "skill": skill,
+                "required_by": owner_entries(ids, &names),
+            })
+        })
+        .collect();
+    json!({
+        "installation_id": installation.id,
+        "library_id": installation.library_id,
+        "workspace": installation.workspace.display().to_string(),
+        "target": installation.target,
+        "adapter": serde_json::to_value(installation.adapter).unwrap_or(Value::Null),
+        "source_ref": installation.source_ref,
+        "profiles": installation.profiles.iter().map(attachment).collect::<Vec<_>>(),
+        "attachment_order": installation
+            .profiles
+            .iter()
+            .map(|a| Value::String(a.id.to_string()))
+            .collect::<Vec<_>>(),
+        "profile_count": installation.profiles.len(),
+        "last_applied": {
+            "source_commit": installation.last_applied.source_commit,
+            "skills": membership,
+        },
+        "workspace_info": installation.workspace_info.as_ref().map(workspace_info),
+        "installed_at": rfc3339(&installation.installed_at),
+        "updated_at": rfc3339(&installation.updated_at),
+    })
+}
+
+/// `beskar registry list` (§84).
+pub fn registry_list(command: &str, installations: &[Installation]) -> String {
+    envelope(
+        command,
+        true,
+        json!({
+            "count": installations.len(),
+            "installations": installations.iter().map(installation_detail).collect::<Vec<_>>(),
+        }),
+    )
+}
+
+/// `beskar registry show <id>` (§84).
+pub fn registry_show(command: &str, installation: &Installation) -> String {
+    envelope(
+        command,
+        true,
+        json!({"installation": installation_detail(installation)}),
+    )
+}
+
+/// `beskar registry prune` (§84). `removed` carries the removed (or, on a
+/// dry-run, would-be-removed) installations.
+pub fn registry_prune(command: &str, report: &PruneReport) -> String {
+    envelope(
+        command,
+        true,
+        json!({
+            "dry_run": report.dry_run,
+            "executed": report.executed,
+            "removed_count": report.removed.len(),
+            "kept": report.kept,
+            "removed": report.removed.iter().map(installation_detail).collect::<Vec<_>>(),
+        }),
+    )
+}
+
+/// `beskar registry repair` (§84). `ok` is false when any installation
+/// needs manual action — matching the exit code.
+pub fn registry_repair(command: &str, report: &RepairReport) -> String {
+    let entries: Vec<Value> = report.entries.iter().map(repair_entry).collect();
+    let repaired = report
+        .entries
+        .iter()
+        .filter(|e| e.status == RepairStatus::Repaired)
+        .count();
+    envelope(
+        command,
+        !report.needs_manual_action(),
+        json!({
+            "dry_run": report.dry_run,
+            "executed": report.executed,
+            "repaired": repaired,
+            "needs_manual_action": report.needs_manual_action(),
+            "installations": entries,
+        }),
+    )
+}
+
+fn repair_entry(entry: &RepairEntry) -> Value {
+    let mut map = Map::new();
+    map.insert(
+        "installation".into(),
+        installation_detail(&entry.installation),
+    );
+    map.insert("status".into(), json!(entry.status.id()));
+    map.insert("repairs".into(), json!(entry.repairs));
+    if let Some(manual) = &entry.manual {
+        map.insert(
+            "manual_action".into(),
+            json!({
+                "reason": manual.reason,
+                "guidance": manual.guidance,
+                "profile": manual.profile,
+            }),
+        );
+    }
+    Value::Object(map)
+}
+
+/// `beskar installation profiles <workspace>` (§78).
+pub fn installation_profiles(command: &str, record: &Installation) -> String {
+    envelope(
+        command,
+        true,
+        json!({
+            "installation": installation(record),
+            "profiles": ordered_attachments(record),
+            "attachment_order": record
+                .profiles
+                .iter()
+                .map(|a| Value::String(a.id.to_string()))
+                .collect::<Vec<_>>(),
+        }),
+    )
+}
+
+/// `beskar installation profile-order` (§79).
+pub fn reorder(command: &str, outcome: &ReorderOutcome, dry_run: bool) -> String {
+    envelope(
+        command,
+        true,
+        json!({
+            "dry_run": dry_run,
+            "executed": outcome.executed,
+            "installation": installation(&outcome.installation),
+            "profiles": ordered_attachments(&outcome.installation),
+        }),
     )
 }
 

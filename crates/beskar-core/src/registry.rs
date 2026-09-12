@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+use beskar_git::GitBackend;
+
 use crate::ids::{InstallationId, LibraryId, ProfileId, SkillName};
 use crate::paths::validate_relative_path;
 
@@ -91,6 +93,32 @@ pub struct WorkspaceInfo {
     pub origin_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_at_registration: Option<String>,
+}
+
+impl WorkspaceInfo {
+    /// Captures the informational §30 metadata for `workspace` as it looks
+    /// right now: discovered Git root, sanitized origin URL, current HEAD.
+    /// Failures are informational too — plain directories capture empty
+    /// metadata.
+    pub fn capture(backend: &dyn GitBackend, workspace: &Path) -> Self {
+        let git_root = beskar_git::discover_repo(workspace).ok().flatten();
+        let origin_url = git_root
+            .as_ref()
+            .and_then(|root| backend.remote_url(root, "origin").ok().flatten());
+        let head_at_registration = git_root
+            .as_ref()
+            .and_then(|root| backend.resolve_ref(root, "HEAD").ok());
+        Self {
+            git_root,
+            origin_url,
+            head_at_registration,
+        }
+    }
+
+    /// Whether no field carries information (a plain-directory capture).
+    pub fn is_empty(&self) -> bool {
+        self.git_root.is_none() && self.origin_url.is_none() && self.head_at_registration.is_none()
+    }
 }
 
 /// One registered Installation (spec §25, §26, §108).

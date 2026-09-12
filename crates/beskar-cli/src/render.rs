@@ -15,8 +15,10 @@ use beskar_core::lifecycle::{InstallationReport, OperationOutcome, UpdateAllOutc
 use beskar_core::plan::{PlanAction, ReconciliationPlan};
 use beskar_core::profile::Profile;
 use beskar_core::registry::Installation;
+use beskar_core::registry_service::{PruneReport, RepairEntry, RepairReport, RepairStatus};
 use beskar_core::remote::{BranchSyncState, FetchOutcome, PushOutcome, PushState, RefSource};
 use beskar_core::status::InstallationStatus;
+use time::format_description::well_known::Rfc3339;
 
 use crate::json_out::blocker_kind;
 
@@ -68,11 +70,11 @@ pub fn operation(command: &str, outcome: &OperationOutcome, dry_run: bool) {
         );
     } else {
         match command {
-            "add" => println!(
+            "add" | "installation attach" => println!(
                 "Attached profile(s); reconciled {}.",
                 describe(installation)
             ),
-            "remove" => {
+            "remove" | "installation detach" => {
                 println!(
                     "Detached profile(s); reconciled {}.",
                     describe(installation)
@@ -787,6 +789,288 @@ pub fn push(outcome: &PushOutcome) {
         }
         (Some(before), _) => println!("Upstream: {before}"),
         (None, _) => {}
+    }
+}
+
+/// Human timestamp (the §25 RFC 3339 wire form, verbatim).
+fn timestamp(value: &time::OffsetDateTime) -> String {
+    value.format(&Rfc3339).unwrap_or_else(|_| "?".to_owned())
+}
+
+/// The stable lowercase adapter identifier (§24, §130 style).
+fn adapter_id(adapter: beskar_core::registry::Adapter) -> &'static str {
+    match adapter {
+        beskar_core::registry::Adapter::Agents => "agents",
+        beskar_core::registry::Adapter::Claude => "claude",
+        beskar_core::registry::Adapter::Custom => "custom",
+    }
+}
+
+/// Comma-joined attachment names in attachment order (§17).
+fn attachment_names(installation: &Installation) -> String {
+    if installation.profiles.is_empty() {
+        "(none)".to_owned()
+    } else {
+        installation
+            .profiles
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// The §42-style attachment-order listing shared by `installation profiles`
+/// and the no-argument form of `installation profile-order` (§78, §79).
+pub fn installation_profiles(installation: &Installation) {
+    println!("{}", describe(installation));
+    println!("  id: {}", installation.id);
+    if installation.profiles.is_empty() {
+        println!("No attached profiles.");
+        return;
+    }
+    println!("Attachment order:");
+    let width = installation
+        .profiles
+        .iter()
+        .map(|a| a.name.len())
+        .max()
+        .unwrap_or(4);
+    for (index, a) in installation.profiles.iter().enumerate() {
+        println!(
+            "  {:>2}  {:<width$}  {}  attached {}",
+            index + 1,
+            a.name,
+            a.id,
+            timestamp(&a.attached_at),
+            width = width
+        );
+    }
+}
+
+/// The §79 attachment-order result (presentation-only change).
+pub fn profile_order(installation: &Installation, dry_run: bool) {
+    if dry_run {
+        println!("Dry run — no changes written (§91).");
+        println!("Attachment order would be:");
+    } else {
+        println!("Attachment order set for {}:", describe(installation));
+    }
+    for (index, a) in installation.profiles.iter().enumerate() {
+        println!("  {:>2}  {}", index + 1, a.name);
+    }
+    if !dry_run {
+        println!("Registry updated; skill files untouched (§79).");
+    }
+}
+
+/// The §84 `registry list` report.
+pub fn registry_list(installations: &[Installation]) {
+    if installations.is_empty() {
+        println!("No registered installations.");
+        return;
+    }
+    for installation in installations {
+        println!("{}", describe(installation));
+        println!("  id:       {}", installation.id);
+        println!("  adapter:  {}", adapter_id(installation.adapter));
+        println!(
+            "  profiles: {} ({})",
+            attachment_names(installation),
+            installation.profiles.len()
+        );
+    }
+    println!();
+    println!("{} installation(s)", installations.len());
+}
+
+/// The §84 `registry show` block: attachments in attachment order, the §27
+/// last-applied snapshot, and §30 workspace metadata.
+pub fn registry_show(installation: &Installation) {
+    println!("{}", describe(installation));
+    println!("  id:          {}", installation.id);
+    println!("  library id:  {}", installation.library_id);
+    println!("  adapter:     {}", adapter_id(installation.adapter));
+    println!("  source ref:  {}", installation.source_ref);
+    println!("  installed:   {}", timestamp(&installation.installed_at));
+    println!("  updated:     {}", timestamp(&installation.updated_at));
+    println!();
+
+    println!("Profiles (attachment order)");
+    if installation.profiles.is_empty() {
+        println!("  (none)");
+    }
+    for (index, a) in installation.profiles.iter().enumerate() {
+        println!(
+            "  {:>2}  {}  {}  attached {}",
+            index + 1,
+            a.name,
+            a.id,
+            timestamp(&a.attached_at)
+        );
+    }
+    println!();
+
+    println!("Last applied");
+    match &installation.last_applied.source_commit {
+        Some(commit) => println!("  commit: {}", commit),
+        None => println!("  commit: (never reconciled)"),
+    }
+    let membership = &installation.last_applied.skill_membership.skill_profiles;
+    if membership.is_empty() {
+        println!("  membership: (none recorded)");
+    } else {
+        println!("  membership:");
+        for (skill, ids) in membership {
+            let owners: Vec<String> = ids
+                .iter()
+                .map(|id| {
+                    installation
+                        .profiles
+                        .iter()
+                        .find(|a| a.id == *id)
+                        .map(|a| a.name.clone())
+                        .unwrap_or_else(|| id.to_string())
+                })
+                .collect();
+            println!("    {:<24} <- {}", skill.as_str(), owners.join(", "));
+        }
+    }
+    println!();
+
+    match &installation.workspace_info {
+        Some(info) => {
+            println!("Workspace info (§30)");
+            println!(
+                "  git root: {}",
+                info.git_root
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "(none)".to_owned())
+            );
+            println!(
+                "  origin:   {}",
+                info.origin_url.as_deref().unwrap_or("(none)")
+            );
+            println!(
+                "  HEAD at registration: {}",
+                info.head_at_registration.as_deref().unwrap_or("(none)")
+            );
+        }
+        None => println!("Workspace info: (none recorded)"),
+    }
+}
+
+/// Why a registration is stale for `registry prune` (§84).
+fn prune_reason(installation: &Installation) -> &'static str {
+    if !installation.workspace.is_dir() {
+        "missing workspace"
+    } else {
+        "missing target"
+    }
+}
+
+/// The §84 `registry prune` report.
+pub fn registry_prune(report: &PruneReport) {
+    if report.removed.is_empty() {
+        println!(
+            "Nothing to prune — every registration has an existing workspace \
+             and target."
+        );
+        return;
+    }
+    if report.dry_run {
+        println!("Dry run — no changes written (§91).");
+        println!("Would remove:");
+    } else {
+        println!("Removed:");
+    }
+    for installation in &report.removed {
+        println!(
+            "  {} ({})",
+            describe(installation),
+            prune_reason(installation)
+        );
+    }
+    let verb = if report.dry_run {
+        "would be removed"
+    } else {
+        "removed"
+    };
+    println!(
+        "{} registration(s) {verb}, {} kept.",
+        report.removed.len(),
+        report.kept
+    );
+}
+
+/// The §84 `registry repair` report.
+pub fn registry_repair(report: &RepairReport) {
+    if report.entries.is_empty() {
+        println!("No registered installations — nothing to repair.");
+        return;
+    }
+    if report.dry_run
+        && report
+            .entries
+            .iter()
+            .any(|e| e.status == RepairStatus::Repaired)
+    {
+        println!("Dry run — no changes written (§91).");
+        println!();
+    }
+    for entry in &report.entries {
+        render_repair_entry(entry);
+        println!();
+    }
+    let repaired = report
+        .entries
+        .iter()
+        .filter(|e| e.status == RepairStatus::Repaired)
+        .count();
+    let manual = report
+        .entries
+        .iter()
+        .filter(|e| e.status == RepairStatus::NeedsManualAction)
+        .count();
+    if manual > 0 {
+        println!(
+            "{repaired} repaired, {} ok, {manual} needing manual action — repair \
+             never guesses, deletes records, or resolves protected states (§4, §39).",
+            report.entries.len() - repaired - manual
+        );
+    } else {
+        println!(
+            "{repaired} repaired, {} ok.",
+            report.entries.len() - repaired
+        );
+    }
+}
+
+fn render_repair_entry(entry: &RepairEntry) {
+    println!("{}", describe(&entry.installation));
+    match entry.status {
+        RepairStatus::Repaired => {
+            let what: Vec<&str> = entry
+                .repairs
+                .iter()
+                .map(|repair| match *repair {
+                    "profile_names_refreshed" => "refreshed last-known profile names",
+                    "workspace_info_refreshed" => "refreshed workspace info (§30)",
+                    other => other,
+                })
+                .collect();
+            println!("  repaired: {}", what.join(", "));
+        }
+        RepairStatus::NothingToDo => println!("  ok — nothing to do"),
+        RepairStatus::NeedsManualAction => {
+            let Some(manual) = &entry.manual else {
+                println!("  ! needs manual action");
+                return;
+            };
+            println!("  ! needs manual action ({})", manual.reason);
+            println!("    {}", manual.guidance);
+        }
     }
 }
 

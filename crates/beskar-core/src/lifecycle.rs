@@ -479,6 +479,21 @@ impl Lifecycle {
         })
     }
 
+    /// Resolves `installation profile-order` arguments (§79) to attachment
+    /// IDs, in the given order: each argument may name an attached profile by
+    /// immutable ID, last-known Registry name, or current Library name (§40
+    /// tolerance). Two arguments resolving to the same attachment surface
+    /// later as a permutation violation in [`Self::reorder_attachments`].
+    pub fn resolve_attachment_order(
+        &self,
+        installation: &Installation,
+        args: &[&str],
+    ) -> Result<Vec<ProfileId>> {
+        args.iter()
+            .map(|arg| self.identify_attachment(installation, arg).map(|a| a.id))
+            .collect()
+    }
+
     /// Repoints a registered installation at its workspace's new location
     /// (spec §84 `registry move`, the §30/§137.30 recovery for moved
     /// workspaces). Registry bookkeeping only — target contents are never
@@ -910,18 +925,7 @@ impl Lifecycle {
     /// Git root, sanitized origin URL, HEAD at registration. Failures are
     /// informational too — plain directories register without metadata.
     fn workspace_info(&self, workspace: &Path) -> WorkspaceInfo {
-        let git_root = beskar_git::discover_repo(workspace).ok().flatten();
-        let origin_url = git_root
-            .as_ref()
-            .and_then(|root| self.backend.remote_url(root, "origin").ok().flatten());
-        let head_at_registration = git_root
-            .as_ref()
-            .and_then(|root| self.backend.resolve_ref(root, "HEAD").ok());
-        WorkspaceInfo {
-            git_root,
-            origin_url,
-            head_at_registration,
-        }
+        WorkspaceInfo::capture(&self.backend, workspace)
     }
 }
 

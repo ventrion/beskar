@@ -283,6 +283,13 @@ enum Command {
         #[command(subcommand)]
         action: LibraryAction,
     },
+    /// Installation profile-attachment namespace (spec §78-§79): the richer
+    /// forms of add/remove (§78: attach = add, detach = remove — both
+    /// reconcile) plus attachment-order management (§79).
+    Installation {
+        #[command(subcommand)]
+        action: InstallationAction,
+    },
     /// Read-only diagnostics over configuration, library, and registry —
     /// never repairs automatically (spec §83).
     Doctor {
@@ -323,6 +330,49 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum RegistryAction {
+    /// List every registered installation (spec §84).
+    List {
+        /// Emit only structured JSON on stdout (§92, §130).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one installation: attachments in attachment order, last-applied
+    /// membership, source ref, last reconciled commit, and §30 workspace
+    /// metadata (spec §84). The ID may be a full UUID or an unambiguous
+    /// prefix.
+    Show {
+        /// Installation ID (full UUID or unambiguous prefix).
+        id: String,
+        /// Emit only structured JSON on stdout (§92, §130).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove registrations whose workspace OR target directory no longer
+    /// exists (spec §84). Registry bookkeeping only — never touches any
+    /// file under a workspace or target.
+    Prune {
+        /// List what would be removed without writing anything (§91).
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit only structured JSON on stdout (§92, §130).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Conservative metadata repair (spec §84, §30): refreshes last-known
+    /// profile names from the library (never adds/removes attachments),
+    /// refreshes §30 workspace metadata for existing workspaces, and
+    /// verifies internal invariants. Never guesses moved paths (that is
+    /// `registry move`), deletes records or attachments, resolves protected
+    /// missing-profile states (§39), touches the network, or modifies
+    /// anything under workspaces/targets.
+    Repair {
+        /// Report what would change without writing anything (§91).
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit only structured JSON on stdout (§92, §130).
+        #[arg(long)]
+        json: bool,
+    },
     /// Repoint a registered installation at its workspace's new location
     /// (spec §84, §30 — the recovery for a moved workspace; §137.30).
     /// Registry bookkeeping only: target contents are never touched.
@@ -331,6 +381,92 @@ enum RegistryAction {
         id: String,
         /// The workspace's new path.
         new_path: PathBuf,
+        /// Emit only structured JSON on stdout (§92, §130).
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum InstallationAction {
+    /// List the profiles attached to an installation, in attachment order
+    /// (spec §78).
+    Profiles {
+        /// Workspace directory.
+        workspace: PathBuf,
+        /// Workspace-relative target directory (when the workspace has
+        /// more than one installation).
+        #[arg(long)]
+        target: Option<String>,
+        /// Emit only structured JSON on stdout (§92, §130).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Attach a profile to the installation and reconcile the resulting
+    /// skill union (spec §78: attach = add).
+    Attach {
+        /// Profile name (or immutable ID).
+        profile: String,
+        /// Workspace directory (must exist).
+        workspace: PathBuf,
+        /// Workspace-relative target directory (overrides --adapter).
+        #[arg(long)]
+        target: Option<String>,
+        /// Adapter selecting a conventional target (§24).
+        #[arg(long)]
+        adapter: Option<AdapterArg>,
+        /// Source ref (default: beskar.toml `default_ref`, §18; must match
+        /// the installation's existing ref, §23).
+        #[arg(long = "ref")]
+        reference: Option<String>,
+        /// Explicit consent to overwrite locally modified managed files (§47).
+        #[arg(long)]
+        force: bool,
+        /// Explicit consent to replace unmanaged same-name directories (§49).
+        #[arg(long)]
+        replace_unmanaged: bool,
+        /// Plan and validate without writing anything (§91).
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit only structured JSON on stdout (§92, §130).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Detach a profile from the installation and reconcile the remaining
+    /// profiles (spec §78: detach = remove).
+    Detach {
+        /// Profile by name (current or last-known) or ID (§40).
+        profile: String,
+        /// Workspace directory.
+        workspace: PathBuf,
+        /// Workspace-relative target directory.
+        #[arg(long)]
+        target: Option<String>,
+        /// Explicit consent to retire modified managed files (§51).
+        #[arg(long)]
+        force: bool,
+        /// Plan and validate without writing anything (§91).
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit only structured JSON on stdout (§92, §130).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show, or with arguments set, the attachment order of an installation
+    /// (spec §79). Setting the order is presentation-only: it must be a
+    /// permutation of the attached profiles and never rewrites skill files.
+    ProfileOrder {
+        /// Workspace directory.
+        workspace: PathBuf,
+        /// Profiles in the desired attachment order (by name or ID).
+        #[arg(value_name = "PROFILE")]
+        profiles: Vec<String>,
+        /// Workspace-relative target directory.
+        #[arg(long)]
+        target: Option<String>,
+        /// Plan and validate without writing anything (§91).
+        #[arg(long)]
+        dry_run: bool,
         /// Emit only structured JSON on stdout (§92, §130).
         #[arg(long)]
         json: bool,
@@ -696,6 +832,13 @@ impl Ctx {
     /// Opens the remote-synchronization session (§86).
     fn remote(&self) -> Result<Remote, ExitCode> {
         Remote::from_env().map_err(|err| self.fail(&err))
+    }
+
+    /// Opens the registry-maintenance session (§84, §86): unlike the
+    /// lifecycle, no active Library is required — registry maintenance is
+    /// machine-local (§32) and Library-derived repairs simply skip.
+    fn registry_service(&self) -> Result<beskar_core::registry_service::RegistryService, ExitCode> {
+        beskar_core::registry_service::RegistryService::from_env().map_err(|err| self.fail(&err))
     }
 
     /// The exit code for a finished mutation outcome: blocked plans demand
@@ -1200,9 +1343,126 @@ fn dispatch(command: Command) -> ExitCode {
                 Err(err) => ctx.fail(&err),
             }
         }
-        Command::Registry {
-            action: RegistryAction::Move { id, new_path, json },
-        } => {
+        Command::Registry { action } => dispatch_registry(action),
+        Command::Installation { action } => dispatch_installation(action),
+        Command::Tui => unreachable!("Tui is handled in main"),
+    }
+}
+
+fn dispatch_registry(action: RegistryAction) -> ExitCode {
+    match action {
+        RegistryAction::List { json } => {
+            let ctx = Ctx {
+                command: "registry list",
+                json,
+            };
+            let service = match ctx.registry_service() {
+                Ok(service) => service,
+                Err(code) => return code,
+            };
+            match service.list() {
+                Ok(installations) => {
+                    if json {
+                        println!(
+                            "{}",
+                            json_out::registry_list("registry list", &installations)
+                        );
+                    } else {
+                        render::registry_list(&installations);
+                    }
+                    ExitCode::from(exit_codes::SUCCESS)
+                }
+                Err(err) => ctx.fail(&err),
+            }
+        }
+        RegistryAction::Show { id, json } => {
+            let ctx = Ctx {
+                command: "registry show",
+                json,
+            };
+            let service = match ctx.registry_service() {
+                Ok(service) => service,
+                Err(code) => return code,
+            };
+            let registry = match service.load_registry() {
+                Ok(registry) => registry,
+                Err(err) => return ctx.fail(&err),
+            };
+            match service.resolve_installation(&registry, &id) {
+                beskar_core::registry_service::IdResolution::Found(installation) => {
+                    if json {
+                        println!(
+                            "{}",
+                            json_out::registry_show("registry show", &installation)
+                        );
+                    } else {
+                        render::registry_show(&installation);
+                    }
+                    ExitCode::from(exit_codes::SUCCESS)
+                }
+                beskar_core::registry_service::IdResolution::NotFound(_) => {
+                    ctx.fail(&Error::validation(format!(
+                        "no registered installation matches id {id:?} — see `beskar registry list`"
+                    )))
+                }
+                beskar_core::registry_service::IdResolution::Ambiguous { prefix, candidates } => {
+                    ctx.usage(format!(
+                        "installation id prefix {prefix:?} is ambiguous — it matches {} \
+                     installations: {}; use a longer prefix or the full id",
+                        candidates.len(),
+                        candidates
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                }
+            }
+        }
+        RegistryAction::Prune { dry_run, json } => {
+            let ctx = Ctx {
+                command: "registry prune",
+                json,
+            };
+            let service = match ctx.registry_service() {
+                Ok(service) => service,
+                Err(code) => return code,
+            };
+            match service.prune(beskar_core::registry_service::PruneRequest { dry_run }) {
+                Ok(report) => {
+                    if json {
+                        println!("{}", json_out::registry_prune("registry prune", &report));
+                    } else {
+                        render::registry_prune(&report);
+                    }
+                    ExitCode::from(report.exit_code())
+                }
+                Err(err) => ctx.fail(&err),
+            }
+        }
+        RegistryAction::Repair { dry_run, json } => {
+            let ctx = Ctx {
+                command: "registry repair",
+                json,
+            };
+            let service = match ctx.registry_service() {
+                Ok(service) => service,
+                Err(code) => return code,
+            };
+            match service.repair(beskar_core::registry_service::RepairRequest { dry_run }) {
+                Ok(report) => {
+                    if json {
+                        println!("{}", json_out::registry_repair("registry repair", &report));
+                    } else {
+                        render::registry_repair(&report);
+                    }
+                    // §94: manual action required is its own exit code.
+                    ExitCode::from(report.exit_code())
+                }
+                Err(err) => ctx.fail(&err),
+            }
+        }
+        RegistryAction::Move { id, new_path, json } => {
             let ctx = Ctx {
                 command: "registry move",
                 json,
@@ -1238,7 +1498,182 @@ fn dispatch(command: Command) -> ExitCode {
                 Err(err) => ctx.fail(&err),
             }
         }
-        Command::Tui => unreachable!("Tui is handled in main"),
+    }
+}
+
+fn dispatch_installation(action: InstallationAction) -> ExitCode {
+    match action {
+        InstallationAction::Profiles {
+            workspace,
+            target,
+            json,
+        } => {
+            let ctx = Ctx {
+                command: "installation profiles",
+                json,
+            };
+            let lifecycle = match ctx.lifecycle() {
+                Ok(l) => l,
+                Err(code) => return code,
+            };
+            let registry = match lifecycle.load_registry() {
+                Ok(registry) => registry,
+                Err(err) => return ctx.fail(&err),
+            };
+            match lifecycle.find_installation(&registry, &workspace, target.as_deref()) {
+                Ok(Some(installation)) => {
+                    if json {
+                        println!(
+                            "{}",
+                            json_out::installation_profiles("installation profiles", &installation)
+                        );
+                    } else {
+                        render::installation_profiles(&installation);
+                    }
+                    ExitCode::from(exit_codes::SUCCESS)
+                }
+                Ok(None) => ctx.fail(&beskar_core::Error::profile_attachment(format!(
+                    "no installation is registered for workspace {} ({})",
+                    workspace.display(),
+                    target.as_deref().unwrap_or("default target")
+                ))),
+                Err(err) => ctx.fail(&err),
+            }
+        }
+        InstallationAction::Attach {
+            profile,
+            workspace,
+            target,
+            adapter,
+            reference,
+            force,
+            replace_unmanaged,
+            dry_run,
+            json,
+        } => {
+            let ctx = Ctx {
+                command: "installation attach",
+                json,
+            };
+            let lifecycle = match ctx.lifecycle() {
+                Ok(l) => l,
+                Err(code) => return code,
+            };
+            // §78: attach = add + reconcile — the same service, verbatim.
+            let request = beskar_core::lifecycle::AddRequest {
+                workspace: &workspace,
+                profile: &profile,
+                target: target.as_deref(),
+                adapter: adapter.map(Adapter::from),
+                source_ref: reference.as_deref(),
+                options: options(force, replace_unmanaged),
+                dry_run,
+            };
+            match lifecycle.add(request) {
+                Ok(outcome) => ctx.done(&outcome, dry_run),
+                Err(err) => ctx.fail(&err),
+            }
+        }
+        InstallationAction::Detach {
+            profile,
+            workspace,
+            target,
+            force,
+            dry_run,
+            json,
+        } => {
+            let ctx = Ctx {
+                command: "installation detach",
+                json,
+            };
+            let lifecycle = match ctx.lifecycle() {
+                Ok(l) => l,
+                Err(code) => return code,
+            };
+            // §78: detach = remove + reconcile — the same service, verbatim.
+            let request = beskar_core::lifecycle::DetachRequest {
+                workspace: &workspace,
+                profile: &profile,
+                target: target.as_deref(),
+                force,
+                dry_run,
+            };
+            match lifecycle.remove(request) {
+                Ok(outcome) => ctx.done(&outcome, dry_run),
+                Err(err) => ctx.fail(&err),
+            }
+        }
+        InstallationAction::ProfileOrder {
+            workspace,
+            profiles,
+            target,
+            dry_run,
+            json,
+        } => {
+            let ctx = Ctx {
+                command: "installation profile-order",
+                json,
+            };
+            let lifecycle = match ctx.lifecycle() {
+                Ok(l) => l,
+                Err(code) => return code,
+            };
+            let registry = match lifecycle.load_registry() {
+                Ok(registry) => registry,
+                Err(err) => return ctx.fail(&err),
+            };
+            let installation =
+                match lifecycle.find_installation(&registry, &workspace, target.as_deref()) {
+                    Ok(Some(installation)) => installation,
+                    Ok(None) => {
+                        return ctx.fail(&beskar_core::Error::profile_attachment(format!(
+                            "no installation is registered for workspace {} ({})",
+                            workspace.display(),
+                            target.as_deref().unwrap_or("default target")
+                        )));
+                    }
+                    Err(err) => return ctx.fail(&err),
+                };
+            if profiles.is_empty() {
+                // §79: no arguments — list the current attachment order.
+                if json {
+                    println!(
+                        "{}",
+                        json_out::installation_profiles(
+                            "installation profile-order",
+                            &installation
+                        )
+                    );
+                } else {
+                    render::installation_profiles(&installation);
+                }
+                return ExitCode::from(exit_codes::SUCCESS);
+            }
+            let arguments: Vec<&str> = profiles.iter().map(String::as_str).collect();
+            let order = match lifecycle.resolve_attachment_order(&installation, &arguments) {
+                Ok(order) => order,
+                Err(err) => return ctx.fail(&err),
+            };
+            match lifecycle.reorder_attachments(beskar_core::lifecycle::ReorderRequest {
+                workspace: &workspace,
+                target: target.as_deref(),
+                order: &order,
+                dry_run,
+            }) {
+                Ok(outcome) => {
+                    if json {
+                        println!(
+                            "{}",
+                            json_out::reorder("installation profile-order", &outcome, dry_run)
+                        );
+                    } else {
+                        render::profile_order(&outcome.installation, dry_run);
+                    }
+                    ExitCode::from(exit_codes::SUCCESS)
+                }
+                Err(err) => ctx.fail(&err),
+            }
+        }
     }
 }
 
