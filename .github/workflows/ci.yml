@@ -1,77 +1,75 @@
-# Beskar CI (spec §125: test Linux, Windows, macOS; §114: pinned toolchain).
-#
-# Everything here is boring on purpose:
-# - stable Rust, no exotic components, no custom images;
-# - tests are fully hermetic (tempfile roots, BESKAR_HOME/BESKAR_LIBRARY
-#   child-env overrides, local path remotes only — spec §86, §125) and need
-#   NO network access and no service containers; only `git` is required,
-#   which GitHub runners provide on all three operating systems;
-# - each job caches cargo builds with Swatinem/rust-cache keyed on Cargo.lock.
-
-name: ci
+name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact commit to check for a release
+        type: string
+        required: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  fmt:
-    name: fmt
-    runs-on: ubuntu-latest
+  quality:
+    name: Formatting, lint and release scripts
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          components: rustfmt
-      - uses: Swatinem/rust-cache@v2
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
       - run: cargo fmt --all --check
-
-  clippy:
-    name: clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: python -m unittest discover -s scripts/tests -v
 
   test:
-    name: test (${{ matrix.os }})
+    name: Test (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, windows-2022, macos-15, macos-15-intel]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          key: ${{ matrix.os }}
-      # Hermetic, offline tests (spec §125): temp directories, local git
-      # fixtures, no network. `git` is preinstalled on all runner images.
-      - run: cargo test --workspace
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: cargo test --workspace --locked
+      - run: python -m unittest discover -s scripts/tests -v
 
-  # Optional backend coverage (spec §119/§125 portability): the default
-  # beskar-gui build is x11/glow so the matrix above never needs Wayland
-  # libraries. This isolated job additionally type-checks the opt-in
-  # `wayland` feature so it cannot rot silently. Keep it a separate job so
-  # any toolchain hiccup here never blocks the required matrix.
   gui-wayland:
-    name: gui wayland feature
-    runs-on: ubuntu-latest
+    name: GUI Wayland feature
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
       - name: Install Wayland development libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y libwayland-dev libxkbcommon-dev
-      - run: cargo check -p beskar-gui --features wayland
+      - run: cargo check -p beskar-gui --features wayland --locked

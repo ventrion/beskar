@@ -22,12 +22,25 @@ Reconciler   converges the target toward the desired set, never destroying
              anything Beskar does not own (modified files, extra files)
 ```
 
+## Downloads and releases
+
+Download the CLI (including `beskar tui`) and desktop GUI from
+[GitHub Releases](https://github.com/ventrion/beskar/releases). Archives are available
+for Linux x86-64, Windows x86-64, and macOS Intel / Apple Silicon, with SHA-256
+checksum files. Extract the archive and put `beskar` (`beskar.exe` on Windows) on
+`PATH`; launch `beskar-gui` for the desktop interface. Git must also be on `PATH`.
+
+Maintainers can run the **Create release** GitHub Actions workflow or ask an agent
+to use `$create-release`. See [the release guide](docs/RELEASING.md) for automation,
+platform requirements, and recovery instructions.
+
 ## Build
 
-Rust 1.85+ (edition 2024), `git` on `PATH`. No network access needed for tests.
+Rust 1.98.1 (pinned in `rust-toolchain.toml`), `git` on `PATH`. Once dependencies
+are downloaded, tests need no network access.
 
 ```sh
-cargo build --workspace          # CLI + TUI + everything but the GUI window
+cargo build --workspace          # CLI + TUI + desktop GUI
 cargo build -p beskar-gui        # desktop GUI (x11/glow by default)
 cargo test --workspace           # hermetic: tempdirs + local-path remotes only
 ```
