@@ -161,8 +161,14 @@ def package(target, tag, output):
                     handle.write(source, f"{stem}/{source.name}")
         else:
             archive = output / f"{stem}.tar.gz"
+            def permissions(member):
+                # Windows chmod cannot set Unix executable bits. Set archive
+                # metadata explicitly so packaging also works on that host.
+                executable = Path(member.name).name in ("beskar", "beskar-gui")
+                member.mode = 0o755 if member.isdir() or executable else 0o644
+                return member
             with tarfile.open(archive, "w:gz") as handle:
-                handle.add(staging, arcname=stem)
+                handle.add(staging, arcname=stem, filter=permissions)
     with archive.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     archive.with_name(archive.name + ".sha256").write_text(f"{digest}  {archive.name}\n", encoding="utf-8")

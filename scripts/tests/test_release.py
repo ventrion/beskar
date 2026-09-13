@@ -131,7 +131,9 @@ class ReleaseTests(unittest.TestCase):
             release.package(target, "v0.2.0", Path("dist"))
 
     def test_archive_contents_permissions_and_checksums(self):
-        self.make_archives()
+        # Windows ignores chmod's execute bits; tar headers must still be valid.
+        with patch.object(Path, "chmod"):
+            self.make_archives()
         self.assertEqual(len(list(Path("dist").iterdir())), 8)
         for target in release.TARGETS:
             stem = f"beskar-v0.2.0-{target}"
