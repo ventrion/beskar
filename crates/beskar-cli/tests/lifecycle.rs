@@ -798,3 +798,34 @@ fn verbose_and_logging_flags_are_accepted() {
         .assert()
         .success();
 }
+
+#[cfg(unix)]
+#[test]
+fn unregister_deleted_workspace_through_symlinked_parent() {
+    for relative in ["workspace", "nested/workspace"] {
+        let env = Env::new();
+        let aliases = TempRoot::new();
+        let alias = aliases.path().join("alias");
+        std::os::unix::fs::symlink(env.ws_root.path(), &alias).expect("symlink parent");
+        let workspace = env.ws_root.path().join(relative);
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let argument = alias.join(relative);
+        env.beskar()
+            .args(["add", "dev-core"])
+            .arg(&argument)
+            .assert()
+            .success();
+        // Delete the workspace and, in the nested case, its parent as well.
+        std::fs::remove_dir_all(env.ws_root.path().join(relative.split('/').next().unwrap()))
+            .expect("delete workspace subtree");
+        env.beskar()
+            .args(["unregister", "--keep-files"])
+            .arg(&argument)
+            .assert()
+            .success();
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(env.registry_path()).expect("registry"))
+                .expect("valid registry");
+        assert!(registry["installations"].is_null());
+    }
+}

@@ -18,6 +18,12 @@ same reconciliation engine.
   and migrate an existing skill-manager home.
 - Automate through structured JSON output and documented exit codes.
 
+### Fixes
+
+- Keep deleted workspace registrations discoverable through symlinked parent
+  directories and Windows canonical paths, so `unregister --keep-files` can
+  remove stale registrations on every supported platform.
+
 ### Downloads
 
 Each archive includes `beskar` and `beskar-gui` (with `.exe` on Windows), the README,

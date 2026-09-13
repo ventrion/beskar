@@ -1144,10 +1144,10 @@ fn existing_workspace(raw: &Path) -> Result<PathBuf> {
 }
 
 /// Comparison candidates for a workspace argument: the literal absolutized
-/// path plus its canonical form when it exists (§30 repair after moves,
-/// §137.30). Registration canonicalizes, so the canonical form matches
-/// whenever the directory still exists; after deletion only the literal
-/// form can match (§55 `--keep-files`).
+/// path plus its canonical form (§30 repair after moves, §137.30). For a
+/// deleted workspace, resolve its nearest existing ancestor and append the
+/// missing suffix. This preserves symlink resolution (macOS `/var`) and
+/// Windows long-path prefixes for §55 `--keep-files` lookup after deletion.
 fn workspace_candidates(raw: &Path) -> Vec<PathBuf> {
     let absolute = if raw.is_absolute() {
         raw.to_path_buf()
@@ -1158,10 +1158,18 @@ fn workspace_candidates(raw: &Path) -> Vec<PathBuf> {
         }
     };
     let mut candidates = vec![absolute.clone()];
-    if let Ok(canonical) = absolute.canonicalize()
-        && !candidates.contains(&canonical)
-    {
-        candidates.push(canonical);
+    for ancestor in absolute.ancestors() {
+        match ancestor.canonicalize() {
+            Ok(mut canonical) => {
+                canonical.push(absolute.strip_prefix(ancestor).expect("path ancestor"));
+                if !candidates.contains(&canonical) {
+                    candidates.push(canonical);
+                }
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => break,
+        }
     }
     candidates
 }
