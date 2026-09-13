@@ -1,2 +1,36 @@
 # Changelog
 
+## [0.1.0] - 2026-09-13
+
+### First release
+
+Beskar brings a Git-backed skill library, profiles, and project installations into
+one tool. Use the command line, terminal UI (`beskar tui`), or desktop GUI over the
+same reconciliation engine.
+
+### Highlights
+
+- Curate skills with ingestion, tags, ranking, and profile composition.
+- Preview installation changes, detect drift, protect locally modified skills,
+  and reconcile the combined membership of attached profiles.
+- Manage library branches and remotes with explicit fetch and push operations.
+- Inspect and repair installation registrations, diagnose problems with `doctor`,
+  and migrate an existing skill-manager home.
+- Automate through structured JSON output and documented exit codes.
+
+### Downloads
+
+Each archive includes `beskar` and `beskar-gui` (with `.exe` on Windows), the README,
+changelog, and release guide. Choose Linux x86-64, Windows x86-64, macOS Intel, or
+macOS Apple Silicon. SHA-256 checksum files accompany every archive.
+
+Git must be installed and available on `PATH`. Linux binaries are built on Ubuntu
+24.04 and require glibc 2.39 or newer; the GUI requires an X11/XWayland display and
+OpenGL. Windows builds target Windows 10 or newer. macOS builds target macOS 15 or
+newer. Desktop binaries are unsigned and macOS binaries are not notarized.
+
+### Known limitations
+
+See [implementation notes](https://github.com/ventrion/beskar/blob/v0.1.0/docs/IMPLEMENTATION.md)
+for remaining limitations and the current product coverage report.
+
