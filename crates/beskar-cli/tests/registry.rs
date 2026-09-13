@@ -347,6 +347,7 @@ fn registry_prune_dry_run_is_zero_write() {
     let env = Env::new();
     env.attach("dev-core");
     let gone = env.ws_root.child("gone");
+    let registered_path = gone.canonicalize().expect("workspace exists");
     env.beskar()
         .args(["add", "dev-core"])
         .arg(&gone)
@@ -369,7 +370,7 @@ fn registry_prune_dry_run_is_zero_write() {
     assert_eq!(document["kept"], 1);
     assert_eq!(
         document["removed"][0]["workspace"],
-        gone.display().to_string()
+        registered_path.display().to_string()
     );
 
     assert_eq!(
