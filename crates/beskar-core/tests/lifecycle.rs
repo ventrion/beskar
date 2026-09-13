@@ -1120,5 +1120,8 @@ fn registry_move_refuses_unknown_ids_and_missing_paths() {
 
     // The registration is untouched after both refusals.
     let registry = lifecycle.load_registry().expect("registry");
-    assert_eq!(registry.installations[0].workspace, env.workspace);
+    assert_eq!(
+        registry.installations[0].workspace,
+        env.workspace.canonicalize().expect("exists")
+    );
 }

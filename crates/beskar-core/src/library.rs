@@ -576,7 +576,7 @@ mod tests {
         write_library(root.path(), "550e8400-e29b-41d4-a716-446655440000");
         let nested = root.child("skills/engineering/process");
         let library = Library::discover_from(&nested, None).expect("discover");
-        assert_eq!(library.root(), root.path());
+        assert_eq!(library.root(), root.path().canonicalize().expect("exists"));
         assert_eq!(library.config().default_ref, "main");
         assert_eq!(
             library.config().library_id.to_string(),
