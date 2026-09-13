@@ -491,14 +491,10 @@ fn repair_refreshes_workspace_info_for_existing_workspaces() {
     let installation = &env.store().load().expect("registry").installations[0];
     let info = installation.workspace_info.as_ref().expect("info captured");
     assert_eq!(
-        info.git_root.as_ref().map(|p| p.display().to_string()),
-        Some(
-            env.workspace
-                .canonicalize()
-                .expect("exists")
-                .display()
-                .to_string()
-        )
+        info.git_root
+            .as_ref()
+            .map(|p| p.canonicalize().expect("Git root exists")),
+        Some(env.workspace.canonicalize().expect("workspace exists"))
     );
     assert!(info.head_at_registration.is_some());
 

@@ -901,7 +901,10 @@ mod tests {
         let repo = TestRepo::new();
         let root = discover_repo(repo.path()).expect("no error");
         let expected = std::fs::canonicalize(repo.path()).expect("canonicalize");
-        assert_eq!(root, Some(expected));
+        assert_eq!(
+            root.map(|path| path.canonicalize().expect("Git root exists")),
+            Some(expected)
+        );
     }
 
     #[test]

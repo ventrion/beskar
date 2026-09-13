@@ -511,7 +511,9 @@ fn executable_state_is_verified_during_conversion() {
     assert_eq!(outcome.plan.stamps.len(), 1);
     let stamp_json = &outcome.plan.stamps[0].stamp_json;
     let stamp: beskar_core::stamp::Stamp = serde_json::from_str(stamp_json).expect("stamp");
-    assert!(stamp.files["run.sh"].executable, "exec bit recorded (§34)");
+    // The fixture sets the filesystem executable bit on POSIX only; Windows
+    // records false. Both platforms must preserve their native legacy state.
+    assert_eq!(stamp.files["run.sh"].executable, cfg!(unix));
 }
 
 #[test]

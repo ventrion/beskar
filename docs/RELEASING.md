@@ -51,8 +51,9 @@ On Linux use `sha256sum -c ARCHIVE.sha256`; on macOS use
 `(Get-FileHash ARCHIVE.zip -Algorithm SHA256).Hash` to the checksum file.
 
 Git is a runtime requirement. Linux builds require glibc 2.39+ and the GUI uses
-X11/XWayland and OpenGL. Windows binaries target Windows 10+. macOS binaries target
-macOS 15+. The archive contains executables rather than installers or macOS app
+X11/XWayland and OpenGL. Windows binaries target Windows 10+ and require the
+[Microsoft Visual C++ v14 x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)
+(`VCRUNTIME140.dll`). macOS binaries target macOS 15+. The archive contains executables rather than installers or macOS app
 bundles. Windows code signing and macOS signing/notarization are not configured.
 
 ## Local scripts

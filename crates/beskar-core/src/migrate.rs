@@ -1352,7 +1352,9 @@ mod tests {
     #[test]
     fn relative_legacy_workspaces_are_rejected() {
         assert!(normalize_workspace("relative/path").is_err());
-        assert!(normalize_workspace("/absolute/path").is_ok());
+        let root = beskar_test_support::TempRoot::new();
+        let absolute = root.path().join("missing-workspace");
+        assert!(normalize_workspace(absolute.to_str().expect("UTF-8 fixture path")).is_ok());
     }
 
     #[test]

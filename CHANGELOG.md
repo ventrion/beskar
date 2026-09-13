@@ -32,8 +32,9 @@ macOS Apple Silicon. SHA-256 checksum files accompany every archive.
 
 Git must be installed and available on `PATH`. Linux binaries are built on Ubuntu
 24.04 and require glibc 2.39 or newer; the GUI requires an X11/XWayland display and
-OpenGL. Windows builds target Windows 10 or newer. macOS builds target macOS 15 or
-newer. Desktop binaries are unsigned and macOS binaries are not notarized.
+OpenGL. Windows builds target Windows 10 or newer and require the
+[Microsoft Visual C++ v14 x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
+macOS builds target macOS 15 or newer. Desktop binaries are unsigned and macOS binaries are not notarized.
 
 ### Known limitations
 
