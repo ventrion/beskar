@@ -116,7 +116,7 @@ fn empty_catalog_toml() -> String {
 pub fn init_library(backend: &dyn GitBackend, request: &InitRequest) -> crate::Result<InitOutcome> {
     match (request.remote, request.adopt) {
         (Some(remote), _) => clone_library(backend, request.dir, remote),
-        (None, Some(path)) => adopt_library(path),
+        (None, Some(path)) => adopt_library(backend, path),
         (None, None) => create_library(backend, request.dir),
     }
 }
@@ -175,10 +175,10 @@ fn clone_library(backend: &dyn GitBackend, dir: &Path, remote: &str) -> crate::R
 
 /// §87 "Adopt existing local Library": validate an already valid Library at
 /// an explicit path. Strictly read-only — adoption never writes.
-fn adopt_library(path: &Path) -> crate::Result<InitOutcome> {
+fn adopt_library(backend: &dyn GitBackend, path: &Path) -> crate::Result<InitOutcome> {
     let library = validate(path)?;
     let root = library.root().to_path_buf();
-    let head = beskar_git::SystemGitBackend.resolve_ref(&root, "HEAD").ok();
+    let head = backend.resolve_ref(&root, "HEAD").ok();
     Ok(InitOutcome {
         kind: InitKind::Adopted,
         path: root,
@@ -311,7 +311,52 @@ mod tests {
     }
 
     #[test]
-    fn adoption_validates_without_writing() {
+    fn adoption_validates_without_writing_and_uses_injected_backend() {
+        #[derive(Debug)]
+        struct AdoptBackend {
+            root: PathBuf,
+            head: String,
+        }
+
+        macro_rules! unexpected_git_operations {
+            ($($method:ident($($argument:ident: $argument_type:ty),*) -> $output:ty;)*) => {
+                $(fn $method(&self, $($argument: $argument_type),*) -> beskar_git::Result<$output> {
+                    panic!(concat!("unexpected Git operation during adoption: ", stringify!($method)));
+                })*
+            };
+        }
+
+        impl GitBackend for AdoptBackend {
+            fn resolve_ref(&self, repo: &Path, ref_name: &str) -> beskar_git::Result<String> {
+                assert_eq!(repo, self.root);
+                assert_eq!(ref_name, "HEAD");
+                Ok(self.head.clone())
+            }
+
+            unexpected_git_operations! {
+                tree(_repo: &Path, _commit: &str, _path: &str) -> Vec<beskar_git::TreeEntry>;
+                tree_recursive(_repo: &Path, _commit: &str, _path: &str) -> Vec<beskar_git::TreeEntry>;
+                blob(_repo: &Path, _commit: &str, _path: &str) -> Vec<u8>;
+                last_commit_touching(_repo: &Path, _commit: &str, _path: &str) -> Option<String>;
+                status(_repo: &Path) -> beskar_git::GitStatus;
+                remote_url(_repo: &Path, _remote: &str) -> Option<String>;
+                commit_paths(_repo: &Path, _message: &str, _paths: &[String]) -> Option<String>;
+                list_branches(_repo: &Path) -> Vec<beskar_git::BranchInfo>;
+                switch_branch(_repo: &Path, _name: &str) -> ();
+                create_branch(_repo: &Path, _name: &str) -> ();
+                ahead_behind(_repo: &Path, _from: &str, _to: &str) -> (usize, usize);
+                last_commit_info(_repo: &Path, _commit: &str, _path: &str) -> Option<beskar_git::CommitInfo>;
+                fetch(_repo: &Path, _remote: &str) -> ();
+                push_branch(_repo: &Path, _remote: &str, _branch: &str, _set_upstream: bool) -> ();
+                merge_ff_only(_repo: &Path, _commitish: &str) -> ();
+                update_branch_ref(_repo: &Path, _branch: &str, _new_head: &str, _expected_old: &str) -> ();
+                is_ancestor(_repo: &Path, _ancestor: &str, _descendant: &str) -> bool;
+                ls_remote_branch(_repo: &Path, _remote: &str, _branch: &str) -> Option<String>;
+                init_repo(_dir: &Path) -> ();
+                clone_repo(_url: &str, _dir: &Path) -> ();
+            }
+        }
+
         let root = tempfile::tempdir().expect("tmp");
         let dir = root.path().join("lib");
         beskar_test_support::git::seed_repo_identity(&dir);
@@ -326,9 +371,14 @@ mod tests {
         .expect("init");
         let marker = dir.join("catalog.toml");
         let before = std::fs::read_to_string(&marker).expect("read");
+        let backend = AdoptBackend {
+            root: dir.canonicalize().expect("canonical root"),
+            head: "a".repeat(40),
+        };
+        assert_ne!(created.head.as_deref(), Some(backend.head.as_str()));
 
         let outcome = init_library(
-            &SystemGitBackend,
+            &backend,
             &InitRequest {
                 dir: &dir,
                 remote: None,
@@ -339,6 +389,8 @@ mod tests {
 
         assert_eq!(outcome.kind, InitKind::Adopted);
         assert_eq!(outcome.library_id, created.library_id);
+        assert_eq!(outcome.path, backend.root);
+        assert_eq!(outcome.head.as_deref(), Some(backend.head.as_str()));
         assert_eq!(std::fs::read_to_string(&marker).expect("read"), before);
     }
 
