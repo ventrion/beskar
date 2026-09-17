@@ -371,8 +371,9 @@ mod tests {
         .expect("init");
         let marker = dir.join("catalog.toml");
         let before = std::fs::read_to_string(&marker).expect("read");
+        let adopt = dir.join("..").join("lib");
         let backend = AdoptBackend {
-            root: dir.canonicalize().expect("canonical root"),
+            root: adopt.clone(),
             head: "a".repeat(40),
         };
         assert_ne!(created.head.as_deref(), Some(backend.head.as_str()));
@@ -382,7 +383,7 @@ mod tests {
             &InitRequest {
                 dir: &dir,
                 remote: None,
-                adopt: Some(&dir),
+                adopt: Some(&adopt),
             },
         )
         .expect("adopt");
