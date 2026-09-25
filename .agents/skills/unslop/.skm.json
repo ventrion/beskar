@@ -1,0 +1,9 @@
+{
+  "skm": 1,
+  "source": "unslop",
+  "collectionCommit": "9d8bc83cb33f160e8c2e00dafa66c84089489148",
+  "files": {
+    "SKILL.md": "sha256:d6deb99551699eb6dcd95febf383f6ddf18feb8e8fa01ce1cb6fff3378fc5611",
+    "agents/openai.yaml": "sha256:b3bb39be713c8d83918feb161a729f9f3efaabe2c04eeff638771b79422b69f0"
+  }
+}

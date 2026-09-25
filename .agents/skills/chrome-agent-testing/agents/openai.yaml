@@ -1,0 +1,3 @@
+interface:
+  display_name: "Chrome agent testing"
+  short_description: "Browser test automation via chrome-agent"

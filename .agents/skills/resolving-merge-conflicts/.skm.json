@@ -1,0 +1,9 @@
+{
+  "skm": 1,
+  "source": "resolving-merge-conflicts",
+  "collectionCommit": "caf77848fe963fae93d7b5d14d18e92fa35884c1",
+  "files": {
+    "SKILL.md": "sha256:aff93acc1a583fceac9ca36305d670f547846b85b990912c24957f4201cd5ace",
+    "agents/openai.yaml": "sha256:a1f4f96838f2ed6282eb28abbbf99029cb8fadce552baf53da90a025b8bffddf"
+  }
+}

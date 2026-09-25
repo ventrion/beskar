@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<!--
+  Functional Architecture Map (interactive). GENERATED from modules.json by the codemap skill.
+  Do not hand-edit — edit modules.json and re-run render.py.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Functional Architecture Map</title>
+<style>
+  :root{
+    --bg:#131517; --bg2:#0e1012; --panel:#1b1e21; --panel2:#202428;
+    --ink:#e8e6e3; --muted:#9aa1a8; --faint:#6b7280;
+    --border:#2a2e33; --border2:#363b41;
+    --accent:#f59e0b; --accent-dim:#b4730e; --accent-soft:rgba(245,158,11,.14);
+    --in:#7c8794; --out:#f59e0b;
+    --c-low:#525a62; --c-med:#7e8893; --c-high:#c9cdd2; --c-core:#f59e0b;
+    --mono:"SF Mono",ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);
+    color:var(--ink); font-family:var(--sans); -webkit-font-smoothing:antialiased; overflow:hidden;}
+  .app{display:grid; grid-template-columns:1fr 348px; grid-template-rows:auto 1fr; height:100vh}
+  header{grid-column:1/3; display:flex; align-items:center; gap:16px; padding:12px 20px;
+    border-bottom:1px solid var(--border); background:var(--bg);}
+  header .mark{width:22px;height:22px;border-radius:6px;flex:0 0 auto;background:var(--accent);}
+  header h1{font-size:14px;font-weight:600;margin:0;letter-spacing:.1px;white-space:nowrap}
+  header h1 span{color:var(--muted);font-weight:400}
+  header .sub{font-size:11.5px;color:var(--faint);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  header .spacer{flex:1}
+  .search{display:flex;align-items:center;gap:8px;background:var(--panel);
+    border:1px solid var(--border);border-radius:8px;padding:7px 11px;width:230px;}
+  .search:focus-within{border-color:var(--border2)}
+  .search input{background:none;border:none;outline:none;color:var(--ink);font-family:var(--sans);font-size:12.5px;width:100%;}
+  .search svg{flex:0 0 auto;opacity:.6}
+  .btn{font:inherit;font-size:12px;color:var(--muted);background:var(--panel);
+    border:1px solid var(--border);border-radius:8px;padding:7px 12px;cursor:pointer;transition:.12s;}
+  .btn:hover{color:var(--ink);border-color:var(--border2);background:var(--panel2)}
+  .btn.active{color:#0e0f11;background:var(--accent);border-color:var(--accent)}
+  .filt{font:inherit;font-size:12px;color:var(--muted);background:var(--panel);
+    border:1px solid var(--border);border-radius:8px;padding:7px 8px;cursor:pointer;max-width:150px}
+  .filt:hover{color:var(--ink);border-color:var(--border2);background:var(--panel2)}
+  .filt.on{color:#1a1a1a;background:var(--accent);border-color:var(--accent)}
+  .fcount{font-family:var(--mono);font-size:10.5px;color:var(--accent);white-space:nowrap;min-width:52px}
+  .board-wrap{position:relative;overflow:auto;background:var(--bg2)}
+  .board{position:relative;min-width:min-content;padding:26px 30px 60px}
+  svg.edges{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;overflow:visible}
+  .band{position:relative;z-index:2;margin-bottom:13px}
+  .band-head{display:flex;align-items:baseline;gap:10px;margin:0 2px 9px;position:sticky;left:0;}
+  .band-head .t{font-size:11px;font-weight:700;letter-spacing:.9px;text-transform:uppercase;color:var(--ink)}
+  .band-head .d{font-size:11px;color:var(--faint)}
+  .band-head .num{font-size:9.5px;color:var(--faint);border:1px solid var(--border);border-radius:20px;padding:1px 7px;font-family:var(--mono)}
+  .band-head .gloc{color:var(--muted);border-color:transparent;padding-left:0}
+  .band-body{display:flex;flex-wrap:wrap;gap:7px}
+  .wire{position:relative;z-index:2;display:flex;align-items:center;gap:14px;margin:6px 2px 16px;color:var(--accent);}
+  .wire .line{flex:1;height:1px;background:linear-gradient(90deg,transparent,var(--accent-dim),transparent)}
+  .wire .lbl{font-family:var(--mono);font-size:10.5px;letter-spacing:1px;color:var(--accent);white-space:nowrap}
+  .node{position:relative;background:var(--panel);border:1px solid var(--border);border-radius:9px;
+    padding:8px 30px 8px 12px;cursor:pointer;min-width:104px;
+    transition:transform .12s, border-color .12s, background .12s, box-shadow .12s, opacity .15s;user-select:none;}
+  .node::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:3px;background:var(--c-low);}
+  .node.c-med::before{background:var(--c-med)} .node.c-high::before{background:var(--c-high)}
+  .node.c-core::before{background:var(--c-core);box-shadow:0 0 8px var(--accent-soft)}
+  .node .lab{font-size:12px;font-weight:560;line-height:1.25;letter-spacing:.1px}
+  .node .meta{font-size:9.5px;color:var(--faint);font-family:var(--mono);margin-top:2px}
+  .node:hover{border-color:var(--border2);background:var(--panel2);transform:translateY(-1px)}
+  .node .chip{position:absolute;top:6px;right:7px;font-family:var(--mono);font-size:9px;font-weight:700;
+    line-height:1;padding:2px 4px;border-radius:4px;color:#0c0d0e;background:var(--h,#6b7280);opacity:0;transition:opacity .15s;}
+  .board.show-health .node::before{background:var(--h)!important;box-shadow:none}
+  .board.show-health .node .chip{opacity:1}
+  .board.show-health.has-sel .node:not(.lit) .chip{opacity:.25}
+  .board.has-sel .node{opacity:.26;filter:saturate(.7)}
+  .board.has-sel .node.lit{opacity:1;filter:none}
+  .node.sel{border-color:var(--accent);background:#241d12;box-shadow:0 0 0 1px var(--accent), 0 6px 22px rgba(245,158,11,.18);transform:translateY(-1px);}
+  .node.dep{border-color:var(--accent-dim)} .node.dependent{border-color:var(--in)}
+  aside{background:var(--panel);border-left:1px solid var(--border);overflow-y:auto;padding:20px 20px 40px;}
+  .empty-hint{color:var(--faint);font-size:12.5px;line-height:1.7} .empty-hint b{color:var(--muted);font-weight:600}
+  .legend{margin-top:22px} .legend h4,aside h4{font-size:10.5px;text-transform:uppercase;letter-spacing:1px;color:var(--faint);margin:0 0 10px}
+  .legend .row{display:flex;align-items:center;gap:9px;margin-bottom:7px;font-size:12px;color:var(--muted)}
+  .swatch{width:16px;height:9px;border-radius:3px;flex:0 0 auto}
+  .ln{width:26px;height:0;border-top-width:2px;border-top-style:solid;flex:0 0 auto}
+  .detail .kicker{font-family:var(--mono);font-size:10px;color:var(--accent);letter-spacing:.5px;text-transform:uppercase}
+  .detail h2{font-size:18px;margin:5px 0 3px;font-weight:650;line-height:1.2}
+  .detail .path{font-family:var(--mono);font-size:11px;color:var(--faint);word-break:break-all;margin-bottom:13px}
+  .pill-row{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:15px}
+  .pill{font-size:10.5px;border:1px solid var(--border2);border-radius:20px;padding:3px 9px;color:var(--muted);font-family:var(--mono)}
+  .pill.cpl{border-color:var(--accent-dim);color:var(--accent)}
+  .detail p.desc{font-size:13px;line-height:1.6;color:var(--ink);margin:0 0 16px}
+  .reltitle{font-size:10.5px;text-transform:uppercase;letter-spacing:1px;color:var(--faint);margin:16px 0 8px;display:flex;align-items:center;gap:7px}
+  .reltitle .dotc{width:7px;height:7px;border-radius:50%}
+  .rel{display:flex;flex-direction:column;gap:4px}
+  .rel button{text-align:left;font:inherit;font-size:12px;color:var(--muted);background:var(--panel);
+    border:1px solid var(--border);border-radius:7px;padding:6px 9px;cursor:pointer;transition:.13s;
+    display:flex;justify-content:space-between;align-items:center;gap:8px;}
+  .rel button:hover{color:var(--ink);border-color:var(--accent-dim);background:var(--panel2)}
+  .rel button .bnd{font-size:9px;font-family:var(--mono);color:var(--faint)}
+  .rel .none{font-size:11.5px;color:var(--faint);font-style:italic;padding:2px}
+  .clearbtn{margin-top:18px;width:100%}
+  .scorebox{display:flex;align-items:center;gap:12px;margin:2px 0 13px}
+  .scorebox .big{font-size:34px;font-weight:740;line-height:1;font-family:var(--mono)}
+  .scorebox .gr{font-size:13px;font-weight:700;border:1.5px solid;border-radius:7px;padding:3px 9px}
+  .scorebox .bar{flex:1;height:7px;border-radius:5px;background:#23272c;overflow:hidden}
+  .scorebox .bar i{display:block;height:100%;border-radius:5px}
+  .findings{display:flex;flex-direction:column;gap:7px;margin-top:4px}
+  .finding{border:1px solid var(--border);border-left-width:3px;border-radius:7px;padding:7px 9px;background:#16191c}
+  .finding .top{display:flex;align-items:center;gap:7px;margin-bottom:3px}
+  .finding .sev{font-family:var(--mono);font-size:8.5px;font-weight:700;padding:1px 5px;border-radius:4px;letter-spacing:.4px}
+  .finding .loc{font-family:var(--mono);font-size:10px;color:var(--muted);word-break:break-all}
+  .finding .txt{font-size:11.5px;line-height:1.5;color:#cfd3d8}
+  .sev-HIGH{background:#3a1714;color:#f0857a} .finding.sev-HIGH{border-left-color:#e0524b}
+  .sev-MED{background:#3a2c12;color:#e7b35e} .finding.sev-MED{border-left-color:#d9a441}
+  .sev-LOW{background:#23282d;color:#9aa1a8} .finding.sev-LOW{border-left-color:#525a62}
+  .tagchips{display:flex;flex-wrap:wrap;gap:5px;margin:0 0 13px}
+  .tg{font-size:9.5px;font-family:var(--mono);border-radius:5px;padding:2px 7px;background:#23282d;color:#aeb4bb;border:1px solid var(--border)}
+  .tg.bad{background:#2c1a17;color:#e88;border-color:#4a2420} .tg.ok{background:#1d2420;color:#8a9;border-color:#2a352e}
+  .report .stat-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:14px 0 6px}
+  .report .stat{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:9px 6px;text-align:center}
+  .report .stat .n{font-family:var(--mono);font-size:18px;font-weight:740;line-height:1}
+  .report .stat .l{font-size:8.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.5px;margin-top:3px}
+  .report h3{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--faint);margin:20px 0 8px}
+  .report .theme{font-size:12px;line-height:1.6;color:#cfd3d8;margin:0 0 9px;padding-left:11px;border-left:2px solid var(--accent-dim)}
+  .report .theme b{color:#fff;font-weight:600}
+  .grade-A{color:#76b39a;border-color:#3a5249} .grade-B{color:#b9c0c7;border-color:var(--border2)}
+  .grade-C{color:#d9a441;border-color:#5a4720} .grade-D{color:#e08a4a;border-color:#5a3a20} .grade-F{color:#e0524b;border-color:#5a2420}
+  .scrollnote{position:absolute;right:14px;bottom:12px;z-index:5;font-size:10.5px;color:var(--faint);font-family:var(--mono);pointer-events:none;background:#0e1012aa;padding:3px 8px;border-radius:6px;border:1px solid var(--border)}
+  .modal{position:fixed;inset:0;z-index:60;display:none;background:#0a0b0ccc;overflow:auto;padding:46px 20px}
+  .modal.open{display:block}
+  .modal .sheet{position:relative;max-width:740px;margin:0 auto;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:24px 26px 30px}
+  .modal .sheet h2{font-size:17px;font-weight:650;margin:0 0 3px;letter-spacing:.1px}
+  .modal .sheet .intro{font-size:12.5px;color:var(--faint);margin:0 0 6px;line-height:1.5}
+  .modal .xbtn{position:absolute;top:16px;right:16px}
+  .std-h4{font-size:10.5px;text-transform:uppercase;letter-spacing:1px;color:var(--faint);margin:22px 0 4px}
+  .std-row{display:flex;gap:13px;align-items:baseline;padding:8px 0;border-top:1px solid var(--border)}
+  .std-badge{flex:0 0 56px;font-family:var(--mono);font-weight:700;font-size:12px;text-align:center;border-radius:6px;padding:3px 0;color:#0c0d0e}
+  .std-range{flex:0 0 56px;font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .std-key{flex:0 0 116px}
+  .std-row .sev{font-family:var(--mono);font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px;letter-spacing:.4px}
+  .std-row .tg[contenteditable]{outline:none;min-width:40px}
+  .std-desc[contenteditable]{outline:1px dashed var(--border2);outline-offset:2px;border-radius:3px}
+  .xrm{flex:0 0 auto;background:none;border:none;color:var(--faint);cursor:pointer;font-size:12px;padding:0 2px;line-height:1}
+  .xrm:hover{color:#e0524b}
+  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(8px);z-index:80;
+    background:var(--panel2);border:1px solid var(--border2);color:var(--ink);font-size:12.5px;
+    padding:9px 14px;border-radius:8px;opacity:0;pointer-events:none;transition:.18s;box-shadow:0 6px 20px #0007}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .std-desc{flex:1;font-size:12.5px;color:#cfd3d8;line-height:1.5}
+  ::-webkit-scrollbar{width:11px;height:11px}
+  ::-webkit-scrollbar-thumb{background:#2c3137;border-radius:6px;border:3px solid var(--bg2)}
+  ::-webkit-scrollbar-track{background:transparent}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="mark"></div>
+    <div>
+      <h1 id="projTitle">Functional Architecture Map</h1>
+      <div class="sub" id="subLine"></div>
+    </div>
+    <div class="spacer"></div>
+    <div class="search">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="search" placeholder="Find a module…" autocomplete="off"/>
+    </div>
+    <select class="filt" id="gradeFilter" title="Show only modules at/below this grade">
+      <option value="">All grades</option>
+      <option value="90">≤ B  (score &lt;90)</option>
+      <option value="75">≤ C  (&lt;75)</option>
+      <option value="60">≤ D  (&lt;60)</option>
+      <option value="40">F&nbsp;&nbsp;(&lt;40)</option>
+    </select>
+    <select class="filt" id="tagFilter" title="Show only modules with this issue"><option value="">Any issue</option></select>
+    <span class="fcount" id="fcount"></span>
+    <button class="btn" id="stdBtn">Standard</button>
+    <button class="btn" id="reportBtn">Audit report</button>
+    <button class="btn" id="healthBtn">Color: coupling</button>
+    <button class="btn" id="spineBtn">Data-flow spine</button>
+  </header>
+  <div class="board-wrap" id="boardWrap">
+    <div class="board" id="board">
+      <svg class="edges" id="edges">
+        <defs>
+          <marker id="ah-out" markerWidth="9" markerHeight="9" refX="7" refY="4.2" orient="auto"><path d="M0,0 L8,4.2 L0,8.4 Z" fill="var(--out)"/></marker>
+          <marker id="ah-in" markerWidth="9" markerHeight="9" refX="7" refY="4.2" orient="auto"><path d="M0,0 L8,4.2 L0,8.4 Z" fill="var(--in)"/></marker>
+        </defs>
+      </svg>
+    </div>
+    <div class="scrollnote">click a module · scroll to pan</div>
+  </div>
+  <aside id="aside"><div id="detail"></div></aside>
+</div>
+<div class="modal" id="stdModal"></div>
+
+<script>
+const DATA = {"meta": {"project": "beskar", "lang": "en", "subtitle": "Skill manager for agent harnesses — CLI, TUI and GUI over one git-backed library", "generatedAt": "2026-09-12", "htmlPath": ".codemap/codemap.html", "mdPath": ".codemap/codemap.md", "spineDesc": "A `beskar install` parses args → Lifecycle resolves profiles into a desired set → the planner produces a Plan → the executor writes the workspace → Registry + Stamps record it, all through the git-backed Library.", "tracked_loc": 34203, "tracked_files": 56, "rev": "61627079480dcb575224c2ed361e5dfc0acf5231"}, "bands": [{"id": "fe_cli", "tier": "fe", "t": "Frontend · CLI", "d": "the normative behavioral interface"}, {"id": "fe_tui", "tier": "fe", "t": "Frontend · TUI", "d": "ratatui/crossterm terminal UI"}, {"id": "fe_gui", "tier": "fe", "t": "Frontend · GUI", "d": "eframe/egui desktop app"}, {"id": "wire1", "wire": true, "t": "◀ Library git repo · workspace fs · registry · stamps ▶"}, {"id": "svc", "tier": "be", "t": "Core · services", "d": "all business logic — the shells are thin over these"}, {"id": "model", "tier": "be", "t": "Core · model & platform", "d": "domain types and platform plumbing"}, {"id": "gitband", "tier": "be", "t": "Persistence · Git backend", "d": "GitBackend abstraction + system git"}, {"id": "testsup", "tier": "test", "t": "Test support", "d": "shared fixtures for integration tests"}, {"id": "tooling", "tier": "test", "t": "Tooling · Release automation", "d": "version bump, packaging and GitHub release publishing"}], "spine": ["cli_grammar", "core_lifecycle", "core_reconcile", "core_registry", "git_backend"], "reportThemes": [["Credential redaction at the Git boundary is a no-op for real input", "The one HIGH in the repo: `redact_url` (beskar-git/lib.rs:44-59) handles a bare URL, but `git_failure`/`network_failure` feed it whole stderr lines. For `fatal: unable to access 'https://user:pw@host/r.git/': ...` the line is returned unchanged (credentials survive); for scp-form lines it truncates the message. The module header promises §67 redaction 'from every error' and the tests only cover bare URLs. Today leakage is prevented mostly by git's own transport_anonymize_url, not by this code. Fix is small: scan the line for URL tokens and redact each, then add a stderr-line test."], ["Silent degradation, now traced to its source", "11 of 25 modules carry silent-except and 10 carry fallback. The re-audit shows most of them inherit from GitBackend: `remote_url` and `discover_repo` collapse every non-zero exit (not-a-repo, dubious ownership, corrupt config) into `Ok(None)`, `last_commit_info` turns a parse failure into 'no commit ever touched this path', and `parse_ls_tree` yields empty mode/oid instead of an error. Callers then add a second layer — init and lifecycle `.ok()` the HEAD lookup so a plain directory with a beskar.toml adopts as a Library with `head: None`; migrate writes the tip commit as `skill_commit` in a stamp it calls 'fully verified'. Making the backend distinguish 'absent' from 'failed' by exit code collapses most of the downstream findings at once."], ["The skill-scan rules exist three times, with one obvious owner", "library.rs `scan_skills_dir` + `reject_nested_roots` (private) are re-implemented near line-for-line by migrate.rs `validate_skills_working_tree` (doc: 'exactly as a Beskar library scan will') and again, in tolerant form, by editing.rs `collect_skill_names_tolerant`. Error texts have already drifted (§ references appended in one copy, both paths named in another). Inside library.rs itself the git-tree and working-tree pipelines duplicate the same rules with divergent messages, and profile uniqueness is checked twice. migrate's `find_committed_skill` is a weaker fork of `resolve_skills` and `detect_workspace_info` copies `WorkspaceInfo::capture`. Expose one source-agnostic scan core from library.rs and delete the forks — this single extraction is what drags library, migrate and lifecycle from B to C."], ["Spec contracts (§12, §26, §67) are enforced on one path and skipped on the sibling", "Symlink rejection runs on the working tree but a committed `120000` blob passes `resolve_skills` and is materialized as a regular file holding the link target. `beskar.toml` `skills_dir`/`profiles_dir` are joined onto the root unvalidated although `paths::validate_relative_path` exists, so cloned remote config can escape the Library. migrate's §26 pre-write check compares targets exactly while `Registry::insert` is case-insensitive, so a collision can surface in execute step 5 after the library commit and stamps are already written. `push_branch` passes the bare branch as refspec, so a leading '+' would force-push despite the 'never forces' doc. Each is a one-path gap: the correct rule already exists on the other path."], ["The TUI and GUI bridges are still twins", "Unchanged since the last run and still the largest single refactor: beskar-gui/services.rs mirrors beskar-tui/service.rs (~1,100 LoC, `to_native` byte-identical), both repeat plan/execute dispatch differing only in dry_run, and they have drifted (GUI drops rank validation the TUI performs). gui_services (64 C) is the only shell-layer C. Build each request once, parameterized by dry_run, and hoist mapping/validation into beskar-core."], ["The domain model and TUI runtime remain the reference points", "core_model (95 A) and tui_app (92 A) are unchanged and clean; reconcile, editing, status, registry, remote, platform and the four GUI/TUI view-layer modules sit at 82-88 B with only LOW findings. The new release_tooling module lands at 86 B: version bumping and packaging fail closed on every checked path, with the target list duplicated between release.py and release.yml and the unittest suite run twice on the same OS as its only debts. Fail-closed parsing of stamps, frontmatter and profile schemas, and plan-then-confirm-then-execute, are honored everywhere the auditors looked."], ["Oversized units: two are now worth splitting", "reduce.rs (2,497), state.rs (2,531), cli main.rs (2,301) and editing.rs (1,974) remain cohesive and sectioned. But migrate's `build_plan` (~340 lines, six phases, none independently testable) and beskar-git's 24 copies of the run/check-status/git_failure block (~90 lines that a `run_git_ok` helper would remove, and the one place to pin `LC_ALL=C` so auth classification stops depending on an English locale) have crossed from 'long' into 'hiding bugs'. Split those two first."]], "standard": {"rubric": [{"grade": "A", "score": 95, "range": "90–100", "en": "clean, well-scoped, idiomatic", "zh": "干净、职责单一、地道"}, {"grade": "B", "score": 82, "range": "75–89", "en": "minor issues: a documented shim, mild bloat", "zh": "小问题：有文档的兼容、轻微臃肿"}, {"grade": "C", "score": 67, "range": "60–74", "en": "notable hacks / fallbacks / bloat / duplication", "zh": "明显的 hack / 回退 / 臃肿 / 重复"}, {"grade": "D", "score": 50, "range": "40–59", "en": "significant legacy / stubs / duplication, or a protocol violation", "zh": "严重的遗留 / 占位 / 重复，或协议违规"}, {"grade": "F", "score": 25, "range": "0–39", "en": "broken, fake output, or unfinished-but-wired", "zh": "损坏、伪造输出，或未完成却已接线"}], "severities": [{"key": "HIGH", "en": "wrong / dangerous / fake, a protocol or security issue, or a genuine maintenance hazard", "zh": "错误 / 危险 / 伪造、协议或安全问题，或真正的维护地雷"}, {"key": "MED", "en": "a real smell a maintainer should fix", "zh": "维护者该修的真坏味"}, {"key": "LOW", "en": "a documented shim, a cosmetic cast, benign bloat — worth noting, not urgent", "zh": "有文档的兼容、装饰性 cast、良性臃肿 —— 值得记、不紧急"}], "coupling": [{"key": "core", "en": "system spine — central to almost everything", "zh": "系统主线 —— 几乎牵连一切"}, {"key": "high", "en": "many connections", "zh": "连接很多"}, {"key": "med", "en": "moderate", "zh": "中等"}, {"key": "low", "en": "leaf / self-contained", "zh": "叶子 / 自洽"}], "tags": [{"id": "monkeypatch", "label": "monkeypatch", "labelZh": "猴补丁", "bad": true, "en": "runtime mutation of another module / stdlib / vendor; reflection or prototype patching", "zh": "运行时改写别的模块/标准库/依赖；反射或原型补丁"}, {"id": "fallback", "label": "fallback", "labelZh": "回退兜底", "bad": true, "en": "'try the real thing, then fake/degrade'; a||b||c chains that hide which value is real", "zh": "“先试真的再退化/造假”；a||b||c 掩盖哪个是真值"}, {"id": "silent-except", "label": "silent-except", "labelZh": "静默吞错", "bad": true, "en": "swallowed errors: empty catch / except:pass / ignored return codes", "zh": "吞掉错误：空 catch / except:pass / 忽略返回码"}, {"id": "legacy", "label": "legacy", "labelZh": "遗留", "bad": true, "en": "deprecated/back-compat shims, dead-but-shipped code, parallel old+new paths", "zh": "遗留/兼容垫片、已发布的死代码、新旧并存"}, {"id": "dual-format", "label": "dual-format", "labelZh": "双格式", "bad": true, "en": "accepting two shapes for one field (snake||camel), patched through the code", "zh": "同一字段接受两种形态（snake||camel）并散落各处"}, {"id": "stub", "label": "stub", "labelZh": "占位桩", "bad": true, "en": "NotImplemented / TODO / dead buttons / demo scripts presented as real", "zh": "未实现/TODO/死按钮/演示脚本当成品"}, {"id": "fake-output", "label": "fake-output", "labelZh": "伪造输出", "bad": true, "en": "returns random/canned/hardcoded results where real work is implied", "zh": "本应真算的地方返回随机/写死结果"}, {"id": "duplication", "label": "duplication", "labelZh": "重复", "bad": true, "en": "copy-pasted logic, or an existing shared abstraction not reused", "zh": "复制粘贴，或已有共享抽象却不复用"}, {"id": "bloat", "label": "bloat", "labelZh": "臃肿", "bad": true, "en": "oversized file / function; too many responsibilities in one unit", "zh": "超大文件/函数；单元职责过多"}, {"id": "glue", "label": "glue", "labelZh": "胶水", "bad": true, "en": "valueless pass-through: rows of thin forwarders / no-op adapters", "zh": "无价值透传：成片薄包装 / 零转换适配器"}, {"id": "any-escape", "label": "any-escape", "labelZh": "类型逃逸", "bad": true, "en": "bypassing the type system: as any / @ts-ignore / dynamic / void* / reinterpret_cast / unsafe", "zh": "绕过类型系统：as any / @ts-ignore / dynamic / void* / reinterpret_cast / unsafe"}, {"id": "over-fit", "label": "over-fit", "labelZh": "过度特化", "bad": true, "en": "hardcoded to one case where a small generalization was expected", "zh": "硬编码单一情况，本应小幅泛化"}, {"id": "god-component", "label": "god-component", "labelZh": "上帝组件", "bad": true, "en": "one component/class/file doing far too much", "zh": "一个组件/类/文件做太多事"}, {"id": "placeholder", "label": "placeholder", "labelZh": "占位", "bad": true, "en": "unfinished UI / data presented as if complete", "zh": "未完成的 UI/数据当作已完成"}, {"id": "clean", "label": "clean", "labelZh": "干净", "bad": false, "en": "no material issues — well-scoped", "zh": "无实质问题 —— 职责单一"}]}, "modules": [{"id": "cli_grammar", "label": "CLI grammar & dispatch", "band": "fe_cli", "path": "crates/beskar-cli/src/main.rs", "desc": "clap grammar, argument validation, command dispatch and exit-code mapping for the `beskar` binary — the normative interface.", "coupling": "med", "deps": ["core_editing", "core_lifecycle", "core_reconcile", "core_registry", "core_remote"], "loc": 2301, "score": 82, "grade": "B", "tags": ["duplication", "stub"], "findings": [{"sev": "LOW", "loc": "crates/beskar-cli/src/main.rs:216-219", "text": "Dead flag: `--prune` is defined in the grammar with a doc comment admitting \"this changes nothing\" and is bound as `prune: _` in dispatch (line 1121), never read. Documented no-op kept for grammar expressiveness; a `--no-prune` variant or removal would be cleaner."}, {"sev": "LOW", "loc": "crates/beskar-cli/src/main.rs:1123-1128", "text": "Magic-number exit-code protocol: core's `outcome.exit_code()` returns raw 1/3/4 and the CLI re-matches literals (`1 => FAILURE, 3 => ACTION_REQUIRED, 4 => PARTIAL_SUCCESS`). The CLI owning exit codes is correct, but an enum from beskar-core instead of bare ints would make the contract non-fragile."}, {"sev": "LOW", "loc": "crates/beskar-cli/src/main.rs:1535-1540", "text": "Copy-pasted scaffolding: the identical \"no installation is registered for workspace {} ({})\" error is hand-built at 1538 and 1632; overall ~39 copies of the `match ctx.editor()/lifecycle()/remote() { Ok(v)=>v, Err(code)=>return code }` open-helper and ~37 copies of the `if json { json_out } else { render }` + ExitCode pattern. A combinator (or `?` over Result<ExitCode,ExitCode>) would remove ~150 lines without hurting clarity."}, {"sev": "LOW", "loc": "crates/beskar-cli/src/main.rs:1296-1311", "text": "Init's human rendering is inline `println!` formatting (verb selection, field lines, HEAD truncation) inside dispatch, bypassing the module's own render.rs/json_out.rs split that every other command follows."}, {"sev": "LOW", "loc": "crates/beskar-cli/src/main.rs:1350", "text": "`Command::Tui => unreachable!(\"Tui is handled in main\")` — dispatch carries a panicking arm because Tui is special-cased in main(); folding Tui into dispatch (or excluding it from the enum) would remove the latent panic path."}]}, {"id": "cli_render", "label": "CLI rendering", "band": "fe_cli", "path": "crates/beskar-cli/src/render.rs + json_out.rs", "desc": "human-readable tables and machine-readable JSON output for CLI results (plans, status, doctor, registry).", "coupling": "low", "deps": ["core_doctor", "core_editing", "core_lifecycle", "core_migrate", "core_model", "core_reconcile", "core_registry", "core_remote", "core_status"], "loc": 2054, "score": 85, "grade": "B", "tags": ["fallback", "silent-except", "duplication"], "findings": [{"sev": "LOW", "loc": "crates/beskar-cli/src/json_out.rs:198", "text": "Silent null-on-error fallbacks in the machine contract: `serde_json::to_value(plan).unwrap_or(Value::Null)` (same pattern at :306 rfc3339, :389 adapter, :650 skill_show, :702 library_status). A serialization/format failure would silently emit JSON `null` where the documented shape promises an object, with no error signal. Unreachable in practice for these plain serde types, but in the one module whose output is declared stable API the fallback should expect()/propagate instead of degrading."}, {"sev": "LOW", "loc": "crates/beskar-cli/src/json_out.rs:203", "text": "`blocker_kind()` hand-duplicates the serde snake_case vocabulary of `BlockerKind` (10 hardcoded strings, doc-commented 'Kept in lockstep') while `plan()` at :198 serializes the very same type via serde — two sources of truth for the blocker vocabulary. Exhaustive match means new variants can't be missed, but a serde-side rename would silently diverge the strings emitted to scripts."}, {"sev": "LOW", "loc": "crates/beskar-cli/src/json_out.rs:539", "text": "`fetch()` hardcodes the envelope command string `envelope(\"fetch\", ...)` (same at :562 `\"push\"`, :745 `\"migrate skm\"`) while every sibling function takes `command: &str` from the caller — inconsistent scaffolding that would emit a wrong `command` field if the commands are ever aliased or nested."}]}, {"id": "tui_app", "label": "TUI runtime", "band": "fe_tui", "path": "crates/beskar-tui/src/app.rs (+ input/terminal/event/effect/lib)", "desc": "TUI runtime shell: event loop, key/mouse decoding, terminal setup, effect queue; owns the screen state.", "coupling": "low", "deps": ["tui_reduce", "tui_service", "tui_view", "core_status", "core_registry", "core_remote", "core_reconcile", "core_editing", "core_model", "core_platform"], "loc": 1207, "score": 92, "grade": "A", "tags": ["clean"], "findings": []}, {"id": "tui_reduce", "label": "TUI reducer", "band": "fe_tui", "path": "crates/beskar-tui/src/reduce.rs", "desc": "pure state-machine reducer: transitions TUI state on events and emits effects for the service bridge.", "coupling": "med", "deps": ["tui_app", "tui_service", "core_reconcile", "core_editing", "core_model", "core_platform"], "loc": 2497, "score": 83, "grade": "B", "tags": ["legacy", "over-fit"], "findings": [{"sev": "LOW", "loc": "crates/beskar-tui/src/reduce.rs:1262-1283", "text": "Effects reach the caller via two channels: helpers deep in the call stack push into a thread_local `PENDING` (queue_effect/start_plan/start_execute, plus direct pushes at 144, 685), which `reduce` then drains and merges into its return value (~reduce.rs:105-109) — yet `pub fn take_effects` remains as a second, vestigial drain whose doc ('Call exactly once per event, right after reduce') contradicts the in-reduce drain. Production (terminal.rs:89) uses only the return value; take_effects is invoked solely by tests to reset the global. Harmless but a leftover parallel path; threading `&mut Vec<Effect>` (as `reselect_after_refresh` already does) would remove the hidden global and the stale contract."}, {"sev": "LOW", "loc": "crates/beskar-tui/src/reduce.rs:157-166", "text": "`Key::Char('1'..='6')` hardcodes the screen count in the digit-range pattern while `Screen::ALL` is already used for the bounds-checked lookup; adding a 7th screen makes its digit key a silent no-op until the pattern is edited. Minor over-fit; a guard comparing against Screen::ALL.len() would self-maintain."}]}, {"id": "tui_view", "label": "TUI view", "band": "fe_tui", "path": "crates/beskar-tui/src/view.rs", "desc": "ratatui rendering of TUI state: panes, tables, dialogs.", "coupling": "low", "deps": ["tui_app", "core_reconcile", "core_remote"], "loc": 1661, "score": 85, "grade": "B", "tags": ["duplication"], "findings": [{"sev": "LOW", "loc": "crates/beskar-tui/src/view.rs:1143-1146", "text": "render_dialog re-colors lines by sniffing magic prefixes of its own formatter's output (`line.starts_with(\"  BLOCKED\")`, `\"  overwrite\"`, `\"  replace\"`) against strings emitted by plan_lines/change_lines (view.rs:92,100,107). Duplicated knowledge via string coupling — a wording change in the line builders silently drops the coloring; should carry style/kind alongside the text instead."}, {"sev": "LOW", "loc": "crates/beskar-tui/src/view.rs:26-30", "text": "timestamp() reads the wall clock (`time::OffsetDateTime::now_utc()`) inside the module whose header doc claims 'no I/O', and is exported for reduce.rs's activity entries (reduce.rs:1490,1513). Mild layering wart: clock access lives in the view module rather than the reducer/service side; harmless but misplaces a responsibility."}, {"sev": "LOW", "loc": "crates/beskar-tui/src/view.rs:548-553", "text": "Repeated per-pane list scaffolding: `ListState::default().with_selected(...)` + `List::new(items).block(block(title)).highlight_style(...)` + `render_stateful_widget` recurs ~6x (view.rs:548,587,690,818,1059,1176), including the focused ? selected_style() : BOLD ternary copied in skills/profiles/installations; a small helper could own it. Related cosmetic quirks: `&mut bucket_selected.clone()` (view.rs:552) renders a throwaway clone instead of a mut binding, `branch.clone().unwrap_or_else(...)` instead of the `as_deref()` idiom used elsewhere (view.rs:1001), and Dialog::Message/Membership build `Block::default().borders(Borders::ALL)` inline instead of the block() helper (view.rs:1279,1326)."}]}, {"id": "tui_service", "label": "TUI service bridge", "band": "fe_tui", "path": "crates/beskar-tui/src/service.rs + testkit.rs", "desc": "fulfills TUI effects through the same core APIs the CLI uses; testkit builds synthetic snapshots for reducer tests.", "coupling": "med", "deps": ["tui_app", "core_lifecycle", "core_status", "core_registry", "core_remote", "core_reconcile", "core_editing", "core_model", "core_platform", "git_backend"], "loc": 1192, "score": 79, "grade": "B", "tags": ["duplication", "silent-except"], "findings": [{"sev": "MED", "loc": "crates/beskar-tui/src/service.rs:241-527", "text": "plan() and execute() (fn at :241 and :527) are twin ~220-line exhaustive matches over the same 18 PendingAction variants; every request struct (AddRequest, DetachRequest, IngestRequest, PushRequest, ...) is rebuilt field-for-field in both arms with only `dry_run: true` flipped to `false`. Adding/altering an action means editing two parallel dispatches in lockstep; the compiler catches missing arms but not field drift between the plan and execute copies. A shared request-building step parameterized on dry_run (the flag the core services already expose) would remove most of the mirror, though the divergent result mapping (PlannedChange vs ActionOutcome) and branch ops without dry-run support justify some of the split."}, {"sev": "LOW", "loc": "crates/beskar-tui/src/service.rs:189-193", "text": "`.last_commit_touching(...).ok().flatten()` swallows git backend errors when resolving the skill-commit preview; the membership view silently shows no commit info on failure with no log. Display-only field, but the degradation is invisible."}, {"sev": "LOW", "loc": "crates/beskar-tui/src/service.rs:136", "text": "`std::fs::read_to_string(skill_md_path).unwrap_or_default()` turns an unreadable/missing SKILL.md into an empty preview string with no signal — a missing-file default hides a real state (skill listed in library but file unreadable) from the user."}, {"sev": "LOW", "loc": "crates/beskar-tui/src/service.rs:315-322", "text": "In plan(), the Unregister keep_files=true path hand-writes a PlannedChange::Summary (\"Remove the registry record only...\") instead of running the real `unregister(..., keep_files: true, dry_run: true)` that execute() (:603) actually performs — plan text and real behavior can drift; execute() is the source of truth but plan() skips the dry-run for this one case."}]}, {"id": "gui_shell", "label": "GUI shell & controller", "band": "fe_gui", "path": "crates/beskar-gui/src/{main,app,launch,controller}.rs", "desc": "eframe bootstrap and controller glue: runs core service calls, feeds results into pure GUI state.", "coupling": "low", "deps": ["gui_state", "gui_services", "gui_view", "core_model", "core_platform", "core_reconcile"], "loc": 1282, "score": 86, "grade": "B", "tags": ["duplication"], "findings": [{"sev": "LOW", "loc": "crates/beskar-gui/src/controller.rs:154-166", "text": "ConfirmApply::Replan arm re-implements plan_action's body verbatim (set_busy -> services::plan -> state.planned/operation_failed -> set_busy(None)), differing only in passing explicit consent options instead of ReconcileOptions::default(); parameterizing plan_action with options would remove the copy."}, {"sev": "LOW", "loc": "crates/beskar-gui/src/controller.rs:118-122", "text": "load_membership assigns state.installations.membership = Some(view) then immediately does membership.clone().expect(\"just set\") to build the dialog — a needless full-clone plus a self-referential expect; binding view once and cloning explicitly would be infallible by construction."}, {"sev": "LOW", "loc": "crates/beskar-gui/src/controller.rs:85-88", "text": "preview_workflow's error path surfaces the same failure through two channels at once: state.preview_failed (inline workflow.preview_error) AND state.operation_failed (activity entry + modal dialog); likely intentional belt-and-braces but one surface would do."}, {"sev": "LOW", "loc": "crates/beskar-gui/src/controller.rs:439", "text": "Test-only cosmetic: `let confirm = state.workflow_confirm()...` is never read and discarded via `let _ = confirm;` to suppress the unused warning instead of binding as _ or asserting on it."}]}, {"id": "gui_state", "label": "GUI state", "band": "fe_gui", "path": "crates/beskar-gui/src/state.rs + action.rs", "desc": "pure GUI state and transitions; mutations are only described as GuiAction values (plan → confirm → execute).", "coupling": "med", "deps": ["gui_view", "core_status", "core_registry", "core_remote", "core_reconcile", "core_editing", "core_model"], "loc": 2531, "score": 80, "grade": "B", "tags": ["silent-except", "duplication", "any-escape"], "findings": [{"sev": "MED", "loc": "crates/beskar-gui/src/state.rs:1256", "text": "silent-except: `rank: values[0].parse::<i64>().ok()` — a non-numeric rank (e.g. \"abc\") silently parses to None, which the SkillRank semantics treat as 'clear the rank' (comment: 'a blank rank clears the rank'); the user gets no error and their existing rank is wiped. The TUI's parallel code (beskar-tui/src/reduce.rs:426-436) validates the same field and toasts 'rank must be an integer (leave empty to clear)' — a behavioral divergence caused by the swallowed parse error."}, {"sev": "MED", "loc": "crates/beskar-gui/src/state.rs:1210", "text": "duplication: GUI `submit_input` (state.rs:1210-1283, required-field matrix + InputKind->GuiAction mapping) is a parallel reimplementation of the TUI's `submit_input` (beskar-tui/src/reduce.rs:382+), with sibling types InputKind/InputField/ConfirmDialog/PickDialog defined twice (state.rs vs beskar-tui/src/app.rs) and tag-splitting duplicated (`comma_separated` state.rs:1694 vs `split_tags` reduce.rs). Per-frontend state machines are spec-sanctioned, but this per-kind validation/mapping has no shared owner and has already diverged (see the rank-validation finding)."}, {"sev": "LOW", "loc": "crates/beskar-gui/src/state.rs:1300", "text": "stringly-typed type-system bypass: boolean pick choices are hardcoded `\"false\"/\"true\"` strings in PickDialog.values (state.rs:1385-1386) and recovered via `value == \"true\"` (state.rs:1300, 1307) instead of a typed bool/enum. Documented on PickKind and covered by a test, but an enum variant would make an invalid machine value unrepresentable."}]}, {"id": "gui_services", "label": "GUI service bridge", "band": "fe_gui", "path": "crates/beskar-gui/src/services.rs", "desc": "fulfills GuiActions through the shared core services (synchronous, local git/fs only).", "coupling": "med", "deps": ["gui_state", "gui_view", "core_lifecycle", "core_status", "core_registry", "core_remote", "core_reconcile", "core_editing", "core_library", "core_model", "core_platform", "git_backend"], "loc": 1532, "score": 64, "grade": "C", "tags": ["duplication", "bloat", "silent-except"], "findings": [{"sev": "MED", "loc": "crates/beskar-gui/src/services.rs:81", "text": "The GUI bridge is a near-verbatim sibling copy of crates/beskar-tui/src/service.rs (~840 LoC) fulfilling the same actions against the same core services: `to_native` is byte-identical, `owners` identical modulo a type path, `load_membership` near-verbatim (including the same `SkillName::parse(skill).ok()` idiom), and `gather`/`load_skill`/`install_change`/`library_change`/`reorder_change`/`update_all_lines`/`operation_outcome`/`library_outcome` all mirror the TUI versions. They have already drifted: GUI `update_all_lines` emits a 'nothing to do — every installation is up to date' line the TUI version lacks. No shared abstraction covers this; ~1,100 LoC must evolve in lockstep in two places."}, {"sev": "MED", "loc": "crates/beskar-gui/src/services.rs:665", "text": "Twin plan/execute dispatches repeated from the TUI bridge: `plan` (381-596, ~215 lines) and `execute` (665-955, ~290 lines) are parallel matches over GuiAction whose arms rebuild the identical core requests twice, differing only in `dry_run: true` vs `false` plus result wrapping — e.g. AttachProfile's AddRequest constructed at ~387-396 and again at ~669-680; IngestRequest with hardcoded `replace: false, recursive: false` at ~483-490 and ~814-821. ~15 of ~20 arms are mechanical twins that must be manually kept in sync; a request built once parameterized by dry_run would halve the surface. Forwarding itself is legitimate (the bridge adds titles, notes, blocked-plan-as-data, staged runs), but the duplicated arm-pairing is a real drift hazard."}, {"sev": "LOW", "loc": "crates/beskar-gui/src/services.rs:123", "text": "`std::fs::read_to_string(skill_md_path).unwrap_or_default()` in `load_skill` silently renders an unreadable SKILL.md (permissions error, IO failure) as empty content — a fallback that hides which case occurred on the skill preview surface."}, {"sev": "LOW", "loc": "crates/beskar-gui/src/services.rs:156", "text": "Silent degradation in `load_membership`: `SkillName::parse(skill).ok().and_then(...)` makes an unparseable skill name render identically to an absent skill (empty state/required_by), and `last_commit_touching(...).ok().flatten()` (line ~165) turns a git backend error into 'no commit found' with no log or signal."}]}, {"id": "gui_view", "label": "GUI view", "band": "fe_gui", "path": "crates/beskar-gui/src/view.rs + preview.rs", "desc": "egui rendering: screens, dialogs and the skill preview pane.", "coupling": "low", "deps": ["gui_state", "gui_services", "core_status", "core_reconcile", "core_model", "core_platform"], "loc": 1839, "score": 87, "grade": "B", "tags": ["any-escape"], "findings": [{"sev": "LOW", "loc": "crates/beskar-gui/src/view.rs:127", "text": "Repeated guarded-expect idiom at 16 call sites: `button(ui, services.is_some(), label)` then `services.expect(\"enabled\")` (also `state.git.branch.clone().expect(\"enabled\")` at view.rs:1060 behind the same `enabled` bool). Today it's safe — the `button` helper (view.rs:1438) returns false when disabled, so the expect never fires — but the invariant 'expect only runs when enabled' is enforced by hand at every site instead of by an `if let Some(services)` binding, so a future edit that reorders a check could panic. A small helper taking `Option<&Services>` would remove the expects entirely."}, {"sev": "LOW", "loc": "crates/beskar-gui/src/view.rs:1241", "text": "`dialogs` is ~197 lines handling all five Dialog variants (Confirm/Input/Pick/Message/Membership) in one match. Each arm is small and cohesive (one egui Window per variant), so this is benign per the size-alone-is-not-bloat guard, but the Input arm's every-frame buffer write-back (`state.dialog = Some(Dialog::Input(dialog))`) plus per-arm close-flag plumbing would read better as one function per dialog."}]}, {"id": "core_library", "label": "Library", "band": "svc", "path": "crates/beskar-core/src/library.rs", "desc": "Library discovery, structure validation and revision resolution over the git backend.", "coupling": "core", "deps": ["core_model", "core_platform", "git_backend"], "loc": 908, "score": 64, "grade": "C", "tags": ["duplication", "fallback"], "findings": [{"sev": "MED", "loc": "crates/beskar-core/src/library.rs:278-374", "text": "Two parallel skill-validation pipelines in one file: `resolve_skills` (git tree entries) and `scan_skills_dir` (lines 396-482, walkdir) each re-implement the same rule set — locate SKILL.md roots, reject SKILL.md directly under skills_dir, `reject_nested_roots`, `split_leaf`+`strip_prefix(\"{skills_dir}/\").unwrap_or_default()`+`validate_bucket`, leaf==frontmatter.name, duplicate-name rejection — with slightly divergent error texts (326 vs 451, 331-336 vs 465-470, 368-373 vs 475-481). Profile uniqueness (id + case-folded name) is likewise implemented twice: 224-249 (git) and 511-530 (fs). A source-agnostic core over an `(path, bytes)` entry list would collapse both."}, {"sev": "MED", "loc": "crates/beskar-core/src/library.rs:396", "text": "`scan_skills_dir` and `reject_nested_roots` are private, so `crates/beskar-core/src/migrate.rs:869-950` (`validate_skills_working_tree`, docstring: \"exactly as a Beskar library scan will\") is a near-verbatim copy including the inlined nested-root loop (911-921) and identical error strings; `crates/beskar-core/src/editing.rs:1765-1840` (`collect_skill_names_tolerant`) is a third re-implementation of the walk/symlink/special/leaf/duplicate rules. Clear owner is this module (export a reusable scan core or tolerant variant)."}, {"sev": "MED", "loc": "crates/beskar-core/src/library.rs:36-44", "text": "`open_at` stores `root.into()` verbatim while `discover_from` (62-64) canonicalizes `start` before calling `open_at(dir)`. So `root()` is canonical on the walk-up path but raw/relative/symlinked on the `BESKAR_LIBRARY` override path (58-61) and every direct `open_at` caller (init.rs:85, migrate.rs:751). `Library` derives `PartialEq` on `root`, and the inconsistency is locked in by tests: line 579 asserts canonical, line 606 asserts the raw override path is returned unchanged."}, {"sev": "MED", "loc": "crates/beskar-core/src/library.rs:33-44", "text": "Module doc (line 4) defines a Library as \"the user-level Git repository\", but `open_at` only reads `beskar.toml`; no `.git`/`resolve_ref` check. A plain directory with a `beskar.toml` opens and `scan()` (112) passes, so `init.rs::validate` (85) accepts a non-repo adoption and `adopt_library` masks it with `resolve_ref(..).ok()` → `head: None`; git failures surface later in unrelated operations."}, {"sev": "MED", "loc": "crates/beskar-core/src/library.rs:90-102", "text": "`skills_dir()`/`profiles_dir()`/`catalog_path()` do `self.root.join(&self.config.X)` with no validation of the config values; `LibraryConfig::parse_toml` (config.rs:70-79) only checks `schema`. `beskar.toml` is cloned remote content, and `Path::join` with `..`/absolute values escapes the root (§12: `..` MUST be rejected; `paths::validate_relative_path` exists but is not applied). On the git path (199-215) a multi-segment `skills_dir` can never match the non-recursive root tree, failing closed with a misleading \"has no directory\" error. Shared owner with config.rs, but this module is the consumer that claims to fail closed on bad `beskar.toml`."}, {"sev": "MED", "loc": "crates/beskar-core/src/library.rs:291-298", "text": "§12 symlink rejection is enforced only for the working tree (407, 496). On the authoritative committed path `resolve_skills` rejects only `Gitlink`; a committed symlink is `120000 blob` and `parse_ls_tree` (beskar-git/src/lib.rs:760-763) maps every `blob` to `TreeEntryKind::Blob` regardless of mode, so the symlink is accepted as a regular `ResolvedFile` (350-360, `executable: entry.is_executable()`) and later materialized as a regular file containing the link target. `mode` is available on `TreeEntry` but never inspected here (no `.mode` use in library.rs). Same for a symlinked `*.toml` in the profiles tree (225-227)."}, {"sev": "LOW", "loc": "crates/beskar-core/src/library.rs:341-343", "text": "`backend.last_commit_touching(repo, commit, root)?.unwrap_or_else(|| commit.to_owned())` — `None` means the path never existed (beskar-git test `last_commit_touching_is_none_for_never_existing_paths`), which is impossible for a root just listed in the tree; the fallback silently papers over a backend inconsistency instead of surfacing it."}, {"sev": "LOW", "loc": "crates/beskar-core/src/library.rs:502-504", "text": "§12 enforcement is uneven inside the file: `scan_skills_dir` rejects sockets/fifos/devices (416-421), but `scan_profiles_dir` only rejects symlinks and silently skips special objects, subdirectories and non-`.toml` files; on the git path `resolve_revision` (225-227) silently skips `Gitlink`/`Tree` entries in the profiles dir whereas `resolve_skills` rejects submodules."}, {"sev": "LOW", "loc": "crates/beskar-core/src/library.rs:136-137", "text": "Doc drift: `LibraryScan.profiles` is documented as \"ordered by name (§15)\" but `scan_profiles_dir` orders by file path (`files.sort()` at 506) and never checks filename == profile name; the git path returns a `BTreeMap<ProfileId, _>` (ordered by id), so the two scan shapes also disagree on ordering."}, {"sev": "LOW", "loc": "crates/beskar-core/src/library.rs:284-291", "text": "`tree_recursive` errors are relabelled \"revision {commit} has no readable skills directory\" although `resolve_revision` (199-215) has already verified the directory exists as a tree; any other git failure (missing binary, corrupt object) is misattributed. Original error text is retained, so cosmetic."}, {"sev": "LOW", "loc": "crates/beskar-core/src/library.rs:1-535", "text": "Genericity is appropriate: git access is behind `&dyn GitBackend`, directory names come from config, `discover_from` is DI-friendly (env read isolated in `discover`), no over-fit to a single layout. No `unsafe`, no non-test `unwrap`, no stubs, no dual-format. Production code is ~535 LoC (not bloated); in-file tests (536-905) use `.expect` normally."}]}, {"id": "core_editing", "label": "Library editing", "band": "svc", "path": "crates/beskar-core/src/editing.rs", "desc": "library editing services: ingest, skill/profile/catalog operations, scoped commits.", "coupling": "med", "deps": ["core_library", "core_registry", "core_model", "core_platform", "git_backend"], "loc": 1974, "score": 88, "grade": "B", "tags": ["bloat", "silent-except", "legacy"], "findings": [{"sev": "LOW", "loc": "crates/beskar-core/src/editing.rs:1974", "text": "God-file borderline: ~1910 LoC covering ingest, skill ops, profile ops, catalog, status, and branch helpers in one unit. Cohesive (all one service sharing the plan/commit discipline) and cleanly sectioned, but at 2-3x the size of sibling core files it is a candidate for splitting (e.g. ingest.rs, profile_ops.rs) before it becomes a maintenance hazard."}, {"sev": "LOW", "loc": "crates/beskar-core/src/editing.rs:1097", "text": "Informational fallbacks mask git errors without signal: `resolve_ref(...).ok()` here, `.unwrap_or(None)` on remote_url (1143), `.ok()` on ahead_behind (1163) and last_commit_info (740, 788). Documented as informational (unborn HEAD, not-yet-fetched upstream), but a genuinely failing backend is indistinguishable from 'no HEAD/remote' — status silently degrades instead of warning."}, {"sev": "LOW", "loc": "crates/beskar-core/src/editing.rs:36", "text": "Documented bounded legacy shim: STRIPPED_INGEST_FILES includes the retired `.skm.json` stamp, silently dropped on ingest so old installation stamps don't enter the library. Deliberate, spec-referenced, and bounded — fine, but it is kept-alive legacy vocabulary."}, {"sev": "LOW", "loc": "crates/beskar-core/src/editing.rs:1897", "text": "`bucket_of` uses `strip_prefix(...).unwrap_or_default()`, so a skill directly under skills_dir gets an empty-string bucket. Semantically intended ('no bucket'), and callers only prefix-match, but the silent default hides the invariant rather than encoding it in the type."}]}, {"id": "core_lifecycle", "label": "Installation lifecycle", "band": "svc", "path": "crates/beskar-core/src/lifecycle.rs", "desc": "installation lifecycle: attach profiles, compute the desired set, install/update/uninstall.", "coupling": "high", "deps": ["core_library", "core_status", "core_registry", "core_reconcile", "core_model", "core_platform", "git_backend"], "loc": 1305, "score": 74, "grade": "C", "tags": ["duplication", "silent-except", "fallback", "any-escape", "bloat"], "findings": [{"sev": "MED", "loc": "crates/beskar-core/src/lifecycle.rs:1236", "text": "`fn upsert(registry, installation)` (find-by-id-then-replace, else `registry.insert`) is copy-pasted verbatim in registry_service.rs:546, whose doc comment even admits it 'mirrors the lifecycle upsert'. `Registry` in registry.rs already owns `find`/`insert`; this belongs there as `Registry::upsert`. Duplication with a clear owner."}, {"sev": "MED", "loc": "crates/beskar-core/src/lifecycle.rs:1151", "text": "`workspace_candidates` degrades silently twice with no error channel: (a) 1155-1158 `Err(_) => raw.to_path_buf()` when `current_dir()` fails leaves a *relative* candidate that can never equal a registered absolute path, so every caller reports 'no installation is registered' instead of the real cwd failure (contrast `why` at 606 which propagates `current_dir()?`); (b) 1172 `Err(_) => break` on any non-NotFound canonicalize error (EACCES, ENOTDIR) drops the canonical candidate, again surfacing as a misleading 'no installation' rather than the I/O error. The doc comment (1145-1150) describes only the NotFound walk-up; the break is undocumented. `continue` would be both simpler and strictly more robust (root always canonicalizes). The `.expect(\"path ancestor\")` at 1164 IS provably safe: `ancestors()` is repeated `parent()`, whose components are a strict prefix, and `strip_prefix` compares components — no finding on that line."}, {"sev": "MED", "loc": "crates/beskar-core/src/lifecycle.rs:1138", "text": "`existing_workspace` does `raw.canonicalize().map_err(|_| Error::validation(\"workspace {} does not exist — Beskar never creates workspaces\"))` — every canonicalize error class (PermissionDenied, NotADirectory, loop) is rewritten as 'does not exist'. `registry_move` at 531-536 handles the same operation correctly (`is_dir()` guard, then `map_err(|e| ... {e})` preserving the cause). Silent-except with a misleading message."}, {"sev": "LOW", "loc": "crates/beskar-core/src/lifecycle.rs:296", "text": "An empty `ReconciliationPlan { installation_id, resolved_commit: None, profile_changes: vec![], skill_actions: vec![], state_actions: vec![], blockers: vec![] }` literal appears three times in this file (296-303 unregister --keep-files, 370-377 ref_set no-op, 1266-1276 `empty_plan_for`) while the helper `empty_plan_for(&Installation)` already exists at 1266 and is used only by `update_all`. Intra-file duplication; `ReconciliationPlan` has no `empty(id)` constructor in plan.rs."}, {"sev": "LOW", "loc": "crates/beskar-core/src/lifecycle.rs:306", "text": "The 6-line 'drop the record' block (`lock_guard.expect(...)`, `store.load()`, `installations.retain(|i| i.id != registered.id)`, `save_with_lock`) is duplicated verbatim at 306-311 and 341-346 inside `unregister`."}, {"sev": "LOW", "loc": "crates/beskar-core/src/lifecycle.rs:127", "text": "The ambiguous-installation error ('workspace {} has {} installations; choose one with --target (registered targets: {choices})') including the `choices` join is built twice: `find_installation` 127-138 and `resolve_target_adapter` 1208-1220."}, {"sev": "LOW", "loc": "crates/beskar-core/src/lifecycle.rs:307", "text": "Same invariant ('a mutating run holds the registry lock') is handled two ways: `finish` at 828-830 turns it into a typed `Error::unsupported_state(\"mutation without registry lock\")`, while 307, 342, 471, 553 and 756 use `lock_guard.expect(\"... holds the lock\")`. Each expect is locally provable (all sit under `!dry_run` after `begin(dry_run)`), so not dangerous, but inconsistent."}, {"sev": "LOW", "loc": "crates/beskar-core/src/lifecycle.rs:909", "text": "`identify_attachment` third lookup path uses `if let Ok(commit) = backend.resolve_ref(..) && let Ok(resolved) = resolve_revision(..)` — Git/library failures are swallowed and the user gets 'profile X is not attached ... attached: <old names>' even when the real cause was an unresolvable ref. Defensible as §40 detach tolerance (ID and last-known-name paths precede it) and documented, hence LOW."}, {"sev": "LOW", "loc": "crates/beskar-core/src/lifecycle.rs:587", "text": "`status` maps per-installation failures to `InstallationReport::Failed(err.to_string())`, discarding the typed error, while the same file's `InstallationUpdate.error: Option<Box<Error>>` (984-985) is justified with '§115 — shells classify by type, never by text'. Inconsistent error representation across two outcome types."}, {"sev": "LOW", "loc": "crates/beskar-core/src/lifecycle.rs:1", "text": "1305 lines, all production (there is NO `#[cfg(test)] mod tests` in this file; coverage lives in crates/beskar-core/tests/lifecycle.rs). Cohesive and no ~300-line planners (`update_all` is ~140 lines, `add` ~88), but the ten request/outcome structs (1034-1130) could be split off. Benign bloat. The module is appropriately generic: UI-agnostic request structs, DI'd `PlatformDirs`/`Library`, one `begin`/`finish` §89 sequence shared by every mutation; only `backend: SystemGitBackend` is concrete rather than `impl GitBackend`, which forces real git in tests but is a deliberate choice, not over-fit."}]}, {"id": "core_reconcile", "label": "Reconciliation", "band": "svc", "path": "crates/beskar-core/src/{reconcile,plan,execute,drift}.rs", "desc": "desired-state planning and execution: plan types, planner, executor, drift classification.", "coupling": "high", "deps": ["core_library", "core_status", "core_registry", "core_model", "git_backend"], "loc": 1845, "score": 87, "grade": "B", "tags": ["silent-except", "fallback", "bloat"], "findings": [{"sev": "LOW", "loc": "crates/beskar-core/src/execute.rs:375", "text": "silent-except: `let _ = std::fs::set_permissions(path, permissions);` in set_exec_bit ignores failure to restore the exec bit with no log/signal. Self-healing on the next reconcile (exec_bit_differs -> RefreshStamp), so impact is bounded, but the write result should at least be surfaced."}, {"sev": "LOW", "loc": "crates/beskar-core/src/execute.rs:311-315", "text": "silent-except: `current_stamp` maps any `read_to_string` `Err(_)` (not just NotFound) to `Ok(None)`, conflating an unreadable stamp with an absent one; in apply_skill this would skip stale-tracked-file removal, converting old tracked files into permanent extras until manually cleaned. Should distinguish io::ErrorKind::NotFound."}, {"sev": "LOW", "loc": "crates/beskar-core/src/reconcile.rs:543", "text": "fallback: `early_plan` uses `resolved_commit.clone().unwrap_or_default()` to fill `DesiredInstallationState.resolved_commit` with an empty-string sentinel for blocker-only plans. Bounded and safe — the plan carries `resolved_commit: None`, holds only blockers, and execute() refuses blocked plans — but an `Option` field would avoid the fake-default; documented as blockers-only."}, {"sev": "LOW", "loc": "crates/beskar-core/src/reconcile.rs:174-535", "text": "bloat: `plan_reconciliation` is ~360 lines. Cohesive (one planner, two clear passes, heavy spec-section comments, no deep nesting), but extracting the Pass-1 desired-skill loop and Pass-2 orphan-retirement loop into helpers would aid navigation."}]}, {"id": "core_status", "label": "Status, stamps & membership", "band": "svc", "path": "crates/beskar-core/src/{status,stamp,membership}.rs", "desc": "read-only installation status, installed-skill stamps (.beskar.json) and effective membership across attached profiles.", "coupling": "high", "deps": ["core_library", "core_registry", "core_reconcile", "core_model", "core_platform", "git_backend"], "loc": 1758, "score": 88, "grade": "B", "tags": ["legacy", "duplication"], "findings": [{"sev": "LOW", "loc": "crates/beskar-core/src/membership.rs:30", "text": "`build_membership` is production-dead: repo-wide its only callers are test modules (status.rs tests, drift.rs:217 test); production code populates `skill_profiles` via `effective_state`/`planned.desired.membership()` (execute.rs:402, migrate.rs:624). A test-only helper shipped as public API — legacy dead-but-shipped code, harmless but should be used or unexported."}, {"sev": "LOW", "loc": "crates/beskar-core/src/membership.rs:36-42", "text": "Owner-list dedup-by-contains logic is implemented twice in one 100-line file: `build_membership` hand-rolls `if !ids.contains(&id) { ids.push(id) }`, and `effective_state` (lines 79-92) repeats the same pattern for both `order` and `owners` instead of building on `build_membership` — duplication with a clear owner available."}]}, {"id": "core_remote", "label": "Remote sync", "band": "svc", "path": "crates/beskar-core/src/remote.rs", "desc": "remote synchronization: fetch (strict fast-forward) and push.", "coupling": "med", "deps": ["core_library", "core_registry", "core_reconcile", "core_platform", "git_backend"], "loc": 688, "score": 82, "grade": "B", "tags": ["bloat", "duplication"], "findings": [{"sev": "LOW", "loc": "crates/beskar-core/src/remote.rs:203", "text": "ahead_behind error is demoted to a prose note with state left Unknown, so a failed relation evaluation yields exit_code 0 (is_action_required false) — fail-open, in contrast to push's fail-closed handling of unverifiable fast-forward at :387; no unsafe mutation occurs (branch untouched), but eval-error and dry-run-Unknown share one state"}, {"sev": "LOW", "loc": "crates/beskar-core/src/remote.rs:167", "text": "resolve_ref(...).ok() twice (:167-168): any backend error (not just missing ref) is conflated with 'branch has no commits'/'Unpublished'; outcome notes do surface the misclassification, but the error class is lost"}, {"sev": "LOW", "loc": "crates/beskar-core/src/remote.rs:109", "text": "the 'remote {remote:?} is not configured ... add it with git remote add' error construction is duplicated verbatim in fetch (:107-112) and push (:345-350) — extract a helper"}, {"sev": "LOW", "loc": "crates/beskar-core/src/remote.rs:418", "text": "comment claims the library lock is 'taken only now, never across network waits', but backend.push_branch — the network transfer — runs while holding the lock (:422-430); fetch correctly holds it only for local ref moves, so the stated invariant doesn't hold for push"}, {"sev": "LOW", "loc": "crates/beskar-core/src/remote.rs:101", "text": "fetch() spans ~195 lines mixing relevance-gathering, per-branch relation evaluation, planning, and application phases (push ~150 lines); phase comments keep it readable but it is at the top of comfortable function size, and FfJob index-patching into outcomes is a fiddly coupling"}]}, {"id": "core_registry", "label": "Registry", "band": "svc", "path": "crates/beskar-core/src/{registry,registry_service}.rs", "desc": "machine-local registry of installations plus maintenance services (list/show/prune/repair/move).", "coupling": "high", "deps": ["core_library", "core_reconcile", "core_model", "core_platform", "git_backend"], "loc": 1231, "score": 87, "grade": "B", "tags": ["duplication"], "findings": [{"sev": "LOW", "loc": "crates/beskar-core/src/registry_service.rs:546", "text": "upsert() is a byte-for-byte copy of lifecycle.rs:1228 upsert() (find by id -> *slot = installation, else registry.insert). The doc comment even admits it: \"mirrors the lifecycle upsert\". An 8-line pub(crate) helper in registry.rs would remove the twin."}]}, {"id": "core_doctor", "label": "Doctor", "band": "svc", "path": "crates/beskar-core/src/doctor.rs", "desc": "`beskar doctor` — read-only diagnostics over the library and installations.", "coupling": "low", "deps": ["core_library", "core_registry", "core_model", "core_platform", "git_backend"], "loc": 581, "score": 77, "grade": "B", "tags": ["fallback", "duplication", "silent-except"], "findings": [{"sev": "MED", "loc": "crates/beskar-core/src/doctor.rs:157", "text": "check_configuration calls std::fs::create_dir_all(&dirs.data_dir), violating the module's own contract that doctor is read-only and 'No check mutates anything' (examine doc, ~line 78). On failure it reports 'data directory ... is not writable: {err}', mislabeling any mkdir failure (path-is-file, parent permissions) as a writability problem — a diagnostics tool misclassifying its own finding and side-effecting the filesystem."}, {"sev": "MED", "loc": "crates/beskar-core/src/doctor.rs:444", "text": "check_installations degrades via a silent fallback chain: on scan failure it tries HEAD ('.ok().and_then(|head| resolve_revision(...).ok())') and finally '.unwrap_or_default()' yields an empty profile set. When both fail, every installation silently floods with misleading 'missing_attached_profiles' warnings with no diagnostic noting that detection itself degraded (root-cause errors only surface indirectly via check_skills/check_git_repository)."}, {"sev": "LOW", "loc": "crates/beskar-core/src/doctor.rs:529", "text": "check_locks hardcodes lock-path knowledge duplicating owners elsewhere: 'dirs.data_dir.join(\"registry.lock\")' re-derives what RegistryStore already owns (registry.rs:307 uses path.with_extension(\"lock\") — and check_registry already builds the store), and 'state_dir.join(\"library.lock\")' is the 4th copy of that literal across core (editing.rs:1209, remote.rs:471, migrate.rs:726). A rename silently breaks stale-lock detection."}, {"sev": "LOW", "loc": "crates/beskar-core/src/doctor.rs:551", "text": "If the lock file cannot be opened for writing ('if let Ok(file) = ... open(path)'), the case is skipped and line 578 then reports Ok 'no stale lock files detected' — an untestable lock (e.g. permission-denied, root-owned) is silently classified as healthy. Also line 532 pushes the 'targets' directory into the lock-file list only for the is_dir guard to skip it."}]}, {"id": "core_migrate", "label": "Legacy migration", "band": "svc", "path": "crates/beskar-core/src/migrate.rs", "desc": "migration from the legacy skill-manager home: library, profiles, registry, stamps.", "coupling": "med", "deps": ["core_library", "core_status", "core_registry", "core_model", "core_platform", "git_backend"], "loc": 1402, "score": 62, "grade": "C", "tags": ["duplication", "bloat", "fallback", "silent-except", "any-escape", "over-fit"], "findings": [{"sev": "MED", "loc": "crates/beskar-core/src/migrate.rs:869-955", "text": "`validate_skills_working_tree` is a near line-for-line copy of the private `scan_skills_dir` (library.rs:396-482) plus an inlined copy of `reject_nested_roots` (library.rs:380-393): same WalkDir loop, same symlink/special-object/`SKILL.md directly inside` checks, same `split_leaf`/`validate_bucket`/frontmatter/leaf-equality/duplicate-name sequence. The doc comment even says it validates 'exactly as a Beskar library scan will'. Drift has already begun (migrate's messages append '(§12)'/'(§11)'; library's duplicate message names both paths). The owner is library.rs; `scan_skills_dir` should be exposed `pub(crate)` and reused — `Library::scan` can't be called only because `beskar.toml` doesn't exist yet, which is not a reason to fork the rules."}, {"sev": "MED", "loc": "crates/beskar-core/src/migrate.rs:1290-1339", "text": "`find_committed_skill` re-implements the committed-tree walk of `library::resolve_skills` (library.rs:278-377): `tree_recursive(.., \"skills\")`, Gitlink rejection, `SKILL_FILE` suffix-strip root discovery, `split_leaf`, and the `starts_with(prefix)` blob collection into `{path, executable}`. It is a weaker variant (no frontmatter, bucket, or nested-root checks; leaf-name match only) rather than a call into shared logic, so the two committed-skill readers can disagree about what a skill is at a revision."}, {"sev": "MED", "loc": "crates/beskar-core/src/migrate.rs:990-1010", "text": "`detect_workspace_info` duplicates `WorkspaceInfo::capture` + `is_empty` (registry.rs:103-121) verbatim: `discover_repo(..).ok().flatten()`, `remote_url(repo,\"origin\").ok().flatten()`, `resolve_ref(repo,\"HEAD\").ok()`, then the all-None check. Should be `let info = WorkspaceInfo::capture(..); (!info.is_empty()).then_some(info)`."}, {"sev": "MED", "loc": "crates/beskar-core/src/migrate.rs:689-709", "text": "The §26 pre-write conflict check re-implements ownership detection with rules that differ from the real owner `Registry::insert` (registry.rs:227-245): it compares targets exactly (`other.target == installation.target`) while `insert` also refuses case-insensitive target collisions (§119), and it never checks the planned installations against each other (grouping at 478-480 is exact on target, and `validate_relative_path` accepts uppercase). Two legacy entries `.agents/skills` / `.Agents/skills` on one workspace — or an existing registry entry differing only in case — pass planning, then `registry.insert` fails in `execute` step 5 (779-782) AFTER the library commit (761-763) and stamp writes (767-776) have happened, breaking the promise at 319-320 that 'every refusal happens before any write'. Dry-inserting the planned installations into a clone of the loaded registry would reuse the owner's rules."}, {"sev": "MED", "loc": "crates/beskar-core/src/migrate.rs:379-719", "text": "`build_plan` is ~340 lines spanning six phases (profile conversion 388-453, entry grouping 457-494, §122 ambiguity pass 498-542, ref resolution 548-553, installation/report/stamp assembly 566-686, §26 pre-check 689-709) with 4-5 levels of nesting. The in-file unit tests only exercise leaf helpers; none of these phases is independently testable. God-function bloat."}, {"sev": "MED", "loc": "crates/beskar-core/src/migrate.rs:1257-1261", "text": "`last_commit_touching(..).ok().flatten().unwrap_or_else(|| commit.to_owned())` swallows any Git error and silently records the tip commit as `skill_commit` in a stamp the module advertises as 'fully verified'. The sibling `resolve_skills` propagates this with `?` (library.rs:343-345). The function already returns `Result<String, String>`, so surfacing it as a non-conversion reason is trivial; instead a wrong provenance value is written to disk with no warning."}, {"sev": "LOW", "loc": "crates/beskar-core/src/migrate.rs:957-979", "text": "`normalize_workspace` requires an absolute path (good) and does `canonicalize().unwrap_or(path)` — documented, but the module then uses two different equality rules: grouping at 478-480 compares the (possibly un-canonicalized) spelling exactly, while `same_workspace` (969-979) is symlink/spelling tolerant only against the pre-existing registry. Two spellings of one non-existent workspace (e.g. `/a/ws` vs `/a/./ws`) produce two Installations for one logical target."}, {"sev": "LOW", "loc": "crates/beskar-core/src/migrate.rs:548-553", "text": "`self.backend.resolve_ref(home, ..).ok()` collapses every Git failure (missing binary, corrupt repo) into 'ref does not resolve'; the resulting warning at 662-668 then asserts the ref 'does not resolve in the legacy repository', misattributing the cause. Intentional for genuinely missing refs, but the error class is lost."}, {"sev": "LOW", "loc": "crates/beskar-core/src/migrate.rs:1022-1043", "text": "`collect_target_entries`: `Err(_) => return` on `read_dir` and `filter_map(Result::ok)` swallow permission errors, so a permission-denied target dir reports `unmanaged: []` indistinguishable from an absent/empty one; `is_dir` failures via `.unwrap_or(false)` likewise reclassify entries as unmanaged."}, {"sev": "LOW", "loc": "crates/beskar-core/src/migrate.rs:981-988", "text": "`adapter_for` hard-codes `\".agents/skills\"`/`\".claude/skills\"` literals that already live in `Adapter::target_dir` (registry.rs:41-46). An inverse lookup should iterate the enum's `target_dir()` rather than repeat the strings."}, {"sev": "LOW", "loc": "crates/beskar-core/src/migrate.rs:491", "text": "`.expect(\"just pushed\")` and `.expect(\"exactly one\")` (1323) in production paths. Both are provably guarded, but the first is avoidable (push then index / entry-style lookup) and the second could use `let [root] = ..` or `pop()` after the `len() != 1` guard."}, {"sev": "LOW", "loc": "crates/beskar-core/src/migrate.rs:119-122", "text": "`SkmEntry.commit` is parsed and carried with `#[allow(dead_code)]`. Serde ignores unknown fields on this struct anyway, so the field is dead-but-shipped and can simply be removed (the doc already says it is never trusted)."}, {"sev": "LOW", "loc": "crates/beskar-core/src/migrate.rs:9-32", "text": "Genericity: the module is honest that the legacy format 'is not fully specified' and is implemented against a fixture format 'generated by beskar_test_support::skm'. It fails closed on schema/manager mismatch (817-866, 1161-1172), which is safe, but the converter is over-fit to a self-authored fixture: hard-coded `skills/` root, `profiles.json`, `registry.json`, schema 1, manager `skm`. If a real skill-manager layout differs at all, migration refuses rather than degrading — acceptable, but the feature's applicability to real legacy data is unverified."}]}, {"id": "core_init", "label": "Library init", "band": "svc", "path": "crates/beskar-core/src/init.rs", "desc": "library initialization: create, clone, or adopt an existing repo.", "coupling": "low", "deps": ["core_library", "core_model", "git_backend"], "loc": 413, "score": 72, "grade": "C", "tags": ["silent-except", "duplication", "over-fit"], "findings": [{"sev": "MED", "loc": "crates/beskar-core/src/init.rs:166", "text": "`let head = backend.resolve_ref(dir, \"HEAD\").ok();` (and identically at init.rs:181 in adopt_library) swallows any Git error into `head: None`. The field doc at init.rs:65-67 states an adopted or cloned Library always has one, and the module doc (init.rs:12-14) promises every flow fails closed — so a `None` here can only be a swallowed failure (git missing, not a repo, unborn HEAD) that the caller cannot distinguish from a legitimate absence. Doc and code disagree; either propagate the error or document that `None` means HEAD unresolvable."}, {"sev": "MED", "loc": "crates/beskar-core/src/init.rs:24", "text": "`const CATALOG_SCHEMA: i64 = 1;` plus `empty_catalog_toml()` (init.rs:111-113, `format!(\"schema = {CATALOG_SCHEMA}\\n\")`) re-declares the schema constant and hand-rolls a serializer that catalog.rs already owns: `catalog::SCHEMA` (catalog.rs:11) and `Catalog::new().to_toml()` (catalog.rs:35-40, 61-64). A schema bump in catalog.rs would leave init writing a stale file that the create flow's own `validate()` then rejects. Clear-owner duplication."}, {"sev": "LOW", "loc": "crates/beskar-core/src/init.rs:132", "text": "`std::fs::write(dir.join(\"catalog.toml\"), ...)` and `\"catalog.toml\".to_owned()` (init.rs:142) hardcode the catalog path while `config.skills_dir`/`config.profiles_dir` are read from the same `config` (init.rs:135-138, 143-144) and `config::DEFAULT_CATALOG_FILE` exists (config.rs:21). Inconsistent: if `LibraryConfig::new` ever changed `catalog_file`, the created Library would not match its own beskar.toml. Use `config.catalog_file`."}, {"sev": "LOW", "loc": "crates/beskar-core/src/init.rs:96", "text": "`ensure_writable_target` uses `.filter_map(|entry| entry.ok())` so a `read_dir` entry error is silently skipped; a directory whose only entries fail to read is reported as empty and the create/clone flow proceeds to write into it. The guard is the §4 never-touch-existing-content check, so it should propagate the error rather than fail open."}, {"sev": "LOW", "loc": "crates/beskar-core/src/init.rs:118", "text": "`InitRequest` doc (init.rs:71-72) says Exactly one of `remote`/`adopt` selects the clone/adopt flows, but `init_library` matches `(Some(remote), _)` and silently ignores `adopt` when both are set instead of returning a validation error. Minor doc/code mismatch; the ambiguity is resolved by precedence rather than refusal."}]}, {"id": "core_model", "label": "Domain model", "band": "model", "path": "crates/beskar-core/src/{skill,profile,catalog,ids,lib}.rs", "desc": "domain types: Skill + SKILL.md frontmatter, Profile, Catalog metadata, immutable ids.", "coupling": "core", "deps": ["core_platform"], "loc": 738, "score": 95, "grade": "A", "tags": ["clean"], "findings": []}, {"id": "core_platform", "label": "Platform", "band": "model", "path": "crates/beskar-core/src/{config,paths,lock,error}.rs", "desc": "platform concerns: beskar.toml config + platform locations, filesystem path safety, advisory locks, typed errors.", "coupling": "high", "deps": ["core_model"], "loc": 757, "score": 88, "grade": "B", "tags": ["fallback"], "findings": [{"sev": "LOW", "loc": "crates/beskar-core/src/config.rs:122", "text": "PlatformDirs::resolve falls back 'state_dir().unwrap_or_else(|| dirs.data_dir())' — on platforms without a state location, mutable state (locks, caches) silently lands in the persistent data dir. Documented in a comment, platform-rare, but a degrade shim a maintainer should be aware of."}, {"sev": "LOW", "loc": "crates/beskar-core/src/config.rs:130", "text": "Third fallback tier: when directories::ProjectDirs yields nothing, resolve falls back to $HOME, then 'PathBuf::from(\".\")' — CWD-relative platform dirs if HOME is unset, quietly scattering data. Documented ('keeps Beskar usable rather than failing to start') but arguably fail-closed with a typed error would be cleaner for a v1 tool."}, {"sev": "LOW", "loc": "crates/beskar-core/src/paths.rs:41", "text": "validate_relative_path rejects a drive prefix only at byte position 1 ('path.as_bytes().get(1) == Some(&b':')'); a colon inside a later segment (e.g. 'a/b:c', an NTFS alternate-data-stream name on Windows) passes validation. Not traversal (cannot escape the base dir) so a hardening gap, not a security hole; otherwise the validator is thorough (traversal, reserved names, control chars, trailing dot/space, non-UTF-8 fail-closed in to_slash_path) and well tested."}]}, {"id": "git_backend", "label": "Git backend", "band": "gitband", "path": "crates/beskar-git/src/lib.rs", "desc": "GitBackend abstraction + system-git implementation: reads, scoped commits, fetch/push plumbing, credential redaction.", "coupling": "core", "deps": [], "loc": 1394, "score": 57, "grade": "D", "tags": ["fallback", "silent-except", "duplication", "over-fit"], "findings": [{"sev": "HIGH", "loc": "crates/beskar-git/src/lib.rs:44-59", "text": "`redact_url` only works when the whole string IS a URL, yet `git_failure` (706-713) and `network_failure` (736) apply it per stderr line. For a real line like `fatal: unable to access 'https://user:pw@host/r.git/': ...` the `://` sits far past index 9, so control falls to the scp arm, where `url[..at]` contains '/' and the line is returned UNCHANGED — credentials are not redacted. Conversely for scp-form lines like `error: failed to push some refs to 'git@github.com:org/repo.git'` the arm returns `url[at+1..]`, TRUNCATING the message to `github.com:org/repo.git'`. The module header and trait docs promise 'credential-bearing URLs are redacted from every error' (§67 MUST); the control is a no-op for the exact input shape it receives and corrupts common messages. Tests (875-897) exercise only bare URLs; no test feeds a stderr line. Actual leakage today mostly relies on git's own `transport_anonymize_url`, not on this code."}, {"sev": "MED", "loc": "crates/beskar-git/src/lib.rs:719-741", "text": "`network_failure` classifies auth by case-sensitive English substrings. Git's canonical HTTPS 401 message is `die(_(\"Authentication failed for '%s'\"))` (capital A, gettext-localized — verified in remote-curl.c), but the needle at 722 is lowercase `\"authentication failed\"`, so a credential helper returning bad/expired credentials surfaces as `Error::Git`, not `Error::Auth`. `run_git` (697-703) sets `GIT_TERMINAL_PROMPT=0` but not `LC_ALL=C`/`LANG=C`, so on non-English locales every `_()`-wrapped needle silently misses and auth errors degrade to generic Git errors — contradicting the §115 'classify by type' contract this function exists to serve. English-locale over-fit."}, {"sev": "MED", "loc": "crates/beskar-git/src/lib.rs:346-352", "text": "`remote_url` collapses ANY non-zero exit into `Ok(None)` (`if !output.status.success() { return Ok(None); }`) without inspecting the exit code. `git remote get-url` exits 2 for 'No such remote' but 128 for not-a-repo / `safe.directory` dubious-ownership / corrupt config; all become 'remote not configured'. Doc says `None` only 'when the remote is not configured'. Callers act on the lie: remote.rs:107,345 tell the user to `git remote add` when the real cause may be a repo-level failure."}, {"sev": "MED", "loc": "crates/beskar-git/src/lib.rs:848-857", "text": "`discover_repo` likewise maps every non-zero `rev-parse --show-toplevel` exit to `Ok(None)` — 'not a repository' is indistinguishable from bare-repo ('must be run in a work tree'), dubious-ownership rejection, or a broken .git. Doc ('if any') does not state this. Callers (registry.rs:104, migrate.rs:994) then `.ok().flatten()`, so the `Result` Err path is effectively only io errors — the type promises a distinction the implementation never delivers."}, {"sev": "MED", "loc": "crates/beskar-git/src/lib.rs:536-550", "text": "`push_branch` passes the bare `branch` as the refspec (`args.push(branch)` at 544). `reject_unsafe_arg` only rejects a leading '-', so a name containing ':' or a leading '+' changes semantics ('+x' is a FORCE push — the very thing the doc at 226-231 says 'Beskar v1 never' does); a branch whose name collides with a tag makes git fail with 'matches more than one'. Siblings `ls_remote_branch` (622) and `update_branch_ref` (571) correctly build `refs/heads/{branch}`; push should use an explicit `refs/heads/{b}:refs/heads/{b}` refspec for consistency and to make the no-force guarantee structural."}, {"sev": "MED", "loc": "crates/beskar-git/src/lib.rs:511-516", "text": "`last_commit_info` swallows malformed git output: `line.split_once('\\t')?` and `time.trim().parse().ok()?` inside `and_then` turn a parse failure into `Ok(None)` — the documented meaning of which is 'no commit ever touched path'. Compare `ahead_behind` (479-487) which correctly errors with 'malformed rev-list output'. Same class at 759/768: `parse_ls_tree` uses `parts.next().unwrap_or_default()` for `mode` and `oid`, producing entries with empty mode/oid instead of an error while `kind` IS validated."}, {"sev": "MED", "loc": "crates/beskar-git/src/lib.rs:314-670", "text": "Duplication: the 4-line `let output = run_git(..)?; if !output.status.success() { return Err(git_failure(op, &output)); }` block appears 24 times (315,332,341,397,405,411,418,422,437,458,467,478,508,524,547,556,576,597,614,625,670,842 + variants), and `String::from_utf8(..).map_err(|e| Error::Git(format!(\"non-UTF-8 git output: {e}\")))` 6 times (354,440,628,752,782,854). A `run_git_ok(dir, op, args) -> Result<Output>` plus `utf8_stdout(Output)` would remove ~90 lines and one obvious place to add `LC_ALL=C`."}, {"sev": "LOW", "loc": "crates/beskar-git/src/lib.rs:603-616", "text": "`clone_repo` passes `dir.to_string_lossy()` — lossy at a boundary where the exact path matters (a non-UTF-8 target dir would be cloned elsewhere) because `run_git` takes `&[&str]` rather than `impl AsRef<OsStr>`. `dir` is also not passed through `reject_unsafe_arg` and no `--` separator precedes positional args, unlike the `url` right before it."}, {"sev": "LOW", "loc": "crates/beskar-git/src/lib.rs:847-857", "text": "`discover_repo` doc says 'Absolute path' but returns the raw `--show-toplevel` string: realpath-resolved on Unix, forward-slash `C:/...` on Windows, never `\\\\?\\`-canonical. The test at 902-907 had to canonicalize BOTH sides to pass, signalling the contract is underspecified. Current callers only store the value (registry.rs:104, migrate.rs:994) and never compare it, so benign today; document 'as printed by git' or canonicalize in production."}, {"sev": "LOW", "loc": "crates/beskar-git/src/lib.rs:745-746", "text": "`first_line` does `String::from_utf8(..).ok()?`, folding non-UTF-8 stdout into `None`. Harmless for hash outputs, but in `resolve_ref` (295) it yields the misleading error 'produced no output' and in `commit_paths` (424) an `Ok(None)` ('nothing committed') after a commit WAS created."}, {"sev": "LOW", "loc": "crates/beskar-git/src/lib.rs:399", "text": "`repo.join(path).symlink_metadata().is_ok()` treats EACCES/EIO as 'does not exist' and silently skips staging that path."}, {"sev": "LOW", "loc": "crates/beskar-git/src/lib.rs:839-840", "text": "`git_version` maps every `run_git` io error to 'git executable not found', including a nonexistent/unreadable cwd (`Path::new(\".\")`)."}, {"sev": "LOW", "loc": "crates/beskar-git/src/lib.rs:697-703", "text": "`run_git` inherits the user's full git config (no `GIT_CONFIG_NOSYSTEM`/`-c` pins). Porcelain `-z` formats used here are config-stable, and `commit -m`/`--ff-only` avoid editors, so parsing is safe; but `commit.gpgsign=true` can still block on pinentry despite `GIT_TERMINAL_PROMPT=0`. Otherwise the module is appropriately generic: single trait, one impl, argument arrays, `/`-paths, exit-code-aware `is_ancestor`, CAS `update-ref`, exact-bytes `blob`; `from_utf8_lossy` is confined to stderr for messages."}]}, {"id": "test_support", "label": "Test support", "band": "testsup", "path": "crates/beskar-test-support/src/", "desc": "shared test fixtures: temp homes, legacy skm scaffolds, git helpers.", "coupling": "low", "deps": ["core_model"], "loc": 632, "score": 88, "grade": "B", "tags": ["duplication", "fallback"], "findings": [{"sev": "LOW", "loc": "crates/beskar-test-support/src/skm.rs:23-31,88-97", "text": "SkmHome re-implements what sibling TestRepo already provides in the same crate: git init --initial-branch=main + local identity config (skm.rs:26-31 vs git.rs:22-28), commit()/head() (skm.rs:88-97 vs git.rs:71-80). Wrapping a TestRepo would give one owner for the hermetic-identity recipe; ~12 stable lines duplicated."}, {"sev": "LOW", "loc": "crates/beskar-test-support/src/skm.rs:264-268", "text": "read_json_or silently replaces an existing but unparseable profiles.json/registry.json with a fresh empty default (unwrap_or_else(|_| fallback())) — convenient for first-write, but a malformed fixture is masked rather than failing loudly, which can hide fixture-authoring bugs in migration tests."}]}, {"id": "release_tooling", "label": "Release tooling", "band": "tooling", "path": "scripts/release.py · .github/workflows", "desc": "release automation: bump workspace version, generate notes from CHANGELOG, package per-target archives with checksums, and publish via GitHub Actions.", "coupling": "low", "deps": [], "loc": 481, "score": 86, "grade": "B", "tags": ["duplication", "over-fit"], "findings": [{"sev": "LOW", "loc": "scripts/release.py:20-25", "text": "Target list is defined twice: `TARGETS` tuple here and the `matrix.include` in .github/workflows/release.yml:76-84. The `\"windows\" in target` → `.exe`/`.zip` heuristic is likewise repeated at release.py:141, release.py:182 and release.yml:108 (`if [[ \"$TARGET\" == *windows* ]]`). Divergence fails closed (`package` rejects unknown targets, `publish` demands exactly the four expected archives), so this is a maintenance nuisance rather than a correctness risk; the matrix needs its own `os` mapping regardless."}, {"sev": "LOW", "loc": "scripts/release.py:113", "text": "Workspace version bump uses a positional regex `(\\[workspace\\.package\\]\\s*\\nversion = \")[^\"]+(\")` that only matches when `version` is the first key after the table header. Any reordering of Cargo.toml (e.g. adding `edition` above `version`) breaks it. It fails closed with 'Cannot find the workspace version assignment', but a small `re.M` search within the table would remove the over-fit."}, {"sev": "LOW", "loc": "scripts/release.py:119-125", "text": "Cargo.lock is rewritten by splitting on the literal `[[package]]`, re-parsing each fragment with `tomllib.loads(block)`, and regex-substituting `^version = \"...\"` — text surgery on a generated file rather than a TOML writer or `cargo update --workspace`. Mitigated by `validate(tag)` at line 133 re-parsing the lock and asserting every local member is at the new version, and by test_bump_updates_all_local_versions_and_preserves_registry; still a fragile approach chosen to stay stdlib-only."}, {"sev": "LOW", "loc": "scripts/release.py:96-99", "text": "`gh api .../generate-notes` is run with `capture_output=True, check=True`; on failure the resulting `CalledProcessError` reaches the top-level handler at release.py:237-238 which prints only `str(error)` ('Command ... returned non-zero exit status N'), so gh's captured stderr (auth/rate-limit/404 reason) is discarded. Not silent — the job still fails — but the diagnostic is lost. The other `run()` calls use `check_output` and let stderr flow through."}, {"sev": "LOW", "loc": ".github/workflows/ci.yml:37", "text": "`python -m unittest discover -s scripts/tests -v` runs in the `quality` job (ubuntu-24.04) and again in the `test` matrix at ci.yml:58, whose matrix already includes ubuntu-24.04 — the same suite runs twice on the same OS per CI run. Cross-OS execution in `test` is valuable (Windows chmod / tar mode path); the `quality` copy is redundant."}]}]};
+const M = DATA.modules || [];
+const BANDS = DATA.bands || [];
+const SPINE = DATA.spine || [];
+const REPORT_THEMES = DATA.reportThemes || [];
+const META = DATA.meta || {};
+/* HTML-escape every string that comes from modules.json (labels, descriptions,
+   findings, tags, paths, meta, themes, standard) before it enters innerHTML. The only
+   trusted HTML is the template's own i18n strings (tl) and the structural markup. */
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c=>(
+  {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+let BAD_TAGS = new Set(["monkeypatch","fallback","legacy","dual-format","stub","fake-output","bloat","duplication","glue","silent-except","silent-catch","any-escape","over-fit","god-component","placeholder"]);
+
+/* ---------- i18n: display language via meta.lang (module names never translated) ---------- */
+const LANG = META.lang || "en";
+const I18N = {
+ en:{ mapSuffix:"· Functional Architecture Map", sub:"functional modules · call hierarchy · coupling · quality score · LoC",
+   report:"report", searchPh:"Find a module…", allGrades:"All grades", anyIssue:"Any issue", scrollNote:"click a module · scroll to pan",
+   about:"What it does", audit:"Quality audit", clean:"no material issues — clean / well-scoped",
+   dependsOn:"Depends on / calls →", usedBy:"← Used by (dependents)", none:"— none —", clearSel:"Clear selection",
+   couplingLbl:"coupling", deps:"dependencies", dependents:"dependents", locUnit:"LoC", coreModules:"Core modules (the spine)",
+   lgCoupling:"Coupling", lgCore:"core — system spine", lgHigh:"high — many connections", lgMed:"medium", lgLow:"low — leaf / self-contained",
+   lgEdges:"Edges", lgOut:"depends on / calls →", lgIn:"← used by (dependent)",
+   introHint:"<b>Click any module</b> to see what it does, its quality score &amp; findings, what it calls (solid amber, downstream) and what depends on it (dashed gray, upstream).<br><br>Each card shows a <b>health score</b> (0–100). Toggle the color mode, filter by grade/issue, or open the <b>Audit report</b>.",
+   criticalPath:"Critical path", spineTitle:"Data-flow spine", path:"Path", healthReport:"Health report", qa:"Quality audit",
+   worst:"Worst offenders — click to inspect", commonTags:"Most-common smell tags", themes:"Cross-cutting themes", backToMap:"← Back to map", avg:"avg",
+   filter:"Filter", modulesWord:"modules", allWord:"all", noMatches:"no matches", clearFilters:"Clear filters",
+   btnReport:"Audit report", btnSpine:"Data-flow spine", colorCoupling:"Color: coupling", colorHealth:"Color: health",
+   btnStd:"Standard", stdTitle:"Audit standard", stdIntro:"How modules are scored — the same rubric for every module, language, and run. Click Edit to add your own issue tags.",
+   stdRubric:"Score → grade", stdSeverity:"Finding severity", stdTags:"Issue tags", stdCoupling:"Coupling (structural, not quality)", close:"Close",
+   stdEditBtn:"Edit", stdDone:"Done", stdExport:"Export", stdReset:"Reset", stdAddTag:"+ Tag",
+   stdEditHint:"Editing — changes save in this browser. Export → save as <code>.codemap/standard.json</code> to make them permanent and used by audits.",
+   stdNewTagId:"New tag id (e.g. perf-risk, security):", stdExported:"Saved standard.json — put it in .codemap/",
+   copyFix:"Copy fix prompt", copied:"Copied — paste into Claude Code / Codex",
+   trackedLoc:(l,f)=>`${l} tracked LoC · ${f} files` },
+ zh:{ mapSuffix:"· 功能架构图", sub:"功能模块 · 调用层级 · 耦合 · 质量评分 · 代码行数",
+   report:"报告", searchPh:"查找模块…", allGrades:"全部等级", anyIssue:"全部问题", scrollNote:"点击模块 · 滚动平移",
+   about:"模块简介", audit:"质量审计", clean:"无实质问题 —— 干净、职责单一",
+   dependsOn:"依赖 / 调用 →", usedBy:"← 被谁依赖", none:"— 无 —", clearSel:"清除选择",
+   couplingLbl:"耦合", deps:"个依赖", dependents:"个被依赖", locUnit:"行", coreModules:"核心模块（主线）",
+   lgCoupling:"耦合", lgCore:"core — 系统主线枢纽", lgHigh:"high — 连接很多", lgMed:"medium — 中等", lgLow:"low — 叶子 / 自洽",
+   lgEdges:"连线", lgOut:"依赖 / 调用 →", lgIn:"← 被依赖",
+   introHint:"<b>点击任意模块</b>查看它在做什么、质量评分与问题、它调用了谁（实线琥珀＝下游）以及谁依赖它（虚线灰＝上游）。<br><br>每张卡片都有<b>健康分</b>（0–100）。可切换配色模式、按等级或问题筛选，或打开<b>审计报告</b>。",
+   criticalPath:"关键路径", spineTitle:"数据流主线", path:"路径", healthReport:"健康报告", qa:"质量审计",
+   worst:"最差模块 —— 点击查看", commonTags:"最常见问题标签", themes:"跨模块共性问题", backToMap:"← 返回地图", avg:"平均",
+   filter:"筛选", modulesWord:"个模块", allWord:"全部", noMatches:"无匹配", clearFilters:"清除筛选",
+   btnReport:"审计报告", btnSpine:"数据流主线", colorCoupling:"配色：耦合", colorHealth:"配色：健康度",
+   btnStd:"评判标准", stdTitle:"评判标准", stdIntro:"模块如何打分 —— 所有模块、所有语言、每一次运行都用同一套标准。点「编辑」可加入你自己的问题标签。",
+   stdRubric:"分数 → 等级", stdSeverity:"问题严重度", stdTags:"问题标签", stdCoupling:"耦合（结构维度，非质量）", close:"关闭",
+   stdEditBtn:"编辑", stdDone:"完成", stdExport:"导出", stdReset:"重置", stdAddTag:"+ 标签",
+   stdEditHint:"编辑中 —— 改动保存在本浏览器。导出 → 存为 <code>.codemap/standard.json</code> 即永久生效并被审计采用。",
+   stdNewTagId:"新标签 id（如 perf-risk、security）：", stdExported:"已生成 standard.json —— 放到 .codemap/ 下",
+   copyFix:"复制修复指令", copied:"已复制 —— 粘贴到 Claude Code / Codex",
+   trackedLoc:(l,f)=>`${l} 行（已跟踪）· ${f} 个文件` },
+};
+function tl(k){ const d=I18N[LANG]||I18N.en; return d[k]!=null?d[k]:(I18N.en[k]!=null?I18N.en[k]:k); }
+document.documentElement.lang = LANG;
+function stdText(o){ return o ? (LANG==="zh" ? (o.zh||o.en||"") : (o.en||o.zh||"")) : ""; }
+
+/* ---------- the audit standard — editable, configurable, its own page ----------
+   Effective standard = a saved browser draft (user edits), else the injected file
+   (DATA.standard, from .codemap/standard.json or the skill default), else
+   this built-in fallback. Edit it on the Standard page and Export to standard.json
+   to make it permanent and used by audits. Custom tags flow through the whole map. */
+const BUILTIN_STD = {
+  rubric:[
+    {grade:"A",score:95,range:"90–100",en:"clean, well-scoped, idiomatic",zh:"干净、职责单一、地道"},
+    {grade:"B",score:82,range:"75–89",en:"minor issues: a documented shim, mild bloat",zh:"小问题：有文档的兼容、轻微臃肿"},
+    {grade:"C",score:67,range:"60–74",en:"notable hacks / fallbacks / bloat / duplication",zh:"明显的 hack / 回退 / 臃肿 / 重复"},
+    {grade:"D",score:50,range:"40–59",en:"significant legacy / stubs / duplication, or a protocol violation",zh:"严重的遗留 / 占位 / 重复，或协议违规"},
+    {grade:"F",score:25,range:"0–39",en:"broken, fake output, or unfinished-but-wired",zh:"损坏、伪造输出，或未完成却已接线"},
+  ],
+  severities:[
+    {key:"HIGH",en:"wrong / dangerous / fake, a protocol or security issue, or a genuine maintenance hazard",zh:"错误 / 危险 / 伪造、协议或安全问题，或真正的维护地雷"},
+    {key:"MED",en:"a real smell a maintainer should fix",zh:"维护者该修的真坏味"},
+    {key:"LOW",en:"a documented shim, a cosmetic cast, benign bloat — worth noting, not urgent",zh:"有文档的兼容、装饰性 cast、良性臃肿 —— 值得记、不紧急"},
+  ],
+  coupling:[
+    {key:"core",en:"system spine — central to almost everything",zh:"系统主线 —— 几乎牵连一切"},
+    {key:"high",en:"many connections",zh:"连接很多"},
+    {key:"med",en:"moderate",zh:"中等"},
+    {key:"low",en:"leaf / self-contained",zh:"叶子 / 自洽"},
+  ],
+  tags:[
+    {id:"monkeypatch",label:"monkeypatch",labelZh:"猴补丁",bad:true,en:"runtime mutation of another module / stdlib / vendor; reflection or prototype patching",zh:"运行时改写别的模块/标准库/依赖；反射或原型补丁"},
+    {id:"fallback",label:"fallback",labelZh:"回退兜底",bad:true,en:"'try the real thing, then fake/degrade'; a||b||c chains that hide which value is real",zh:"“先试真的再退化/造假”；a||b||c 掩盖哪个是真值"},
+    {id:"silent-except",label:"silent-except",labelZh:"静默吞错",bad:true,en:"swallowed errors: empty catch / except:pass / ignored return codes",zh:"吞掉错误：空 catch / except:pass / 忽略返回码"},
+    {id:"legacy",label:"legacy",labelZh:"遗留",bad:true,en:"deprecated/back-compat shims, dead-but-shipped code, parallel old+new paths",zh:"遗留/兼容垫片、已发布的死代码、新旧并存"},
+    {id:"dual-format",label:"dual-format",labelZh:"双格式",bad:true,en:"accepting two shapes for one field (snake||camel), patched through the code",zh:"同一字段接受两种形态（snake||camel）并散落各处"},
+    {id:"stub",label:"stub",labelZh:"占位桩",bad:true,en:"NotImplemented / TODO / dead buttons / demo scripts presented as real",zh:"未实现/TODO/死按钮/演示脚本当成品"},
+    {id:"fake-output",label:"fake-output",labelZh:"伪造输出",bad:true,en:"returns random/canned/hardcoded results where real work is implied",zh:"本应真算的地方返回随机/写死结果"},
+    {id:"duplication",label:"duplication",labelZh:"重复",bad:true,en:"copy-pasted logic, or an existing shared abstraction not reused",zh:"复制粘贴，或已有共享抽象却不复用"},
+    {id:"bloat",label:"bloat",labelZh:"臃肿",bad:true,en:"oversized file / function; too many responsibilities in one unit",zh:"超大文件/函数；单元职责过多"},
+    {id:"glue",label:"glue",labelZh:"胶水",bad:true,en:"valueless pass-through: rows of thin forwarders / no-op adapters",zh:"无价值透传：成片薄包装 / 零转换适配器"},
+    {id:"any-escape",label:"any-escape",labelZh:"类型逃逸",bad:true,en:"bypassing the type system: as any / @ts-ignore / dynamic / void* / reinterpret_cast / unsafe",zh:"绕过类型系统：as any / @ts-ignore / dynamic / void* / reinterpret_cast / unsafe"},
+    {id:"over-fit",label:"over-fit",labelZh:"过度特化",bad:true,en:"hardcoded to one case where a small generalization was expected",zh:"硬编码单一情况，本应小幅泛化"},
+    {id:"god-component",label:"god-component",labelZh:"上帝组件",bad:true,en:"one component/class/file doing far too much",zh:"一个组件/类/文件做太多事"},
+    {id:"placeholder",label:"placeholder",labelZh:"占位",bad:true,en:"unfinished UI / data presented as if complete",zh:"未完成的 UI/数据当作已完成"},
+    {id:"clean",label:"clean",labelZh:"干净",bad:false,en:"no material issues — well-scoped",zh:"无实质问题 —— 职责单一"},
+  ],
+};
+const STD_KEY = "codemap.standard."+(META.project||"default");
+function loadStdDraft(){ try{ const s=localStorage.getItem(STD_KEY); return s?JSON.parse(s):null; }catch(e){ return null; } }
+let STDDATA = loadStdDraft() || JSON.parse(JSON.stringify(DATA.standard || BUILTIN_STD));
+const TAGMETA = {};
+function rebuildTagMeta(){
+  for(const k in TAGMETA) delete TAGMETA[k];
+  (STDDATA.tags||[]).forEach(t=>TAGMETA[t.id]=t);
+  BAD_TAGS = new Set((STDDATA.tags||[]).filter(t=>t.bad!==false).map(t=>t.id));
+}
+function tagMeta(id){ return TAGMETA[id] || {id,label:id,bad:true}; }
+function tagLabel(t){ const m=tagMeta(t); return LANG==="zh" ? (m.labelZh||m.label||t) : (m.label||t); }
+rebuildTagMeta();
+
+/* problems POP (saturated red→amber), good RECEDES (pale low-sat green).
+   The cue is saturation/lightness, not hue — colorblind-friendlier. */
+function healthColor(s){
+  if(s==null) return "#6b7280";
+  const stops=[[0,[224,78,74]],[42,[226,128,66]],[60,[222,172,52]],
+               [74,[214,180,72]],[82,[168,180,140]],[100,[150,178,150]]];
+  s=Math.max(0,Math.min(100,s));
+  let a=stops[0], b=stops[stops.length-1];
+  for(let i=0;i<stops.length-1;i++){ if(s>=stops[i][0] && s<=stops[i+1][0]){a=stops[i];b=stops[i+1];break;} }
+  const t=(s-a[0])/((b[0]-a[0])||1);
+  const c=a[1].map((v,k)=>Math.round(v+(b[1][k]-v)*t));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+const byId = Object.fromEntries(M.map(m=>[m.id,m]));
+const dependentsOf = id => M.filter(m=>(m.deps||[]).includes(id)).map(m=>m.id);
+
+const board=document.getElementById("board");
+const svg=document.getElementById("edges");
+const detail=document.getElementById("detail");
+const cardEl={};
+
+document.getElementById("projTitle").innerHTML = esc(META.project||"Project")+` <span>${tl('mapSuffix')}</span>`;
+document.getElementById("subLine").innerHTML = esc(META.subtitle||tl('sub'))+
+  (META.mdPath?`  ·  <a href="${esc(META.mdPath.split('/').pop())}" style="color:var(--accent);text-decoration:none">${tl('report')} ↗</a>`:"");
+/* localize static header chrome (module names/labels are never translated) */
+document.querySelector(".scrollnote").textContent = tl("scrollNote");
+document.getElementById("search").placeholder = tl("searchPh");
+document.getElementById("reportBtn").textContent = tl("btnReport");
+document.getElementById("spineBtn").textContent = tl("btnSpine");
+document.getElementById("stdBtn").textContent = tl("btnStd");
+document.getElementById("gradeFilter").options[0].textContent = tl("allGrades");
+document.getElementById("tagFilter").options[0].textContent = tl("anyIssue");
+
+BANDS.forEach(b=>{
+  if(b.wire){
+    const w=document.createElement("div"); w.className="wire";
+    w.innerHTML=`<div class="line"></div><div class="lbl">${esc(b.t||"boundary")}</div><div class="line"></div>`;
+    board.appendChild(w); return;
+  }
+  const band=document.createElement("div"); band.className=`band tier-${b.tier||""}`;
+  const items=M.filter(m=>m.band===b.id);
+  const gloc=items.reduce((a,m)=>a+(m.loc||0),0);
+  const head=document.createElement("div"); head.className="band-head";
+  head.innerHTML=`<span class="t">${esc(b.t||b.id)}</span><span class="d">${esc(b.d||"")}</span>`+
+    `<span class="num">${items.length}</span><span class="num gloc">${gloc.toLocaleString()} ${tl('locUnit')}</span>`;
+  band.appendChild(head);
+  const body=document.createElement("div"); body.className="band-body";
+  items.forEach(m=>{
+    const n=document.createElement("div");
+    n.className=`node c-${m.coupling||"low"}`; n.dataset.id=m.id;
+    if(m.score!=null) n.style.setProperty("--h",healthColor(m.score));
+    const chip=m.score!=null?`<span class="chip">${m.score}</span>`:"";
+    const locStr=m.loc!=null?` · ${Number(m.loc).toLocaleString()} ${tl('locUnit')}`:"";
+    n.innerHTML=`${chip}<div class="lab">${esc(m.label)}</div><div class="meta">${esc(m.grade||"–")} · ${(m.deps||[]).length}→ ${dependentsOf(m.id).length}←${locStr}</div>`;
+    n.addEventListener("click",e=>{e.stopPropagation();select(m.id)});
+    body.appendChild(n); cardEl[m.id]=n;
+  });
+  band.appendChild(body); board.appendChild(band);
+});
+
+function center(el){const r=el.getBoundingClientRect(), br=board.getBoundingClientRect();
+  return {x:r.left-br.left+r.width/2, y:r.top-br.top+r.height/2, w:r.width, h:r.height};}
+function clip(c,from){const dx=from.x-c.x, dy=from.y-c.y, hw=c.w/2+2, hh=c.h/2+2;
+  if(dx===0&&dy===0) return c;
+  const s=Math.min(hw/Math.abs(dx||1e-6), hh/Math.abs(dy||1e-6));
+  return {x:c.x+dx*s, y:c.y+dy*s};}
+function edge(aEl,bEl,kind){
+  const ca=center(aEl), cb=center(bEl), a=clip(ca,cb), b=clip(cb,ca);
+  const dy=b.y-a.y, k=Math.min(Math.abs(dy)*0.4+30,150);
+  const p=document.createElementNS("http://www.w3.org/2000/svg","path");
+  p.setAttribute("d",`M${a.x},${a.y} C${a.x},${a.y+(dy>=0?k:-k)} ${b.x},${b.y-(dy>=0?k:-k)} ${b.x},${b.y}`);
+  p.setAttribute("fill","none");
+  p.setAttribute("stroke",kind==="out"?"var(--out)":"var(--in)");
+  p.setAttribute("stroke-width",kind==="out"?"1.9":"1.5");
+  p.setAttribute("stroke-opacity",kind==="out"?"0.95":"0.6");
+  if(kind==="in")p.setAttribute("stroke-dasharray","4 3");
+  p.setAttribute("marker-end",kind==="out"?"url(#ah-out)":"url(#ah-in)");
+  svg.appendChild(p);
+}
+function clearEdges(){[...svg.querySelectorAll("path")].forEach(p=>p.remove());}
+
+let current=null, spineOn=false;
+function resetClasses(){board.classList.remove("has-sel");
+  Object.values(cardEl).forEach(n=>n.classList.remove("sel","dep","dependent","lit"));}
+function select(id){
+  if(current===id){clearSel();return;}
+  current=id; spineOn=false; document.getElementById("spineBtn").classList.remove("active");
+  clearEdges(); resetClasses();
+  const m=byId[id]; const outs=(m.deps||[]); const ins=dependentsOf(id);
+  board.classList.add("has-sel"); cardEl[id].classList.add("sel","lit");
+  outs.forEach(d=>{cardEl[d]&&(cardEl[d].classList.add("dep","lit"),edge(cardEl[id],cardEl[d],"out"));});
+  ins.forEach(d=>{cardEl[d]&&(cardEl[d].classList.add("dependent","lit"),edge(cardEl[d],cardEl[id],"in"));});
+  renderDetail(m,outs,ins);
+  cardEl[id].scrollIntoView({block:"nearest",inline:"nearest",behavior:"smooth"});
+}
+function clearSel(){current=null; clearEdges(); resetClasses(); renderIntro();}
+function showSpine(){
+  current=null; clearEdges(); resetClasses(); board.classList.add("has-sel");
+  spineOn=true; document.getElementById("spineBtn").classList.add("active");
+  SPINE.forEach(id=>cardEl[id]&&cardEl[id].classList.add("lit"));
+  for(let i=0;i<SPINE.length-1;i++){const a=cardEl[SPINE[i]],b=cardEl[SPINE[i+1]];
+    if(a&&b){a.classList.add("sel");b.classList.add("sel");edge(a,b,"out");}}
+  detail.innerHTML=`<div class="detail"><div class="kicker">${tl('criticalPath')}</div><h2>${tl('spineTitle')}</h2>
+    <p class="desc">${esc(META.spineDesc||"The system's critical request path, end to end.")}</p>
+    <div class="reltitle">${tl('path')}</div>
+    <div class="rel">${SPINE.map(id=>byId[id]?`<button data-go="${esc(id)}"><span>${esc(byId[id].label)}</span><span class="bnd">${esc(byId[id].coupling)}</span></button>`:"").join("")}</div>
+    ${legendHTML()}</div>`;
+  bindGo();
+}
+function auditHTML(m){
+  if(m.score==null) return "";
+  const col=healthColor(m.score);
+  const tags=(m.tags||[]).map(t=>`<span class="tg ${t==='clean'?'ok':(BAD_TAGS.has(t)?'bad':'')}">${esc(tagLabel(t))}</span>`).join("");
+  const sevCls=s=>({HIGH:"HIGH",MED:"MED",LOW:"LOW"}[s]||"LOW");
+  const fnd=(m.findings||[]).length
+    ? m.findings.map(f=>`<div class="finding sev-${sevCls(f.sev)}"><div class="top"><span class="sev sev-${sevCls(f.sev)}">${esc(f.sev)}</span><span class="loc">${esc(f.loc||"")}</span></div><div class="txt">${esc(f.text||"")}</div></div>`).join("")
+    : `<div class="none">${tl('clean')}</div>`;
+  return `<div class="reltitle" style="margin-top:6px">${tl('audit')}</div>`+`
+    <div class="scorebox"><span class="big" style="color:${col}">${m.score}</span>
+      <span class="gr grade-${esc(m.grade)}">${esc(m.grade)}</span>
+      <span class="bar"><i style="width:${m.score}%;background:${col}"></i></span></div>
+    <div class="tagchips">${tags}</div><div class="findings">${fnd}</div>`;
+}
+function renderDetail(m,outs,ins){
+  const li=arr=>arr.length?arr.map(id=>byId[id]?`<button data-go="${esc(id)}"><span>${esc(byId[id].label)}</span><span class="bnd">${esc(byId[id].band)}</span></button>`:"").join(""):`<div class="none">${tl('none')}</div>`;
+  detail.innerHTML=`<div class="detail"><div class="kicker">${esc(bandTitle(m.band))}</div>
+    <h2>${esc(m.label)}</h2><div class="path">${esc(m.path||"")}</div>
+    <div class="pill-row"><span class="pill cpl">${tl('couplingLbl')}: ${esc(m.coupling)}</span>
+      ${m.loc!=null?`<span class="pill">${Number(m.loc).toLocaleString()} ${tl('locUnit')}</span>`:""}
+      <span class="pill">${outs.length} ${tl('deps')}</span><span class="pill">${ins.length} ${tl('dependents')}</span></div>
+    ${m.desc?`<div class="reltitle">${tl('about')}</div><p class="desc">${esc(m.desc)}</p>`:""}
+    ${auditHTML(m)}
+    <div class="reltitle"><span class="dotc" style="background:var(--out)"></span>${tl('dependsOn')}</div>
+    <div class="rel">${li(outs)}</div>
+    <div class="reltitle"><span class="dotc" style="background:var(--in)"></span>${tl('usedBy')}</div>
+    <div class="rel">${li(ins)}</div>
+    ${m.score!=null?`<button class="btn clearbtn" id="copyFixBtn" style="margin-top:14px">${tl('copyFix')} ↗</button>`:""}
+    <button class="btn clearbtn" id="clearBtn" style="margin-top:8px">${tl('clearSel')}</button></div>`;
+  bindGo(); document.getElementById("clearBtn").addEventListener("click",clearSel);
+  const cf=document.getElementById("copyFixBtn");
+  if(cf) cf.onclick=()=>{ copyText("/codemap fix "+m.id); toast(tl('copied')); };
+}
+function bindGo(){detail.querySelectorAll("[data-go]").forEach(b=>b.addEventListener("click",()=>select(b.dataset.go)));}
+function bandTitle(b){return (BANDS.find(x=>x.id===b)||{}).t||b;}
+function legendHTML(){
+  return `<div class="legend"><h4>${tl('lgCoupling')}</h4>
+    <div class="row"><span class="swatch" style="background:var(--c-core)"></span>${tl('lgCore')}</div>
+    <div class="row"><span class="swatch" style="background:var(--c-high)"></span>${tl('lgHigh')}</div>
+    <div class="row"><span class="swatch" style="background:var(--c-med)"></span>${tl('lgMed')}</div>
+    <div class="row"><span class="swatch" style="background:var(--c-low)"></span>${tl('lgLow')}</div>
+    <h4 style="margin-top:18px">${tl('lgEdges')}</h4>
+    <div class="row"><span class="ln" style="border-color:var(--out)"></span>${tl('lgOut')}</div>
+    <div class="row"><span class="ln" style="border-color:var(--in);border-top-style:dashed"></span>${tl('lgIn')}</div></div>`;
+}
+function renderIntro(){
+  const cores=M.filter(m=>m.coupling==="core");
+  detail.innerHTML=`<div class="detail"><div class="empty-hint">${tl('introHint')}</div>
+    ${cores.length?`<div class="reltitle" style="margin-top:22px">${tl('coreModules')}</div>
+    <div class="rel">${cores.map(m=>`<button data-go="${esc(m.id)}"><span>${esc(m.label)}</span><span class="bnd">${esc(m.band)}</span></button>`).join("")}</div>`:""}
+    ${legendHTML()}</div>`;
+  bindGo();
+}
+function renderReport(){
+  current=null; spineOn=false; clearEdges(); resetClasses();
+  document.getElementById("spineBtn").classList.remove("active");
+  const scored=M.filter(m=>m.score!=null);
+  if(!scored.length){renderIntro();return;}
+  const avg=Math.round(scored.reduce((a,m)=>a+m.score,0)/scored.length);
+  const gc={A:0,B:0,C:0,D:0,F:0}; scored.forEach(m=>gc[m.grade]!=null&&gc[m.grade]++);
+  const worst=[...scored].sort((a,b)=>a.score-b.score).slice(0,10);
+  const tagCount={}; scored.forEach(m=>(m.tags||[]).forEach(t=>{if(BAD_TAGS.has(t))tagCount[t]=(tagCount[t]||0)+1;}));
+  const topTags=Object.entries(tagCount).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  const locLine=META.locLine||(META.tracked_loc?tl('trackedLoc')(Number(META.tracked_loc).toLocaleString(),META.tracked_files||"?"):"");
+  detail.innerHTML=`<div class="report">
+    <div class="kicker" style="font-family:var(--mono);font-size:10px;color:var(--accent);letter-spacing:.5px">${tl('qa')} · ${scored.length} ${tl('modulesWord')}</div>
+    <h2 style="font-size:18px;margin:5px 0 2px;font-weight:650">${tl('healthReport')}</h2>
+    <div class="path" style="color:var(--faint);font-size:11px;margin-bottom:4px">${["monkeypatch","fallback","legacy","stub","bloat","duplication","dual-format"].map(tagLabel).join(" · ")}</div>
+    ${locLine?`<div class="path" style="color:var(--muted);font-size:11px;margin-bottom:2px">${esc(locLine)}</div>`:""}
+    <div class="stat-grid">
+      <div class="stat"><div class="n" style="color:${healthColor(avg)}">${avg}</div><div class="l">${tl('avg')}</div></div>
+      <div class="stat"><div class="n grade-A">${gc.A}</div><div class="l">A</div></div>
+      <div class="stat"><div class="n grade-B">${gc.B}</div><div class="l">B</div></div>
+      <div class="stat"><div class="n grade-C">${gc.C}</div><div class="l">C</div></div>
+      <div class="stat"><div class="n grade-D" style="color:#e0524b">${gc.D+gc.F}</div><div class="l">D/F</div></div>
+    </div>
+    <h3>${tl('worst')}</h3>
+    <div class="rel">${worst.map(m=>`<button data-go="${esc(m.id)}"><span>${esc(m.label)}</span><span class="bnd" style="color:${healthColor(m.score)}">${m.score} · ${esc(m.grade)}</span></button>`).join("")}</div>
+    ${topTags.length?`<h3>${tl('commonTags')}</h3><div class="tagchips">${topTags.map(([t,n])=>`<span class="tg bad">${esc(tagLabel(t))} ·${n}</span>`).join("")}</div>`:""}
+    ${REPORT_THEMES.length?`<h3>${tl('themes')}</h3>${REPORT_THEMES.map(([h,b])=>`<p class="theme"><b>${esc(h)}.</b> ${esc(b)}</p>`).join("")}`:""}
+    <button class="btn clearbtn" id="toMapBtn">${tl('backToMap')}</button></div>`;
+  bindGo(); document.getElementById("toMapBtn").addEventListener("click",clearSel);
+}
+function toast(msg){
+  let t=document.getElementById("toast");
+  if(!t){ t=document.createElement("div"); t.id="toast"; t.className="toast"; document.body.appendChild(t); }
+  t.textContent=msg; t.classList.add("show");
+  clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"),2400);
+}
+function copyText(s){
+  if(navigator.clipboard) { navigator.clipboard.writeText(s).catch(()=>{}); return; }
+  const ta=document.createElement("textarea"); ta.value=s; document.body.appendChild(ta); ta.select();
+  try{ document.execCommand("copy"); }catch(e){} ta.remove();
+}
+let STD_EDIT=false;
+function openStandard(){ STD_EDIT=false; renderStd(); document.getElementById("stdModal").classList.add("open"); }
+function closeStandard(){ document.getElementById("stdModal").classList.remove("open"); }
+function saveStdDraft(){ try{ localStorage.setItem(STD_KEY, JSON.stringify(STDDATA)); }catch(e){} rebuildTagMeta(); }
+function langKey(){ return LANG==="zh" ? "zh" : "en"; }
+function renderStd(){
+  const ed=STD_EDIT, ce=ed?' contenteditable="true" spellcheck="false"':'';
+  const rubric=STDDATA.rubric.map((x,i)=>`<div class="std-row"><span class="std-badge" style="background:${healthColor(x.score)}">${esc(x.grade)}</span><span class="std-range">${esc(x.range)}</span><span class="std-desc"${ce} data-k="rubric" data-i="${i}">${esc(stdText(x))}</span></div>`).join("");
+  const sev=STDDATA.severities.map((x,i)=>`<div class="std-row"><span class="std-key"><span class="sev sev-${esc(x.key)}">${esc(x.key)}</span></span><span class="std-desc"${ce} data-k="sev" data-i="${i}">${esc(stdText(x))}</span></div>`).join("");
+  const tags=STDDATA.tags.map((x,i)=>`<div class="std-row"><span class="std-key"><span class="tg ${x.bad===false?'ok':'bad'}"${ce} data-k="taglabel" data-i="${i}">${esc(LANG==="zh"?(x.labelZh||x.label):x.label)}</span></span><span class="std-desc"${ce} data-k="tag" data-i="${i}">${esc(stdText(x))}</span>${ed?`<button class="xrm" data-rm="${i}" title="remove">✕</button>`:''}</div>`).join("");
+  const coup=STDDATA.coupling.map((x,i)=>`<div class="std-row"><span class="std-key" style="font-family:var(--mono);font-size:11.5px;color:var(--ink)">${esc(x.key)}</span><span class="std-desc"${ce} data-k="coup" data-i="${i}">${esc(stdText(x))}</span></div>`).join("");
+  document.getElementById("stdModal").innerHTML=`<div class="sheet">
+    <div class="xbtn" style="display:flex;gap:6px">
+      <button class="btn ${ed?'active':''}" id="stdEdit">${ed?tl('stdDone'):tl('stdEditBtn')}</button>
+      ${ed?`<button class="btn" id="stdExport">${tl('stdExport')}</button><button class="btn" id="stdReset">${tl('stdReset')}</button>`:''}
+      <button class="btn" id="stdClose">${tl('close')}</button>
+    </div>
+    <h2>${tl('stdTitle')}</h2><div class="intro">${ed?tl('stdEditHint'):tl('stdIntro')}</div>
+    <div class="std-h4">${tl('stdRubric')}</div>${rubric}
+    <div class="std-h4">${tl('stdSeverity')}</div>${sev}
+    <div class="std-h4">${tl('stdTags')}${ed?` <button class="btn" id="stdAddTag" style="margin-left:8px;padding:2px 8px">${tl('stdAddTag')}</button>`:''}</div>${tags}
+    <div class="std-h4">${tl('stdCoupling')}</div>${coup}</div>`;
+  document.getElementById("stdClose").onclick=closeStandard;
+  document.getElementById("stdEdit").onclick=()=>{STD_EDIT=!STD_EDIT; renderStd();};
+  if(ed){
+    document.getElementById("stdExport").onclick=()=>{
+      const blob=new Blob([JSON.stringify(STDDATA,null,1)],{type:"application/json"});
+      const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="standard.json"; a.click();
+      toast(tl('stdExported'));
+    };
+    document.getElementById("stdReset").onclick=()=>{
+      try{localStorage.removeItem(STD_KEY);}catch(e){}
+      STDDATA=JSON.parse(JSON.stringify(DATA.standard||BUILTIN_STD)); rebuildTagMeta(); renderStd();
+    };
+    document.getElementById("stdAddTag").onclick=()=>{
+      const id=(prompt(tl('stdNewTagId'))||"").trim().toLowerCase().replace(/\s+/g,"-");
+      if(!id || STDDATA.tags.some(t=>t.id===id)) return;
+      STDDATA.tags.push({id,label:id,labelZh:id,bad:true,en:"",zh:""}); saveStdDraft(); renderStd();
+    };
+    document.querySelectorAll("#stdModal [data-rm]").forEach(b=>b.onclick=()=>{STDDATA.tags.splice(+b.dataset.rm,1); saveStdDraft(); renderStd();});
+    document.querySelectorAll("#stdModal [data-k]").forEach(el=>el.addEventListener("input",()=>{
+      const i=+el.dataset.i, v=el.textContent, lk=langKey();
+      const k=el.dataset.k;
+      if(k==="rubric") STDDATA.rubric[i][lk]=v;
+      else if(k==="sev") STDDATA.severities[i][lk]=v;
+      else if(k==="coup") STDDATA.coupling[i][lk]=v;
+      else if(k==="tag") STDDATA.tags[i][lk]=v;
+      else if(k==="taglabel") STDDATA.tags[i][LANG==="zh"?"labelZh":"label"]=v;
+      saveStdDraft();
+    }));
+  }
+}
+function toggleHealth(){
+  const on=!board.classList.contains("show-health");
+  board.classList.toggle("show-health",on);
+  const b=document.getElementById("healthBtn");
+  b.classList.toggle("active",on); b.textContent=on?tl('colorHealth'):tl('colorCoupling');
+}
+/* ---------- filtering: search + grade threshold + issue tag (combined, AND) ---------- */
+let filterGrade=null, filterTag=null, searchQuery="";
+function filtersActive(){return filterGrade!=null||filterTag!=null||searchQuery!=="";}
+function matchesFilter(m){
+  if(filterGrade!=null && !(m.score!=null && m.score<filterGrade)) return false;
+  if(filterTag && !(m.tags||[]).includes(filterTag)) return false;
+  if(searchQuery){const q=searchQuery;
+    if(!(m.label.toLowerCase().includes(q)||m.id.toLowerCase().includes(q)||(m.desc||"").toLowerCase().includes(q))) return false;}
+  return true;
+}
+function runFilter(){
+  if(!filtersActive()){document.getElementById("fcount").textContent="";clearSel();return;}
+  current=null; spineOn=false; document.getElementById("spineBtn").classList.remove("active");
+  clearEdges(); resetClasses(); board.classList.add("has-sel");
+  document.getElementById("gradeFilter").classList.toggle("on",filterGrade!=null);
+  document.getElementById("tagFilter").classList.toggle("on",!!filterTag);
+  let n=0;
+  M.forEach(m=>{ if(matchesFilter(m)){cardEl[m.id].classList.add("lit");n++;} });
+  document.getElementById("fcount").textContent=n+" / "+M.length;
+  const matches=M.filter(matchesFilter).sort((a,b)=>(a.score??999)-(b.score??999));
+  const gl={90:"≤ B",75:"≤ C",60:"≤ D",40:"F"}[filterGrade];
+  const crit=[gl||"",filterTag?("#"+esc(tagLabel(filterTag))):"",searchQuery?('"'+esc(searchQuery)+'"'):""].filter(Boolean).join("  ·  ");
+  detail.innerHTML=`<div class="detail"><div class="kicker">${tl('filter')}</div>
+    <h2>${n} ${tl('modulesWord')}</h2><div class="path">${crit||tl('allWord')}</div>
+    <div class="rel">${matches.map(m=>`<button data-go="${esc(m.id)}"><span>${esc(m.label)}</span><span class="bnd" style="color:${healthColor(m.score)}">${m.score!=null?m.score+" · "+esc(m.grade):""}</span></button>`).join("")||`<div class="none">${tl('noMatches')}</div>`}</div>
+    <button class="btn clearbtn" id="clearFilterBtn">${tl('clearFilters')}</button></div>`;
+  bindGo(); document.getElementById("clearFilterBtn").addEventListener("click",resetFilters);
+}
+function resetFilters(){
+  filterGrade=null; filterTag=null; searchQuery="";
+  document.getElementById("gradeFilter").value=""; document.getElementById("gradeFilter").classList.remove("on");
+  document.getElementById("tagFilter").value=""; document.getElementById("tagFilter").classList.remove("on");
+  document.getElementById("search").value=""; document.getElementById("fcount").textContent="";
+  clearSel();
+}
+/* populate the issue-tag dropdown from the negative tags present, by frequency */
+(function(){
+  const cnt={}; M.forEach(m=>(m.tags||[]).forEach(t=>{if(BAD_TAGS.has(t))cnt[t]=(cnt[t]||0)+1;}));
+  const sel=document.getElementById("tagFilter");
+  Object.entries(cnt).sort((a,b)=>b[1]-a[1]).forEach(([t,c])=>{
+    const o=document.createElement("option"); o.value=t; o.textContent=`${tagLabel(t)} (${c})`; sel.appendChild(o);});
+})();
+document.getElementById("search").addEventListener("input",e=>{searchQuery=e.target.value.trim().toLowerCase();runFilter();});
+document.getElementById("search").addEventListener("keydown",e=>{
+  if(e.key==="Enter"){const lit=board.querySelector(".node.lit");if(lit)select(lit.dataset.id);}});
+document.getElementById("gradeFilter").addEventListener("change",e=>{filterGrade=e.target.value?Number(e.target.value):null;runFilter();});
+document.getElementById("tagFilter").addEventListener("change",e=>{filterTag=e.target.value||null;runFilter();});
+document.getElementById("healthBtn").addEventListener("click",toggleHealth);
+document.getElementById("reportBtn").addEventListener("click",renderReport);
+document.getElementById("spineBtn").addEventListener("click",()=>{spineOn?clearSel():showSpine();});
+document.getElementById("stdBtn").addEventListener("click",openStandard);
+document.getElementById("stdModal").addEventListener("click",e=>{ if(e.target.id==="stdModal") closeStandard(); });
+window.addEventListener("keydown",e=>{ if(e.key==="Escape") closeStandard(); });
+board.addEventListener("click",()=>{filtersActive()?runFilter():clearSel();});
+let rt; window.addEventListener("resize",()=>{clearTimeout(rt);rt=setTimeout(()=>{const c=current;if(c){current=null;select(c);}else if(spineOn)showSpine();},120);});
+board.classList.add("show-health");
+document.getElementById("healthBtn").classList.add("active");
+document.getElementById("healthBtn").textContent=tl("colorHealth");
+renderIntro();
+</script>
+</body>
+</html>

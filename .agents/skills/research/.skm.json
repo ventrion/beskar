@@ -1,0 +1,9 @@
+{
+  "skm": 1,
+  "source": "research",
+  "collectionCommit": "9d8bc83cb33f160e8c2e00dafa66c84089489148",
+  "files": {
+    "SKILL.md": "sha256:985569f15739c713d6784887c3d186d4ef9ac85bec5ad9c068d25bf0739928e4",
+    "agents/openai.yaml": "sha256:9b4c470d63221c1f68f22df70b83e2f12401b317babe0d1b7b5f24a974474d0d"
+  }
+}

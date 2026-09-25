@@ -1,0 +1,24 @@
+# Rohrpost launcher for PowerShell, materialised from rohrpost.ps1.template.
+# The wrapper validates the local installation and never bypasses it: it only
+# ever runs the rp.exe binary from the install home.
+#
+# No placeholder to substitute: the default home resolves %LOCALAPPDATA%\rohrpost
+# at runtime and ROHRPOST_HOME overrides it.
+
+if (-not $env:ROHRPOST_HOME -and -not $env:LOCALAPPDATA) {
+    [Console]::Error.WriteLine('Rohrpost is not installed: neither ROHRPOST_HOME nor LOCALAPPDATA is set')
+    [Console]::Error.WriteLine('Load .agents/skills/rohrpost/playbooks/install-local.md to provision it')
+    exit 1
+}
+
+$rohrpostHome = if ($env:ROHRPOST_HOME) { $env:ROHRPOST_HOME } else { Join-Path $env:LOCALAPPDATA 'rohrpost' }
+$rohrpostExecutable = Join-Path $rohrpostHome 'bin\rp.exe'
+
+if (-not (Test-Path -LiteralPath $rohrpostExecutable -PathType Leaf)) {
+    [Console]::Error.WriteLine("Rohrpost is not installed: rp.exe is missing under $rohrpostHome\bin")
+    [Console]::Error.WriteLine('Load .agents/skills/rohrpost/playbooks/install-local.md to provision it')
+    exit 1
+}
+
+& $rohrpostExecutable @args
+exit $LASTEXITCODE

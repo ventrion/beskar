@@ -1,0 +1,9 @@
+{
+  "skm": 1,
+  "source": "grill-with-docs",
+  "collectionCommit": "9d8bc83cb33f160e8c2e00dafa66c84089489148",
+  "files": {
+    "SKILL.md": "sha256:7de372c13488f1ee96cc11cd8907b56b6809cc93eef776eeddd37de6b6cbe3fe",
+    "agents/openai.yaml": "sha256:94cd0ab161fb468a836349f5ed482ba58ce8e709a05c57ce533d739dbd35cca9"
+  }
+}

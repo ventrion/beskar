@@ -1,0 +1,10 @@
+{
+  "skm": 1,
+  "source": "writing-for-agents",
+  "collectionCommit": "9d8bc83cb33f160e8c2e00dafa66c84089489148",
+  "files": {
+    "SKILL-MECHANICS.md": "sha256:c768e6307c7c10728c401c213f2c4ba71c542127eeb7ad2956aabd15a0fa0059",
+    "SKILL.md": "sha256:551adca942227b44192edba88acd4e8db911f0121ce58ad16944ccf6a896a74a",
+    "agents/openai.yaml": "sha256:eacb24b2a618cfb81dacb0416f4fdd75ddf3a8060f8ddb99aae1b1e301907e4b"
+  }
+}

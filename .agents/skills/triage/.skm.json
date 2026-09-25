@@ -1,0 +1,11 @@
+{
+  "skm": 1,
+  "source": "triage",
+  "collectionCommit": "9d8bc83cb33f160e8c2e00dafa66c84089489148",
+  "files": {
+    "AGENT-BRIEF.md": "sha256:7f5f87fed3033df1b06e083c480f3e847b1fbb0647746b8a4c6a50f9f26ef44f",
+    "OUT-OF-SCOPE.md": "sha256:1fbf9b432130c6380aa65813b55553cfda150309b27c595e183f8e335b8a190d",
+    "SKILL.md": "sha256:8bffb8b1ecbdef006e0bb187d40966ed20a84cecb4247ab0810b529a504320c3",
+    "agents/openai.yaml": "sha256:2e683717720cf456d165d0bb1a68bb600d0b6a8ccb61841c172e50d26f95351c"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "skm": 1,
+  "source": "setup-repo-skills",
+  "collectionCommit": "03803fb7b15eb0ba2c50ab8222fd332c871fff96",
+  "files": {
+    "SKILL.md": "sha256:4b4ecda9695a089c9d6029ae81c350e68049ea6de7275d64ab42b709ed0afbdc",
+    "agents/openai.yaml": "sha256:9527de0110541c45712319025155aeab8dc7d77c6ed6e5e83271bab1851ab939",
+    "domain.md": "sha256:edc6d6131fdffc4b7135704f5262124fc43355c95f61b7399dc5a4db643e28ca",
+    "issue-tracker-github.md": "sha256:afd6852a80185217bd28aa5cbe456bef1e85be25be7bd1fba382d5b8ee428325",
+    "issue-tracker-gitlab.md": "sha256:ea175f73d193b3f55819c0ed9bbccf6ee0e70ad8f928e3d7607596c53380acd6",
+    "issue-tracker-local.md": "sha256:7dcda20a2eb4bdc89b95d1143423c0691309921cadae3132e6424f371030506e",
+    "issue-tracker-rohrpost.md": "sha256:93fa02886c19ed785ad979caa42cdf4c70aa3e3da93548df526f515650e80d3d",
+    "triage-labels.md": "sha256:4f53c9b40ce2651e3611aa090eaedbd6dbc9b71ef8c5f7e65eac0d8263190d0d"
+  }
+}

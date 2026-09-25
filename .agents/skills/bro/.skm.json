@@ -1,0 +1,9 @@
+{
+  "skm": 1,
+  "source": "bro",
+  "collectionCommit": "9d8bc83cb33f160e8c2e00dafa66c84089489148",
+  "files": {
+    "SKILL.md": "sha256:f4ba6add98884ad0d72a826ec65cc255288fac46d04ed085b6e1efe68d281ed1",
+    "agents/openai.yaml": "sha256:9cc3bd8aebab0c2c3b7fdb16a63bc81ddb4f25b45f046b40e24fed3569cf393e"
+  }
+}

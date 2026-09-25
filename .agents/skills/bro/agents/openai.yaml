@@ -1,0 +1,3 @@
+interface:
+  display_name: "Bro"
+  short_description: "Explain previous message in simpler terms"

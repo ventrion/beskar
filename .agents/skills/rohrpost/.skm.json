@@ -1,0 +1,15 @@
+{
+  "skm": 1,
+  "source": "rohrpost",
+  "collectionCommit": "03803fb7b15eb0ba2c50ab8222fd332c871fff96",
+  "files": {
+    "SKILL.md": "sha256:7bf62c1b75a5d69d00b68d578b25358ae3003cd9a9e182166c64f85f1b8f143a",
+    "playbooks/install-local.md": "sha256:6df17fb07272f3bc669be301236151d4648c257715dd547afd9c913b15bbca92",
+    "playbooks/windows.md": "sha256:f5c165ae75817d9957dc0036bc81ed4678a8442575ba59cb0474805584db4c86",
+    "scripts/rohrpost": "sha256:d6a5d3bcfa250732dfb23a1bf7d67453c88bf06049ff09c30ac26ceba95e5b55",
+    "scripts/rohrpost.cmd.template": "sha256:85de9bdec4efa366a039103c684502ee65f34ac3c6d23792cd558b9b30785154",
+    "scripts/rohrpost.ps1.template": "sha256:d83a0a072b593ce3f58d943e05eaee6bfa70b319e956b7f01ec823f0c17e076c",
+    "scripts/rohrpost.template": "sha256:8c2de508b07788662046bb33c4f05ba26c79d7583f9cc78134a45f2ae7e8a3d4",
+    "scripts/test-rohrpost-wrapper.sh": "sha256:105c090943455eada5c68ef623032cfe7508293ba671c36ad491c0726684a3fc"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "skm": 1,
+  "source": "writing-agent-skills",
+  "collectionCommit": "9d8bc83cb33f160e8c2e00dafa66c84089489148",
+  "files": {
+    "SKILL.md": "sha256:960481e5d566ef5f55b30c2da5d50a1c700ad03452d05bdf09c47525a6c3942a",
+    "agents/openai.yaml": "sha256:1dae286ab1c8eccb9ab3a53040b11e8e93328eef13798df24748d5fdba6d1ab2"
+  }
+}

@@ -1,0 +1,27 @@
+@echo off
+rem Rohrpost launcher for cmd, materialised from rohrpost.cmd.template.
+rem The wrapper validates the local installation and never bypasses it: it only
+rem ever runs the rp.exe binary from the install home.
+rem
+rem No placeholder to substitute: the default home resolves %LOCALAPPDATA%\rohrpost
+rem at runtime and ROHRPOST_HOME overrides it.
+
+setlocal
+
+if not defined ROHRPOST_HOME if not defined LOCALAPPDATA (
+    echo Rohrpost is not installed: neither ROHRPOST_HOME nor LOCALAPPDATA is set 1>&2
+    echo Load .agents/skills/rohrpost/playbooks/install-local.md to provision it 1>&2
+    exit /b 1
+)
+
+if defined ROHRPOST_HOME (set "ROHRPOST_HOME_DIR=%ROHRPOST_HOME%") else (set "ROHRPOST_HOME_DIR=%LOCALAPPDATA%\rohrpost")
+
+set "ROHRPOST_EXE=%ROHRPOST_HOME_DIR%\bin\rp.exe"
+if not exist "%ROHRPOST_EXE%" (
+    echo Rohrpost is not installed: rp.exe is missing under %ROHRPOST_HOME_DIR%\bin 1>&2
+    echo Load .agents/skills/rohrpost/playbooks/install-local.md to provision it 1>&2
+    exit /b 1
+)
+
+"%ROHRPOST_EXE%" %*
+exit /b %ERRORLEVEL%

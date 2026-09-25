@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Rohrpost launcher for bash / Git Bash, materialised from rohrpost.template.
+# The wrapper validates the local installation and never bypasses it: it only
+# ever runs the `rp` binary from the install home. `rp` is a single static
+# executable, so "installed" means the file exists and is executable.
+
+default_rohrpost_home="/home/vfeenstr/.cache/rohrpost"
+rohrpost_home="${ROHRPOST_HOME:-$default_rohrpost_home}"
+
+rohrpost_executable=""
+for candidate in "$rohrpost_home/bin/rp" "$rohrpost_home/bin/rp.exe"; do
+    if [[ -x "$candidate" ]]; then
+        rohrpost_executable="$candidate"
+        break
+    fi
+done
+
+if [[ -z "$rohrpost_executable" ]]; then
+    printf 'Rohrpost is not installed: no rp binary under %s/bin\n' "$rohrpost_home" >&2
+    printf 'Load .agents/skills/rohrpost/playbooks/install-local.md to provision it.\n' >&2
+    exit 1
+fi
+
+exec "$rohrpost_executable" "$@"
