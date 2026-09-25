@@ -1,8 +1,0 @@
-{
-  "lang": "en",
-  "project": "beskar",
-  "subtitle": "Skill manager for agent harnesses — CLI, TUI and GUI over one git-backed library",
-  "outputDir": ".codemap",
-  "htmlFile": "codemap.html",
-  "mdFile": "codemap.md"
-}
