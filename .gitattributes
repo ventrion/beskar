@@ -1,0 +1,2 @@
+.rohrpost/log.jsonl          merge=union text eol=lf
+.rohrpost/archive/*.jsonl    merge=union text eol=lf
