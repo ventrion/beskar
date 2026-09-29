@@ -1,2 +1,5 @@
 # Rohrpost runtime lock file
 /.rohrpost/.lock
+
+# Cargo
+/target
