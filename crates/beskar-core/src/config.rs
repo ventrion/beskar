@@ -22,7 +22,7 @@ impl Home {
     /// `BESKAR_HOME` environment variable, then `~/.beskar`.
     pub fn resolve(explicit: Option<&Path>) -> Result<Home> {
         let root = match explicit {
-            Some(p) => p.to_path_buf(),
+            Some(p) => fsutil::expand_tilde(&p.to_string_lossy()),
             None => match std::env::var_os("BESKAR_HOME").filter(|v| !v.is_empty()) {
                 Some(v) => fsutil::expand_tilde(&v.to_string_lossy()),
                 None => fsutil::home_dir()
@@ -232,4 +232,20 @@ impl Config {
 /// config file reads the same on any machine with the same layout.
 fn portable(path: &Path) -> String {
     fsutil::display_path(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_home_expands_tilde() {
+        let Some(home_dir) = fsutil::home_dir() else {
+            return;
+        };
+        let home = Home::resolve(Some(Path::new("~/.beskar-test-home"))).unwrap();
+        assert_eq!(home.root, home_dir.join(".beskar-test-home"));
+        let plain = Home::resolve(Some(Path::new("/tmp/beskar-plain"))).unwrap();
+        assert_eq!(plain.root, PathBuf::from("/tmp/beskar-plain"));
+    }
 }

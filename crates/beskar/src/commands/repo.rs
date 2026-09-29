@@ -112,7 +112,20 @@ fn remove(home: &Home, argv: &[String]) -> Result<Outcome> {
             return done();
         }
         for skill in repo.installed.keys() {
+            // Registry::load already rejects these; keep the recursive delete
+            // guarded on its own anyway.
+            if !beskar_core::names::is_valid(skill) {
+                println!("skipped '{skill}': not a valid skill name");
+                continue;
+            }
             let dir = plan.skills_dir.join(skill);
+            if dir.parent() != Some(plan.skills_dir.as_path()) {
+                println!(
+                    "skipped '{skill}': resolves outside {}",
+                    display_path(&plan.skills_dir)
+                );
+                continue;
+            }
             if dir.is_dir() {
                 fsutil::remove_dir(&dir)?;
                 println!("deleted {}", display_path(&dir));

@@ -116,6 +116,13 @@ impl Registry {
                         section.name()
                     ))
                 })?;
+                if !crate::names::is_valid(skill) {
+                    return Err(Error::invalid(format!(
+                        "{}: [repo {}]: '{skill}' is not a valid skill name",
+                        path.display(),
+                        section.name()
+                    )));
+                }
                 let fp = Fingerprint::from_hex(hash.trim()).ok_or_else(|| {
                     Error::invalid(format!(
                         "{}: [repo {}]: '{}' is not a valid fingerprint",
@@ -235,6 +242,24 @@ mod tests {
             .find_containing(Path::new("/tmp/my project/src/deep"))
             .is_some());
         assert!(again.find_containing(Path::new("/tmp/other")).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_installed_names_that_are_not_skill_names() {
+        let dir = std::env::temp_dir().join(format!("beskar-registry-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("registry.slate");
+        let hash = Fingerprint::of_bytes(b"x");
+        std::fs::write(&path, format!("[repo /tmp/a]\ninstalled = .. {hash}\n")).unwrap();
+        let err = Registry::load(&path).unwrap_err().to_string();
+        assert!(err.contains("not a valid skill name"), "{err}");
+        std::fs::write(
+            &path,
+            format!("[repo /tmp/a]\ninstalled = sub/dir {hash}\n"),
+        )
+        .unwrap();
+        assert!(Registry::load(&path).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

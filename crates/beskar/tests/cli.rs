@@ -422,3 +422,33 @@ fn guard_rails_and_exit_codes() {
     let doctor = sb.ok(&["doctor"]);
     assert!(doctor.stdout.contains("0 failure(s)"), "{}", doctor.stdout);
 }
+
+#[test]
+fn purge_never_follows_bad_registry_entries() {
+    let sb = Sandbox::new();
+    sb.bootstrap();
+    sb.ok(&["repo", "enable", "coding"]);
+    sb.ok(&["repo", "update"]);
+    let registry_path = sb.home().join("registry.slate");
+    let registry = fs::read_to_string(&registry_path).unwrap();
+    let hash = "0".repeat(64);
+    fs::write(&registry_path, format!("{registry}installed = .. {hash}\n")).unwrap();
+    let out = sb.run(&["repo", "remove", ".", "--purge", "--yes"]);
+    assert_eq!(out.code, 1, "{}", out.all());
+    assert!(
+        out.stderr.contains("not a valid skill name"),
+        "{}",
+        out.stderr
+    );
+    assert!(sb.proj().join(".agents").is_dir(), ".agents must survive");
+    assert!(sb.skills_dir().join("git").is_dir());
+}
+
+#[test]
+fn home_flag_expands_tilde() {
+    let sb = Sandbox::new();
+    // HOME is the sandbox root, so ~/alt-home lands inside it.
+    let out = sb.run(&["--home", "~/alt-home", "init"]);
+    assert_eq!(out.code, 0, "{}", out.all());
+    assert!(sb.root.join("alt-home/config.slate").is_file());
+}
