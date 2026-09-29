@@ -207,12 +207,15 @@ impl Section {
 /// comments, blank lines, ordering and alignment.
 #[derive(Debug, Clone)]
 pub struct Document {
+    /// Raw lines, each keeping its own `\r` if it had a CRLF ending, so
+    /// untouched lines are written back byte-identical even in files with
+    /// mixed line endings.
     lines: Vec<String>,
     root: Section,
     sections: Vec<Section>,
     warnings: Vec<Warning>,
-    /// Written back as found, so edits leave untouched lines byte-identical.
     bom: bool,
+    /// Whether lines added by edits end in CRLF (most existing lines do).
     crlf: bool,
 }
 
@@ -220,14 +223,14 @@ impl Document {
     pub fn parse(text: &str) -> Result<Document, Error> {
         let bom = text.starts_with('\u{feff}');
         let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-        let crlf = text.contains("\r\n");
-        let lines: Vec<String> = text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l).to_string()).collect();
-        let mut lines = lines;
+        let mut lines: Vec<String> = text.split('\n').map(str::to_string).collect();
         // A trailing newline produces one empty final element; drop it so
         // rendering round-trips.
         if lines.last().is_some_and(|l| l.is_empty()) {
             lines.pop();
         }
+        let crlf_lines = lines.iter().filter(|l| l.ends_with('\r')).count();
+        let crlf = crlf_lines * 2 > lines.len();
         let mut doc = Document::from_lines(lines)?;
         doc.bom = bom;
         doc.crlf = crlf;
@@ -243,7 +246,7 @@ impl Document {
 
         for (idx, raw) in lines.iter().enumerate() {
             let n = idx + 1;
-            let t = trim(raw);
+            let t = trim(content(raw));
             if t.is_empty() || t.starts_with('#') {
                 continue;
             }
@@ -363,13 +366,17 @@ impl fmt::Display for Document {
         if self.bom {
             f.write_str("\u{feff}")?;
         }
-        let eol = if self.crlf { "\r\n" } else { "\n" };
         for line in &self.lines {
             f.write_str(line)?;
-            f.write_str(eol)?;
+            f.write_str("\n")?;
         }
         Ok(())
     }
+}
+
+/// A raw line without its CR, if it had a CRLF ending.
+pub(crate) fn content(line: &str) -> &str {
+    line.strip_suffix('\r').unwrap_or(line)
 }
 
 /// Trim the whitespace Plate cares about: spaces and tabs.
@@ -587,6 +594,16 @@ mod tests {
         let mut doc = parse("\u{feff}# c\r\nskills:\r\n  - a\r\n");
         doc.push(Target::Root, "skills", "b").unwrap();
         assert_eq!(doc.to_string(), "\u{feff}# c\r\nskills:\r\n  - a\r\n  - b\r\n");
+    }
+
+    #[test]
+    fn mixed_line_endings_survive_edits() {
+        let src = "# lf\nskills:\r\n  - a\n  - b\r\nname = x\n";
+        let mut doc = parse(src);
+        assert_eq!(doc.to_string(), src);
+        doc.set(Target::Root, "name", "y").unwrap();
+        doc.push(Target::Root, "skills", "c").unwrap();
+        assert_eq!(doc.to_string(), "# lf\nskills:\r\n  - a\n  - b\r\n  - c\nname = y\n");
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! comments, blank lines, ordering and alignment written by a human survive
 //! a program changing one value.
 
-use crate::{Document, Error, Section, Value, is_key, is_quoted, trim};
+use crate::{Document, Error, Section, Value, content, is_key, is_quoted, trim};
 
 /// Which section an edit applies to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,19 +34,21 @@ impl Document {
                 let Value::Scalar(_) = entry.value() else {
                     return Err(Error::new(entry.line(), format!("`{key}` is a list, not a single value")));
                 };
-                let raw = &lines[entry.line() - 1];
+                let raw = content(&lines[entry.line() - 1]);
+                let cr = if raw.len() < lines[entry.line() - 1].len() { "\r" } else { "" };
                 let eq = raw.find('=').expect("scalar line has `=`");
                 let after = &raw[eq + 1..];
                 let gap = &after[..after.len() - after.trim_start_matches([' ', '\t']).len()];
                 let gap = if gap.is_empty() { " " } else { gap };
                 let new =
                     if value.is_empty() { raw[..=eq].to_string() } else { format!("{}{gap}{value}", &raw[..=eq]) };
-                lines[entry.line() - 1] = new;
+                lines[entry.line() - 1] = new + cr;
             }
             None => {
                 let (at, indent) = self.insertion_point(section);
                 let line =
                     if value.is_empty() { format!("{indent}{key} =") } else { format!("{indent}{key} = {value}") };
+                let line = self.terminate(line);
                 insert(&mut lines, at, section.is_root(), vec![line]);
             }
         }
@@ -69,7 +71,7 @@ impl Document {
                     None => format!("{}  ", indent_of(&lines[entry.line() - 1])),
                 };
                 let at = items.last().map_or(entry.line(), |i| i.line);
-                lines.insert(at, format!("{indent}- {value}"));
+                lines.insert(at, self.terminate(format!("{indent}- {value}")));
             }
             None => {
                 let (at, indent) = self.insertion_point(section);
@@ -77,7 +79,7 @@ impl Document {
                     &mut lines,
                     at,
                     section.is_root(),
-                    vec![format!("{indent}{key}:"), format!("{indent}  - {value}")],
+                    vec![self.terminate(format!("{indent}{key}:")), self.terminate(format!("{indent}  - {value}"))],
                 );
             }
         }
@@ -117,10 +119,11 @@ impl Document {
             return Ok(());
         }
         let mut lines = self.lines().to_vec();
-        if lines.last().is_some_and(|l| !trim(l).is_empty()) {
-            lines.push(String::new());
+        if lines.last().is_some_and(|l| !trim(content(l)).is_empty()) {
+            lines.push(self.terminate(String::new()));
         }
-        lines.push(if label.is_empty() { format!("[{kind}]") } else { format!("[{kind} {label}]") });
+        let header = if label.is_empty() { format!("[{kind}]") } else { format!("[{kind} {label}]") };
+        lines.push(self.terminate(header));
         self.reload(lines)
     }
 
@@ -149,10 +152,18 @@ impl Document {
             return (section.line(), indent);
         }
         let mut at = self.sections().first().map_or(lines.len(), |s| s.line() - 1);
-        while at > 0 && trim(&lines[at - 1]).is_empty() {
+        while at > 0 && trim(content(&lines[at - 1])).is_empty() {
             at -= 1;
         }
         (at, indent)
+    }
+
+    /// Give a new line the document's usual ending.
+    fn terminate(&self, mut line: String) -> String {
+        if self.crlf {
+            line.push('\r');
+        }
+        line
     }
 
     fn reload(&mut self, lines: Vec<String>) -> Result<(), Error> {
@@ -169,7 +180,8 @@ impl Document {
 /// from a section header that directly follows them.
 fn insert(lines: &mut Vec<String>, at: usize, root: bool, mut new: Vec<String>) {
     if root && lines.get(at).is_some_and(|l| trim(l).starts_with('[')) {
-        new.push(String::new());
+        let blank = if new.first().is_some_and(|l| l.ends_with('\r')) { "\r" } else { "" };
+        new.push(blank.to_string());
     }
     lines.splice(at..at, new);
 }

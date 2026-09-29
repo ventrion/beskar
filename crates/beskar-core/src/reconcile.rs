@@ -328,7 +328,10 @@ pub fn apply(
         };
         results.push(Applied { id: skill.id.clone(), state: skill.state, outcome });
     }
-    repo.synced = Some(time::now_rfc3339());
+    // `synced` means "fully reconciled": a run with failures does not count.
+    if !results.iter().any(|a| matches!(a.outcome, Outcome::Failed(_))) {
+        repo.synced = Some(time::now_rfc3339());
+    }
     results.sort_by(|a, b| a.id.cmp(&b.id));
     results
 }
@@ -489,8 +492,10 @@ mod tests {
         assert_eq!(planned.get(&id).unwrap().state, State::Update);
         let installed = repo.path.join(".agents/skills/git/SKILL.md");
         std::fs::write(&installed, "edited while the user was deciding").unwrap();
+        repo.synced = None;
         let applied = apply(&lib, &mut repo, &planned, &BTreeMap::new());
         assert!(matches!(applied[0].outcome, Outcome::Failed(_)), "{applied:?}");
+        assert_eq!(repo.synced, None, "a failed run is not a sync");
         assert_eq!(std::fs::read_to_string(installed).unwrap(), "edited while the user was deciding");
     }
 

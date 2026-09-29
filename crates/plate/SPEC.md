@@ -125,8 +125,9 @@ deliberate: in exchange, every value is exactly what is shown.
 
 ## Editing
 
-The reference implementation keeps the original lines, line endings (LF
-or CRLF) and byte-order mark. A program can
+The reference implementation keeps the original lines, each line's own
+ending (LF or CRLF, even when a file mixes them) and the byte-order mark.
+New lines take the ending most of the file uses. A program can
 change one value, or add or remove a list item, and every other line
 (comments, blank lines, alignment, ordering) stays byte-for-byte the same.
 Since each line carries its own meaning, tools and agents can make these
