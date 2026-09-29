@@ -1,7 +1,6 @@
-use crate::{Result, io, model::Repository, store::Store, transaction::Transaction, tree};
+use crate::{Result, model::Repository, store::Store, transaction::Transaction, tree};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -183,7 +182,7 @@ pub fn apply(store: &mut Store, plans: &[Plan]) -> Result<()> {
             if skill.action == Action::Remove {
                 transaction.remove(&destination, &plan.path, skill.current.clone())?;
             } else {
-                io(target.display(), fs::create_dir_all(&target))?;
+                transaction.ensure_directory(&target)?;
                 transaction.copy(
                     &destination,
                     &store.skill_path(&skill.name)?,

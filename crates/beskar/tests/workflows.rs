@@ -757,3 +757,196 @@ fn removal_plan_does_not_recreate_a_destination_deleted_after_planning() {
     assert!(!s.repo.join(".agents").exists());
     assert_eq!(before, snapshot(&s.root));
 }
+
+#[test]
+fn library_roots_cannot_expose_their_canonical_skills_to_agents() {
+    let s = Sandbox::new();
+    for marker in [".agents", ".claude", ".codex"] {
+        for library in [
+            s.root.join(marker),
+            s.root.join(marker).join("skills"),
+            s.root.join(marker).join("skills/nested"),
+        ] {
+            s.fail(
+                &["init", "--library", library.to_str().unwrap()],
+                "automatically discovered",
+            );
+            assert!(!library.exists());
+            assert!(!s.home.exists());
+        }
+    }
+    s.ok(&[
+        "init",
+        "--library",
+        s.root.join(".agents/library").to_str().unwrap(),
+    ]);
+    s.ok(&["doctor"]);
+}
+
+#[test]
+fn failed_addition_staging_does_not_leave_deployment_directories() {
+    use beskar::{
+        reconcile::{self, Action, Policy},
+        store::Store,
+    };
+    let s = Sandbox::new();
+    s.init();
+    s.add_skill("a", "original");
+    s.activate("coding", &["a"]);
+    let mut store = Store::open(s.home.clone(), false).unwrap();
+    let plan = reconcile::plan(&store, &s.repo, Policy::Abort).unwrap();
+    assert_eq!(plan.skills[0].action, Action::Add);
+    fs::write(
+        s.library_skill("a").join("SKILL.md"),
+        "changed after planning",
+    )
+    .unwrap();
+    let before = snapshot(&s.root);
+
+    let error = reconcile::apply(&mut store, &[plan]).unwrap_err();
+
+    assert!(error.contains("changed while staging"), "{error}");
+    assert!(!s.repo.join(".agents").exists());
+    assert_eq!(before, snapshot(&s.root));
+}
+
+#[test]
+fn filesystem_failure_rolls_back_new_destination_directories() {
+    use beskar::transaction::Transaction;
+    let s = Sandbox::new();
+    s.init();
+    let source = s.root.join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("file"), "new").unwrap();
+    let hash = tree::fingerprint(&source).unwrap();
+    let destination = s.repo.join("new/deep/skills");
+    let registry = s.home.join("registry.bsk");
+    let before = snapshot(&s.root);
+
+    let mut transaction = Transaction::new(&s.home);
+    transaction.ensure_directory(&destination).unwrap();
+    transaction
+        .copy(&destination.join("a"), &source, &s.repo, None, &hash)
+        .unwrap();
+    // An unprepared destination fails after the first replacement has been installed.
+    transaction
+        .copy(&s.repo.join("missing/skill"), &source, &s.repo, None, &hash)
+        .unwrap();
+    transaction
+        .text(
+            &registry,
+            "beskar 1\n# updated registry\n",
+            tree::optional_hash(&registry).unwrap(),
+        )
+        .unwrap();
+    assert!(
+        !destination.exists(),
+        "staging must leave destinations untouched"
+    );
+
+    let error = transaction.commit().unwrap_err();
+    assert!(error.contains("recovered"), "{error}");
+    assert!(!s.repo.join("new").exists());
+    assert_eq!(before, snapshot(&s.root));
+}
+
+#[test]
+fn interrupted_directory_creation_rolls_back_only_empty_directories() {
+    for unrelated_file in [false, true] {
+        let s = Sandbox::new();
+        s.init();
+        let outer = s.repo.join("new");
+        let inner = outer.join("skills");
+        let target = inner.join("a");
+        let stage = s.repo.join(".beskar-txn-interrupted-mkdir");
+        fs::create_dir(&stage).unwrap();
+        fs::write(stage.join("new"), "staged content").unwrap();
+        let new = tree::fingerprint(&stage.join("new")).unwrap();
+        let journal = format!(
+            "beskar 1\nmkdir {}\nmkdir {}\nchange {} {} - {new}\n",
+            format::quote(outer.to_str().unwrap()),
+            format::quote(inner.to_str().unwrap()),
+            format::quote(target.to_str().unwrap()),
+            format::quote(stage.to_str().unwrap())
+        );
+        fs::write(s.home.join("transaction.bsk"), journal).unwrap();
+        // Interruption after mkdir, before installing the staged file.
+        fs::create_dir_all(&inner).unwrap();
+        if unrelated_file {
+            fs::write(outer.join("keep"), "user file").unwrap();
+        }
+
+        s.ok(&["doctor", "--recover"]);
+
+        assert!(!inner.exists());
+        assert!(!stage.exists());
+        assert!(!s.home.join("transaction.bsk").exists());
+        if unrelated_file {
+            assert_eq!(fs::read_to_string(outer.join("keep")).unwrap(), "user file");
+        } else {
+            assert!(!outer.exists());
+        }
+    }
+}
+
+#[test]
+fn completed_transaction_recovery_keeps_new_destination_directories() {
+    let s = Sandbox::new();
+    s.init();
+    let outer = s.repo.join("new");
+    let inner = outer.join("skills");
+    let target = inner.join("a");
+    let stage = s.repo.join(".beskar-txn-complete-mkdir");
+    fs::create_dir(&stage).unwrap();
+    fs::write(stage.join("new"), "installed content").unwrap();
+    let new = tree::fingerprint(&stage.join("new")).unwrap();
+    let journal = format!(
+        "beskar 1\nmkdir {}\nmkdir {}\nchange {} {} - {new}\n",
+        format::quote(outer.to_str().unwrap()),
+        format::quote(inner.to_str().unwrap()),
+        format::quote(target.to_str().unwrap()),
+        format::quote(stage.to_str().unwrap())
+    );
+    fs::write(s.home.join("transaction.bsk"), journal).unwrap();
+    fs::create_dir_all(&inner).unwrap();
+    fs::rename(stage.join("new"), &target).unwrap();
+
+    s.ok(&["doctor", "--recover"]);
+
+    assert_eq!(fs::read_to_string(&target).unwrap(), "installed content");
+    assert!(inner.is_dir());
+    assert!(!stage.exists());
+    assert!(!s.home.join("transaction.bsk").exists());
+}
+
+#[test]
+fn planned_destination_directories_are_rechecked_before_commit() {
+    use beskar::transaction::Transaction;
+    let s = Sandbox::new();
+    s.init();
+    let source = s.root.join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("file"), "new").unwrap();
+    let outer = s.repo.join("new");
+    let inner = outer.join("skills");
+    let mut transaction = Transaction::new(&s.home);
+    transaction.ensure_directory(&inner).unwrap();
+    transaction
+        .copy(
+            &inner.join("a"),
+            &source,
+            &s.repo,
+            None,
+            &tree::fingerprint(&source).unwrap(),
+        )
+        .unwrap();
+    fs::create_dir(&outer).unwrap();
+    fs::write(outer.join("keep"), "user file").unwrap();
+
+    let error = transaction.commit().unwrap_err();
+
+    assert!(error.contains("appeared since planning"), "{error}");
+    assert_eq!(fs::read_to_string(outer.join("keep")).unwrap(), "user file");
+    assert!(!inner.exists());
+    assert!(!s.home.join("transaction.bsk").exists());
+}

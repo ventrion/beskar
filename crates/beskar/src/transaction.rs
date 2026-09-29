@@ -24,6 +24,7 @@ impl Entry {
 pub struct Transaction {
     home: PathBuf,
     entries: Vec<Entry>,
+    directories: Vec<PathBuf>,
     journaled: bool,
 }
 
@@ -32,8 +33,34 @@ impl Transaction {
         Self {
             home: home.into(),
             entries: Vec::new(),
+            directories: Vec::new(),
             journaled: false,
         }
+    }
+
+    /// Plan missing parent directories. Creation happens only after the journal is durable.
+    pub fn ensure_directory(&mut self, path: &Path) -> Result<()> {
+        if !path.is_absolute() {
+            return Err("transaction directory must be absolute".into());
+        }
+        tree::safe_path(path)?;
+        let mut current = path.to_path_buf();
+        let mut missing = Vec::new();
+        while !tree::exists(&current)? {
+            missing.push(current.clone());
+            if !current.pop() {
+                return Err("transaction directory needs an existing ancestor".into());
+            }
+        }
+        if !current.is_dir() {
+            return Err(format!("{}: expected a directory", current.display()));
+        }
+        for directory in missing.into_iter().rev() {
+            if !self.directories.contains(&directory) {
+                self.directories.push(directory);
+            }
+        }
+        Ok(())
     }
 
     fn prepare(&mut self, target: &Path, parent: &Path, old: Option<String>) -> Result<PathBuf> {
@@ -102,6 +129,19 @@ impl Transaction {
             return Err("unfinished transaction; run beskar doctor --recover".into());
         }
         let mut data = String::from("beskar 1\n");
+        for directory in &self.directories {
+            tree::safe_path(directory)?;
+            if tree::exists(directory)? {
+                return Err(format!(
+                    "{} appeared since planning; retry",
+                    directory.display()
+                ));
+            }
+            data.push_str(&format!(
+                "mkdir {}\n",
+                format::quote(format::path_text(directory)?)
+            ));
+        }
         for e in &self.entries {
             data.push_str(&format!(
                 "change {} {} {} {}\n",
@@ -114,6 +154,12 @@ impl Transaction {
         tree::atomic_write(&journal, &data)?;
         self.journaled = true;
         let result = (|| {
+            for directory in &self.directories {
+                tree::safe_path(directory)?;
+                io(directory.display(), fs::create_dir(directory))?;
+                tree::sync_dir(directory)?;
+                tree::sync_dir(directory.parent().ok_or("directory needs a parent")?)?;
+            }
             for e in &self.entries {
                 // Recheck immediately before moving each original.
                 if tree::optional_hash(&e.target)? != e.old {
@@ -165,6 +211,22 @@ fn cleanup(home: &Path, entries: &[Entry]) -> Result<()> {
     tree::sync_dir(home)
 }
 
+fn rollback_directories(directories: &[PathBuf]) -> Result<()> {
+    for directory in directories.iter().rev() {
+        tree::safe_path(directory)?;
+        match fs::remove_dir(directory) {
+            Ok(()) => tree::sync_dir(directory.parent().ok_or("directory needs a parent")?)?,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+                ) => {}
+            Err(error) => return Err(format!("{}: {error}", directory.display())),
+        }
+    }
+    Ok(())
+}
+
 /// Finish a fully applied transaction, otherwise restore all originals.
 /// Refuse recovery if a user edited a target or backup after interruption.
 pub fn recover(home: &Path) -> Result<()> {
@@ -173,7 +235,17 @@ pub fn recover(home: &Path) -> Result<()> {
         return Ok(());
     }
     let mut entries = Vec::new();
+    let mut directories = Vec::new();
     for r in format::read(&journal)? {
+        if r.is("mkdir", 2) {
+            let directory = PathBuf::from(&r.fields[1]);
+            if !directory.is_absolute() || directories.contains(&directory) {
+                return Err(r.error("invalid or duplicate transaction directory"));
+            }
+            tree::safe_path(&directory)?;
+            directories.push(directory);
+            continue;
+        }
         if !r.is("change", 5) {
             return Err(r.error("invalid transaction record"));
         }
@@ -211,6 +283,7 @@ pub fn recover(home: &Path) -> Result<()> {
             new: hash(&r.fields[4])?,
         });
     }
+    directories.sort_by_key(|path| path.components().count());
     // Validate every entry before touching any target.
     let mut complete = true;
     for e in &entries {
@@ -258,5 +331,6 @@ pub fn recover(home: &Path) -> Result<()> {
             tree::sync_dir(parent)?;
         }
     }
+    rollback_directories(&directories)?;
     cleanup(home, &entries)
 }

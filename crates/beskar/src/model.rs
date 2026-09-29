@@ -65,7 +65,8 @@ impl Config {
             return Err("registry must be separate from the portable library".into());
         }
         relative_destination(&self.agent_skills)?;
-        let components: Vec<_> = self.library.components().collect();
+        let canonical_skills = self.library.join("skills");
+        let components: Vec<_> = canonical_skills.components().collect();
         if components.windows(2).any(|w| {
             [".agents", ".claude", ".codex"]
                 .iter()

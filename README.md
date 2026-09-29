@@ -129,7 +129,7 @@ Promotion copies the tracked workspace skill back to the library and records its
 
 ## Interrupted operations
 
-Imports, promotion, and reconciliation stage replacements on each destination's filesystem. A journal records replacements and backups. The registry participates in the same transaction as installed skills. Filesystem errors trigger recovery; interrupted processes leave a journal for the next run to detect.
+Imports, promotion, and reconciliation stage replacements on each destination's filesystem. A journal records replacements, backups, and new deployment directories. The registry participates in the same transaction as installed skills. Filesystem errors trigger recovery; interrupted processes leave a journal for the next run to detect. Rollback removes new empty deployment directories and preserves directories containing unrelated files.
 
 Run `beskar doctor --recover` to finish a fully applied transaction or restore the originals from a partial transaction. Recovery checks fingerprints first. If you edited a target or backup after interruption, it preserves both and asks for manual recovery. The journal contains the exact target and backup paths.
 

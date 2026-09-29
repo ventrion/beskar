@@ -50,7 +50,7 @@ agent-skills ".agents/skills"
 
 The default home is `$HOME/.beskar`, falling back to `$USERPROFILE/.beskar` if `HOME` is absent. `--home PATH` takes precedence over `BESKAR_HOME`. Configure alternative state paths during `init`, or edit this file while Beskar is idle.
 
-The library cannot live within `.agents/skills`, `.claude/skills`, or `.codex/skills`. Deployment destinations cannot overlap the library, registry, Beskar home, or another deployment. Symlinked paths are rejected.
+The library cannot live within `.agents/skills`, `.claude/skills`, or `.codex/skills`, or directly at `.agents`, `.claude`, or `.codex`, where its own `skills/` directory would be discoverable. Deployment destinations cannot overlap the library, registry, Beskar home, or another deployment. Symlinked paths are rejected.
 
 ## Profiles
 
@@ -116,5 +116,7 @@ An invalid configuration, registry, or selected profile blocks the operation. Be
 ## Transaction journal
 
 `BESKAR_HOME/transaction.bsk` is temporary internal state, rather than configuration to edit. It records one `change TARGET STAGING_ROOT OLD_HASH NEW_HASH` per replacement. A `-` hash means absence. `STAGING_ROOT/old` holds the original; `STAGING_ROOT/new` holds a staged replacement until it is installed.
+
+`mkdir PATH` records a missing destination parent directory before Beskar creates it. Rollback removes these directories from deepest to shallowest if they are still empty. Nonempty directories are preserved; completed transactions retain their destination directories.
 
 Only `doctor --recover` reads this journal for recovery. Other commands refuse to proceed while it exists. Recovery validates all entries and preserves post-interruption edits.
