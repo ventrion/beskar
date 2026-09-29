@@ -154,7 +154,7 @@ fn full_lifecycle() {
     assert!(out.contains(repo_s), "{out}");
 
     // update before enabling anything: a quiet no-op.
-    let out = sb.ok(&["repo", "update", repo_s]);
+    sb.ok(&["repo", "update", repo_s]);
     assert!(!repo.join(".agents").exists(), "nothing should be materialized yet");
 
     sb.ok(&["repo", "enable", "team", "--repo", repo_s]);
@@ -280,6 +280,32 @@ fn full_lifecycle() {
     let out = sb.fails(&["doctor"], 1);
     assert!(out.contains("frobnicate"), "{out}");
     assert!(out.contains("config.bsk:2"), "{out}");
+}
+
+#[test]
+fn repo_add_through_symlink() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new("symlink");
+    sb.ok(&["init"]);
+
+    let real = unique("real-repo");
+    fs::create_dir_all(&real).unwrap();
+    let link = unique("link-repo");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    // Registering through a symlink must store the canonical path, not
+    // panic on the lookup mismatch (the registry canonicalizes on add).
+    let out = sb.ok(&["repo", "add", link.to_str().unwrap()]);
+    assert!(out.contains(real.to_str().unwrap()), "{out}");
+    let reg = read(sb.home.join("registry.bsk"));
+    assert!(reg.contains(real.to_str().unwrap()), "{reg}");
+
+    // The real path is the same repo, not a second registration.
+    let out = sb.ok(&["repo", "add", real.to_str().unwrap()]);
+    assert!(out.contains("already registered"), "{out}");
+
+    let _ = fs::remove_dir_all(&real);
+    fs::remove_file(&link).ok();
 }
 
 #[test]

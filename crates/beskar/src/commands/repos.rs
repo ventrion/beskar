@@ -37,7 +37,13 @@ pub fn run(ctx: &Ctx, cmd: RepoCmd) -> Result<Exit> {
 }
 
 fn add(ctx: &Ctx, cfg: &Config, registry: &mut Registry, path: Option<PathBuf>) -> Result<Exit> {
-    let target = repo_path_arg(path.as_deref())?;
+    let raw = repo_path_arg(path.as_deref())?;
+    // Canonicalize up front: the registry stores canonical paths, so
+    // lookups (and the success message) must use the same form. This
+    // also routes symlinked arguments to their real location.
+    let target = std::fs::canonicalize(&raw).map_err(|e| {
+        Error::msg(format!("cannot use {} as a repo: {e}", util::display_path(&raw)))
+    })?;
     if util::is_subpath(&target, &cfg.home) {
         return Err(Error::msg(format!(
             "refusing to register a repo inside the beskar home ({})",
@@ -50,22 +56,17 @@ fn add(ctx: &Ctx, cfg: &Config, registry: &mut Registry, path: Option<PathBuf>) 
             util::display_path(&target)
         )));
     }
-    match registry.add_repo(&target)? {
-        true => {
-            registry.save()?;
-            ctx.ui.ok(&format!(
-                "registered {} — enable profiles with `beskar repo enable <profile>`, \
-                 then `beskar repo update`",
-                util::display_path(registry.repo(&target).expect("just added").path.as_path())
-            ));
-        }
-        false => {
-            ctx.ui.note(&format!(
-                "{} is already registered",
-                util::display_path(registry.repo(&target).expect("already present").path.as_path())
-            ));
-        }
+    if registry.repo(&target).is_some() {
+        ctx.ui.note(&format!("{} is already registered", util::display_path(&target)));
+        return Ok(Exit::Ok);
     }
+    registry.add_repo(&target)?;
+    registry.save()?;
+    ctx.ui.ok(&format!(
+        "registered {} — enable profiles with `beskar repo enable <profile>`, \
+         then `beskar repo update`",
+        util::display_path(&target)
+    ));
     Ok(Exit::Ok)
 }
 
@@ -245,7 +246,7 @@ pub fn status(ctx: &Ctx, path: Option<PathBuf>) -> Result<Exit> {
         println!();
         for id in not_installed {
             pending += 1;
-            println!(" {} {:<28} {}", ctx.ui.symbol("+"), ctx.ui.bold(id), "wanted, not installed");
+            println!(" {} {:<28} wanted, not installed", ctx.ui.symbol("+"), ctx.ui.bold(id));
         }
     }
 

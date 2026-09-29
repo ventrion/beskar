@@ -56,6 +56,11 @@ impl Profile {
                 }
                 "skill" => {
                     for s in e.values() {
+                        // Skill ids become path components; reject
+                        // traversal attempts where they are read.
+                        crate::library::Library::valid_id(s)
+                            .then_some(())
+                            .ok_or_else(|| bad(format!("invalid skill id `{s}`")))?;
                         if profile.skills.iter().any(|x| x == s) {
                             return Err(bad(format!("duplicate skill `{s}`")));
                         }
@@ -240,6 +245,16 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("skill a") && !text.contains("skill b"));
         assert!(text.contains("description desc"));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn traversal_skill_ids_are_rejected() {
+        let path = tmpfile("bad");
+        fs::write(&path, "name bad\nskill ..\n").unwrap();
+        let err = Profile::load(&path).unwrap_err().to_string();
+        assert!(err.contains("invalid skill id `..`"), "{err}");
+        assert!(err.contains("bad.bsk:2"), "{err}");
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 

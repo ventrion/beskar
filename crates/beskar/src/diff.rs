@@ -30,6 +30,27 @@ pub fn diff_dirs(a: &Path, b: &Path) -> String {
         items.iter().find(|i| i.rel() == rel)
     }
 
+    /// What to do about a path present on both sides.
+    enum Verdict {
+        /// Nothing worth reporting.
+        Same,
+        /// Both sides are files with different content: show a line diff.
+        ContentDiff,
+        /// Both sides are symlinks, but they point somewhere different.
+        Retargeted,
+        /// Present on both sides but a different kind (file vs directory
+        /// vs symlink): report it without trying to diff the bytes.
+        KindChanged,
+    }
+
+    fn kind_name(i: &Item) -> &'static str {
+        match i {
+            Item::File { .. } => "file",
+            Item::Symlink { .. } => "symlink",
+            Item::Dir { .. } => "directory",
+        }
+    }
+
     let mut shown = 0;
     let mut truncated = false;
     for rel in &paths {
@@ -47,20 +68,51 @@ pub fn diff_dirs(a: &Path, b: &Path) -> String {
                 out.push_str(&format!("  - {label} (only in first)\n"));
             }
             (Some(ia), Some(ib)) => {
-                let same = match (ia, ib) {
-                    (Item::Symlink { target: ta, .. }, Item::Symlink { target: tb, .. }) => ta == tb,
-                    (Item::File { .. }, Item::File { .. }) => {
-                        let ca = std::fs::read(a.join(rel));
-                        let cb = std::fs::read(b.join(rel));
-                        match (ca, cb) {
-                            (Ok(ca), Ok(cb)) => ca == cb,
-                            _ => true, // unreadable: don't claim a difference we can't show
+                let verdict = match (ia, ib) {
+                    // Directory contents are compared entry by entry via
+                    // their own walk items; a directory itself never differs.
+                    (Item::Dir { .. }, Item::Dir { .. }) => Verdict::Same,
+                    (Item::Symlink { target: ta, .. }, Item::Symlink { target: tb, .. }) => {
+                        if ta == tb {
+                            Verdict::Same
+                        } else {
+                            Verdict::Retargeted
                         }
                     }
-                    _ => false, // file vs symlink/dir
+                    (Item::File { .. }, Item::File { .. }) => {
+                        match (std::fs::read(a.join(rel)), std::fs::read(b.join(rel))) {
+                            (Ok(ca), Ok(cb)) if ca == cb => Verdict::Same,
+                            (Ok(_), Ok(_)) => Verdict::ContentDiff,
+                            _ => Verdict::Same, // unreadable: don't claim a difference we can't show
+                        }
+                    }
+                    _ => Verdict::KindChanged,
                 };
-                if same {
-                    continue;
+                match verdict {
+                    Verdict::Same => continue,
+                    Verdict::KindChanged => {
+                        out.push_str(&format!(
+                            "  ~ {label} (kind changed: {} → {})\n",
+                            kind_name(ia),
+                            kind_name(ib)
+                        ));
+                        continue;
+                    }
+                    Verdict::Retargeted => {
+                        match (ia, ib) {
+                            (
+                                Item::Symlink { target: ta, .. },
+                                Item::Symlink { target: tb, .. },
+                            ) => {
+                                out.push_str(&format!(
+                                    "  ~ {label} (symlink target changed: {ta} → {tb})\n"
+                                ));
+                            }
+                            _ => unreachable!(),
+                        }
+                        continue;
+                    }
+                    Verdict::ContentDiff => {}
                 }
                 out.push_str(&format!("  ~ {label}\n"));
                 let ta = a.join(rel);
@@ -125,8 +177,7 @@ fn diff_file(a: &Path, b: &Path) -> String {
         let a_start = 1 + ops[..lo].iter().filter(|(o, _)| !matches!(o, Op::Add)).count();
         let b_start = 1 + ops[..lo].iter().filter(|(o, _)| !matches!(o, Op::Del)).count();
         out.push_str(&format!("      @@ -{a_start} +{b_start} @@\n"));
-        for k in lo..=hi {
-            let (op, line) = &ops[k];
+        for (op, line) in &ops[lo..=hi] {
             let sym = match op {
                 Op::Same => ' ',
                 Op::Del => '-',
@@ -141,11 +192,11 @@ fn diff_file(a: &Path, b: &Path) -> String {
 fn read_lines(p: &Path) -> std::io::Result<Vec<String>> {
     let meta = std::fs::metadata(p)?;
     if meta.len() > MAX_FILE {
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, "too large"));
+        return Err(std::io::Error::other("too large"));
     }
     let data = std::fs::read(p)?;
     if data.contains(&0) {
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, "binary"));
+        return Err(std::io::Error::other("binary"));
     }
     Ok(String::from_utf8_lossy(&data).lines().map(|s| s.to_string()).collect())
 }
@@ -251,6 +302,68 @@ mod tests {
         write_dir(&b, &[("f.txt", "same\n")]);
         let text = diff_dirs(&a, &b);
         assert!(text.contains("no differences"), "{text}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn identical_subtrees_are_quiet() {
+        // Nested directories appear in the walk as their own items; equal
+        // directories must not be reported as changes.
+        let base = std::env::temp_dir().join(format!("beskar-diff-sub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let files = [
+            ("SKILL.md", "same\n"),
+            ("scripts/run.sh", "echo same\n"),
+            ("scripts/lib/util.sh", "echo util\n"),
+        ];
+        let a = base.join("a");
+        let b = base.join("b");
+        write_dir(&a, &files);
+        write_dir(&b, &files);
+        let text = diff_dirs(&a, &b);
+        assert!(text.contains("no differences"), "{text}");
+        assert!(!text.contains("binary"), "{text}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn kind_change_is_reported_without_a_bytes_diff() {
+        let base = std::env::temp_dir().join(format!("beskar-diff-kind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let a = base.join("a");
+        let b = base.join("b");
+        write_dir(&a, &[("thing", "i am a file\n")]);
+        write_dir(&b, &[("thing/inner.txt", "i am a directory\n")]);
+        let text = diff_dirs(&a, &b);
+        assert!(text.contains("~ thing (kind changed: file → directory)"), "{text}");
+        assert!(!text.contains("binary or unreadable"), "{text}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_changes_are_reported() {
+        let base = std::env::temp_dir().join(format!("beskar-diff-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let a = base.join("a");
+        let b = base.join("b");
+        write_dir(&a, &[("x.txt", "x\n"), ("y.txt", "y\n")]);
+        write_dir(&b, &[("x.txt", "x\n"), ("y.txt", "y\n")]);
+        std::os::unix::fs::symlink("x.txt", a.join("link")).unwrap();
+        // Same target: quiet.
+        std::os::unix::fs::symlink("x.txt", b.join("link")).unwrap();
+        let text = diff_dirs(&a, &b);
+        assert!(text.contains("no differences"), "{text}");
+
+        // Different target: reported with both targets, no bytes diff.
+        std::fs::remove_file(b.join("link")).unwrap();
+        std::os::unix::fs::symlink("y.txt", b.join("link")).unwrap();
+        let text = diff_dirs(&a, &b);
+        assert!(
+            text.contains("~ link (symlink target changed: x.txt → y.txt)"),
+            "{text}"
+        );
+        assert!(!text.contains("binary or unreadable"), "{text}");
         let _ = std::fs::remove_dir_all(&base);
     }
 

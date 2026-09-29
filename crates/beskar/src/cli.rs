@@ -596,7 +596,7 @@ mod tests {
             }
             _ => panic!("wrong command"),
         }
-        assert!(g.yes == false);
+        assert!(!g.yes);
 
         let (g, _) = parse(&args(&["--yes", "--home", "/tmp/bh", "init"])).unwrap();
         assert!(g.yes);

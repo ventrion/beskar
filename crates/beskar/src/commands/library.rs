@@ -163,9 +163,9 @@ fn scan(
 fn list(ctx: &Ctx, lib: &Library) -> Result<Exit> {
     let skills = lib.list_skills()?;
     if skills.is_empty() {
-        ctx.ui.note(&format!(
-            "library is empty — import some with `beskar library add <path>` or `beskar library scan <path>`"
-        ));
+        ctx.ui.note(
+            "library is empty — import some with `beskar library add <path>` or `beskar library scan <path>`",
+        );
         return Ok(Exit::Ok);
     }
     let profiles = lib.list_profiles().unwrap_or_default();

@@ -68,8 +68,14 @@ impl Library {
         self.profiles_dir().join(format!("{name}.bsk"))
     }
 
+    /// A skill id doubles as a path component, so ids that could climb
+    /// out of the skills directory (`..`, absolute paths) are not ids.
+    pub fn valid_id(id: &str) -> bool {
+        crate::profile::validate_name(id).is_ok()
+    }
+
     pub fn has_skill(&self, id: &str) -> bool {
-        self.skill_path(id).is_dir()
+        Self::valid_id(id) && self.skill_path(id).is_dir()
     }
 
     /// Create the library skeleton. Idempotent.
@@ -108,6 +114,7 @@ impl Library {
 
     /// Current fingerprint of a library skill.
     pub fn fingerprint(&self, id: &str) -> Result<String> {
+        Self::ensure_valid_id(id)?;
         let p = self.skill_path(id);
         if !p.is_dir() {
             return Err(Error::msg(format!("skill `{id}` is not in the library")));
@@ -175,11 +182,18 @@ impl Library {
 
     /// Remove a skill directory. Refuses implicitly by callers checking usage.
     pub fn remove_skill(&self, id: &str) -> Result<()> {
+        Self::ensure_valid_id(id)?;
         let p = self.skill_path(id);
         if !p.is_dir() {
             return Err(Error::msg(format!("skill `{id}` is not in the library")));
         }
         util::remove_tree(&p)
+    }
+
+    fn ensure_valid_id(id: &str) -> Result<()> {
+        crate::profile::validate_name(id).map_err(|e| {
+            Error::msg(format!("invalid skill id `{id}`: {}", e))
+        })
     }
 }
 
@@ -304,6 +318,22 @@ mod tests {
 
         lib.remove_skill("myskill").unwrap();
         assert!(!lib.has_skill("myskill"));
+        let _ = fs::remove_dir_all(&lib.root);
+    }
+
+    #[test]
+    fn traversal_ids_are_rejected() {
+        // Skill ids become path components; ids like `..` used to resolve
+        // outside the skills directory (remove_skill("..") once pointed at
+        // the library root itself).
+        let (_dir, lib) = tmplib();
+        for bad in ["..", ".", "/tmp/evil", "a/b", ".hidden", ""] {
+            assert!(!lib.has_skill(bad), "`{bad}` must not look like a skill");
+            assert!(lib.fingerprint(bad).is_err(), "`{bad}` must not fingerprint");
+            assert!(lib.remove_skill(bad).is_err(), "`{bad}` must not remove");
+        }
+        // The attempts above must not have touched anything.
+        assert!(lib.skills_dir().is_dir(), "skills directory must survive");
         let _ = fs::remove_dir_all(&lib.root);
     }
 

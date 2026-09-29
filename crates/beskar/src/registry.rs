@@ -104,6 +104,9 @@ impl Registry {
                             "installed" => {
                                 let id = c.value()
                                     .ok_or_else(|| cbad("installed needs a skill id".into()))?;
+                                if !crate::library::Library::valid_id(id) {
+                                    return Err(cbad(format!("invalid skill id `{id}`")));
+                                }
                                 let mut inst = InstalledSkill {
                                     id: id.to_string(),
                                     source_fingerprint: String::new(),
@@ -352,6 +355,11 @@ mod tests {
         std::fs::write(&path, "version 1\nrepo \"/x\" {\n  installed s {\n    source-fingerprint a\n    installed-fingerprint b\n    installed-at t\n    status c\n    extra 1\n  }\n}\n").unwrap();
         let err = Registry::load(&path).unwrap_err().to_string();
         assert!(err.contains("unknown installed field `extra`"), "{err}");
+
+        // A hand-edited registry cannot smuggle in a traversal id.
+        std::fs::write(&path, "version 1\nrepo \"/x\" {\n  installed .. {\n    source-fingerprint a\n    installed-fingerprint b\n  }\n}\n").unwrap();
+        let err = Registry::load(&path).unwrap_err().to_string();
+        assert!(err.contains("invalid skill id `..`"), "{err}");
 
         let _ = std::fs::remove_file(&path);
     }

@@ -63,10 +63,8 @@ fn delete(ctx: &Ctx, cfg: &crate::config::Config, lib: &Library, name: String, f
         true
     } else if crate::ui::Ui::interactive_stdin() {
         ctx.ui.confirm(&format!("Delete profile `{name}`?"), false)?
-    } else if repos_using.is_empty() {
-        true
     } else {
-        false
+        repos_using.is_empty()
     };
     if !confirmed {
         ctx.ui.note("cancelled");

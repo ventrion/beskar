@@ -363,7 +363,7 @@ mod tests {
         std::os::unix::fs::symlink("a.txt", dir.join("skill/link.txt")).unwrap();
 
         let items = walk_sorted(&dir).unwrap();
-        let rels: Vec<String> = items.iter().map(|i| item_key(i)).collect();
+        let rels: Vec<String> = items.iter().map(item_key).collect();
         assert_eq!(
             rels,
             vec!["skill", "skill/a.txt", "skill/b.txt", "skill/link.txt", "skill/sub", "skill/sub/c.txt"]
