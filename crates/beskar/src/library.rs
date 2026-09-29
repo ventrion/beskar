@@ -153,6 +153,14 @@ impl Library {
         crate::profile::validate_name(id)?; // same charset rules as profiles
         let dst = self.skill_path(id);
         if dst.exists() {
+            // Importing a library skill onto itself is a no-op, not a
+            // self-deletion.
+            if same_dir(source, &dst) {
+                let items = crate::util::walk_sorted(&dst)?;
+                let n = items.iter().filter(|i| matches!(i, crate::util::Item::File { .. })).count();
+                let fp = fingerprint::fingerprint_dir(&dst)?;
+                return Ok((n, fp));
+            }
             if !force {
                 return Err(Error::msg(format!(
                     "skill `{id}` already exists in the library — use --force to overwrite"
@@ -172,6 +180,14 @@ impl Library {
             return Err(Error::msg(format!("skill `{id}` is not in the library")));
         }
         util::remove_tree(&p)
+    }
+}
+
+/// True when both paths resolve to the same existing directory.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => false,
     }
 }
 
@@ -226,11 +242,39 @@ mod tests {
     use std::fs;
 
     fn tmplib() -> (PathBuf, Library) {
-        let dir = std::env::temp_dir().join(format!("beskar-lib-{}", std::process::id()));
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "beskar-lib-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = fs::remove_dir_all(&dir);
         let lib = Library::new(&dir.join("library"));
         lib.init_dirs().unwrap();
         (dir, lib)
+    }
+
+    #[test]
+    fn import_onto_self_is_a_no_op() {
+        let (dir, lib) = tmplib();
+        let src = dir.join("src-skill");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("SKILL.md"), "hi").unwrap();
+        lib.import_skill(&src, "s", false).unwrap();
+
+        // Re-importing the library's own copy (scan rediscovery, --force)
+        // must not delete the skill.
+        let (n, fp) = lib
+            .import_skill(&lib.skill_path("s"), "s", true)
+            .expect("self-import must not fail");
+        assert!(n >= 1);
+        assert!(fp.starts_with("sha256:"));
+        assert!(
+            lib.skill_path("s").join("SKILL.md").is_file(),
+            "self-import must not delete the skill"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

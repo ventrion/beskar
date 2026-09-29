@@ -290,3 +290,22 @@ fn usage_errors_exit_2() {
     let out = sb.fails(&["repo", "enable"], 2);
     assert!(out.contains("profile"), "{out}");
 }
+
+#[test]
+fn library_init_path_switch() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new("libinit");
+    sb.ok(&["init"]);
+
+    let alt = unique("altlib");
+    let out = sb.ok(&["library", "init", "--path", alt.to_str().unwrap()]);
+    assert!(out.contains("library-path updated"), "{out}");
+    assert!(alt.join("skills").is_dir(), "the new library path must be initialized");
+    assert!(alt.join("profiles").is_dir());
+    let cfg = read(sb.home.join("config.bsk"));
+    assert!(cfg.contains(alt.to_str().unwrap()), "{cfg}");
+
+    // The library handle follows the new path.
+    let out = sb.ok(&["library", "list"]);
+    assert!(!out.contains("panicked"), "{out}");
+}

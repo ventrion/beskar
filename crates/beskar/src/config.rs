@@ -168,12 +168,21 @@ impl Config {
             return Err(Error::parse(&path, 1, "missing `version 1` entry"));
         }
 
-        let expand = |s: &str| util::expand_tilde(s, home);
+        // `~` in the config always means the user's home, matching how
+        // to_bsk shortens paths. Defaults live inside the beskar home.
+        let user_home = util::home_dir().unwrap_or_else(|_| home.to_path_buf());
+        let expand = |s: &str| util::expand_tilde(s, &user_home);
         Ok(Config {
             home: home.to_path_buf(),
             path,
-            library_path: expand(library.as_deref().unwrap_or("~/.beskar/library")),
-            registry_path: expand(registry.as_deref().unwrap_or("~/.beskar/registry.bsk")),
+            library_path: match library.as_deref() {
+                Some(p) => expand(p),
+                None => home.join("library"),
+            },
+            registry_path: match registry.as_deref() {
+                Some(p) => expand(p),
+                None => home.join("registry.bsk"),
+            },
             agent_skills_dir: skills_dir.unwrap_or_else(|| ".agents/skills".to_string()),
             conflict_policy: policy,
         })
@@ -236,6 +245,48 @@ fn single_value(e: &Entry) -> std::result::Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Tests that touch $HOME must not run alongside each other.
+    static HOME_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn tilde_round_trips_against_user_home() {
+        // to_bsk shortens paths under the user's home to `~/...`; loading
+        // must expand against the same home, never the beskar home (the
+        // default setup would otherwise nest ~/.beskar/.beskar).
+        let lock = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let fake_home =
+            std::env::temp_dir().join(format!("beskar-cfg-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&fake_home);
+        std::fs::create_dir_all(&fake_home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &fake_home);
+
+        let bhome = fake_home.join(".beskar");
+        Config::default_for(&bhome).save().unwrap();
+        let cfg = Config::load(&bhome).unwrap();
+        assert_eq!(cfg.library_path, bhome.join("library"));
+        assert_eq!(cfg.registry_path, bhome.join("registry.bsk"));
+
+        // Explicit `~` entries (bare words since `~` needs no quotes)
+        // expand against the user home.
+        std::fs::write(
+            bhome.join("config.bsk"),
+            "version 1\nlibrary-path ~/skills\nregistry-path ~/reg.bsk\n",
+        )
+        .unwrap();
+        let cfg = Config::load(&bhome).unwrap();
+        assert_eq!(cfg.library_path, fake_home.join("skills"));
+        assert_eq!(cfg.registry_path, fake_home.join("reg.bsk"));
+
+        match prev {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&fake_home);
+        drop(lock);
+    }
 
     #[test]
     fn policy_parsing() {
@@ -260,15 +311,15 @@ mod tests {
         assert_eq!(loaded.agent_skills_dir, ".agents/skills");
         assert_eq!(loaded.conflict_policy, Some(ConflictPolicy::Ask));
 
-        // Hand-edited variant with tilde paths.
+        // Hand-edited variant: policies and comments survive a load.
         std::fs::write(
             Config::config_file(&home),
-            "# mine\nversion 1\nlibrary-path \"~/skills\"\nconflict-policy skip  # safe\n",
+            "# mine\nversion 1\nconflict-policy skip  # safe\n",
         )
         .unwrap();
         let loaded = Config::load(&home).unwrap();
-        assert_eq!(loaded.library_path, home.join("skills"));
         assert_eq!(loaded.conflict_policy, Some(ConflictPolicy::Skip));
+        assert_eq!(loaded.library_path, home.join("library"));
 
         // Unknown keys are rejected with a line number.
         std::fs::write(Config::config_file(&home), "version 1\nlibray-path x\n").unwrap();

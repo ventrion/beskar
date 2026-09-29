@@ -39,7 +39,7 @@ use std::path::Path;
 use crate::error::{Error, Result};
 
 /// Characters allowed in a bare (unquoted) word.
-const BARE: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/:=,+@^-";
+const BARE: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/:=,+@^-~";
 
 /// One entry: `key value... [ { children } ]` with its cosmetics.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

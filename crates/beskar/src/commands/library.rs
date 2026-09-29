@@ -24,12 +24,14 @@ pub fn run(ctx: &Ctx, cmd: LibCmd) -> Result<Exit> {
     }
 }
 
-fn init(ctx: &Ctx, cfg: &crate::config::Config, lib: &Library, path: Option<PathBuf>) -> Result<Exit> {
+fn init(ctx: &Ctx, cfg: &crate::config::Config, _lib: &Library, path: Option<PathBuf>) -> Result<Exit> {
+    let mut lib = Library::new(&cfg.library_path);
     if let Some(p) = path {
         let abs = if p.is_absolute() { p } else { std::env::current_dir().map_err(|e| Error::io(".", &e))?.join(p) };
         let mut cfg = cfg.clone();
-        cfg.library_path = abs;
+        cfg.library_path = abs.clone();
         cfg.save()?;
+        lib = Library::new(&abs);
         ctx.ui.note("library-path updated in config");
     }
     lib.init_dirs()?;

@@ -59,7 +59,7 @@ Every value is a word: a bare word or a quoted string.
 A **bare word** may contain only these characters:
 
 ```
-A-Z a-z 0-9 . _ / : = , + @ ^ -
+A-Z a-z 0-9 . _ / : = , + @ ^ - ~
 ```
 
 Paths, fingerprints, ISO timestamps, and identifiers all fit in bare
@@ -125,7 +125,7 @@ entry     := word+ [ "{" ] comment? newline
              entry*
              "}" comment? newline
 word      := bare | quoted
-bare      := [A-Za-z0-9._/:=,+@^-]+
+bare      := [A-Za-z0-9._/:=,+@^-~]+
 quoted    := '"' ( escape | char-not-quote-or-backslash )* '"'
 escape    := [\\] ["\\ntr]
 comment   := "#" ...to end of line

@@ -426,7 +426,9 @@ impl<'a> Applier<'a> {
             // Abort resolves nothing: stop here, skill untouched.
             ConflictPolicy::Abort => Ok(ConflictOutcome::Aborted),
             ConflictPolicy::Replace => {
-                self.apply_now(skill)?;
+                if !self.dry_run {
+                    self.apply_now(skill)?;
+                }
                 Ok(ConflictOutcome::ReplacedWithLibrary)
             }
             ConflictPolicy::Promote => {
@@ -692,6 +694,64 @@ mod tests {
         want.extend(desired(&[("a", 1)]));
         let plan = plan(&want, &[], &ws(&[]));
         assert_eq!(plan.len(), 1);
+    }
+
+    #[test]
+    fn dry_run_never_touches_conflicted_workspace() {
+        // --dry-run --conflict replace must print the plan without
+        // physically replacing the drifted workspace copy.
+        let base = std::env::temp_dir().join(format!("beskar-apply-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let lib = Library::new(&base.join("library"));
+        lib.init_dirs().unwrap();
+        std::fs::create_dir_all(lib.skill_path("a")).unwrap();
+        std::fs::write(lib.skill_path("a").join("SKILL.md"), "library version\n").unwrap();
+
+        let skills_dir = base.join("ws").join(".agents").join("skills");
+        std::fs::create_dir_all(skills_dir.join("a")).unwrap();
+        std::fs::write(skills_dir.join("a").join("SKILL.md"), "local work\n").unwrap();
+
+        let ui = crate::ui::Ui { color: false };
+        let repo = crate::registry::RepoRecord {
+            installed: vec![rec("a", 1, 1)],
+            ..Default::default()
+        };
+        let actions =
+            vec![Action::Conflict { skill: "a".into(), reason: ConflictReason::BothChanged }];
+
+        let mut dry = Applier {
+            library: &lib,
+            skills_dir: skills_dir.clone(),
+            ui: &ui,
+            policy: ConflictPolicy::Replace,
+            dry_run: true,
+            promoted: BTreeMap::new(),
+        };
+        let (records, summary) = dry.apply(&actions, &repo).unwrap();
+        assert_eq!(summary.updated, 1);
+        assert!(records.is_empty(), "dry run records nothing");
+        assert_eq!(
+            std::fs::read_to_string(skills_dir.join("a").join("SKILL.md")).unwrap(),
+            "local work\n",
+            "dry run must leave the local file alone"
+        );
+
+        // A real run with the same policy replaces the file.
+        let mut real = Applier {
+            library: &lib,
+            skills_dir: skills_dir.clone(),
+            ui: &ui,
+            policy: ConflictPolicy::Replace,
+            dry_run: false,
+            promoted: BTreeMap::new(),
+        };
+        let (records, _) = real.apply(&actions, &repo).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(skills_dir.join("a").join("SKILL.md")).unwrap(),
+            "library version\n"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
