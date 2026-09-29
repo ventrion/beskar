@@ -179,11 +179,11 @@ pub fn apply(store: &mut Store, plans: &[Plan]) -> Result<()> {
                 continue;
             }
             tree::safe_path(&target)?;
-            io(target.display(), fs::create_dir_all(&target))?;
             let destination = target.join(&skill.name);
             if skill.action == Action::Remove {
                 transaction.remove(&destination, &plan.path, skill.current.clone())?;
             } else {
+                io(target.display(), fs::create_dir_all(&target))?;
                 transaction.copy(
                     &destination,
                     &store.skill_path(&skill.name)?,

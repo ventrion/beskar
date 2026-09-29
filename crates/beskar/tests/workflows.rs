@@ -732,3 +732,28 @@ fn changed_deployment_configuration_does_not_reuse_baselines_at_another_path() {
     assert!(s.repo.join("tools/skills/a/SKILL.md").exists());
     assert!(s.local_skill("a").exists());
 }
+
+#[test]
+fn removal_plan_does_not_recreate_a_destination_deleted_after_planning() {
+    use beskar::{
+        reconcile::{self, Action, Policy},
+        store::Store,
+    };
+    let s = Sandbox::new();
+    s.init();
+    s.add_skill("a", "original");
+    s.activate("coding", &["a"]);
+    s.ok(&["update"]);
+    s.ok(&["repo", "disable", "coding"]);
+    let mut store = Store::open(s.home.clone(), false).unwrap();
+    let plan = reconcile::plan(&store, &s.repo, Policy::Abort).unwrap();
+    assert_eq!(plan.skills[0].action, Action::Remove);
+
+    fs::remove_dir_all(s.repo.join(".agents")).unwrap();
+    let before = snapshot(&s.root);
+    let error = reconcile::apply(&mut store, &[plan]).unwrap_err();
+
+    assert!(error.contains("changed since planning"), "{error}");
+    assert!(!s.repo.join(".agents").exists());
+    assert_eq!(before, snapshot(&s.root));
+}
