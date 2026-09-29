@@ -1,0 +1,12 @@
+[package]
+name = "beskar-core"
+description = "Beskar's domain: skill library, profiles, registry and reconciliation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bsk = { path = "../bsk" }
+
+[lints]
+workspace = true

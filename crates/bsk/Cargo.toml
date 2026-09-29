@@ -1,0 +1,9 @@
+[package]
+name = "bsk"
+description = "BSK, the Beskar notation: a line-oriented file format with one fact per line"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

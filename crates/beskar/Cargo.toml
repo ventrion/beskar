@@ -1,0 +1,17 @@
+[package]
+name = "beskar"
+description = "Better Skill Arrangement: manage agent skills across workspaces"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "beskar"
+path = "src/main.rs"
+
+[dependencies]
+beskar-core = { path = "../beskar-core" }
+bsk = { path = "../bsk" }
+
+[lints]
+workspace = true
