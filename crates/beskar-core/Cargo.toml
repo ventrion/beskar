@@ -1,0 +1,12 @@
+[package]
+name = "beskar-core"
+description = "Beskar domain model: library, profiles, registry and reconciliation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+plate = { path = "../plate" }
+
+[lints]
+workspace = true

@@ -1,0 +1,9 @@
+[package]
+name = "plate"
+description = "Plate: a line-oriented, typeless configuration format"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
