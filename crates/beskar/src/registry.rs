@@ -233,15 +233,20 @@ impl Registry {
         bsk::write_document(&doc)
     }
 
-    /// Find a repo by path (after normalization). Exact match only.
+    /// Find a repo by path. The registry stores canonical paths (resolved
+    /// at `repo add` time), so lookups canonicalize too; when the
+    /// argument does not exist (or cannot be canonicalized) it falls
+    /// back to the lexical form, matching hand-edited registries.
     pub fn repo(&self, path: &Path) -> Option<&RepoRecord> {
         let want = normalize_path(&path.to_string_lossy());
-        self.repos.iter().find(|r| r.path == want)
+        let canonical = fs::canonicalize(&want).unwrap_or_else(|_| want.clone());
+        self.repos.iter().find(|r| r.path == canonical || r.path == want)
     }
 
     pub fn repo_mut(&mut self, path: &Path) -> Option<&mut RepoRecord> {
         let want = normalize_path(&path.to_string_lossy());
-        self.repos.iter_mut().find(|r| r.path == want)
+        let canonical = fs::canonicalize(&want).unwrap_or_else(|_| want.clone());
+        self.repos.iter_mut().find(|r| r.path == canonical || r.path == want)
     }
 
     /// Add a repo; returns false when it was already registered.
@@ -327,6 +332,34 @@ mod tests {
         assert!(loaded.repo(Path::new("/home/u/projects/api")).is_some());
         assert!(loaded.repo(Path::new("/elsewhere")).is_none());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn lookups_resolve_symlinks_and_fall_back_lexically() {
+        let base = std::env::temp_dir().join(format!("beskar-reg-lookup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("real")).unwrap();
+
+        let mut reg = Registry::default();
+        reg.add_repo(&base.join("real")).unwrap();
+
+        // The same repo through a symlinked route is found.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(base.join("real"), base.join("link")).unwrap();
+            assert!(reg.repo(&base.join("link")).is_some(), "symlinked lookup must match");
+            assert!(reg.repo_mut(&base.join("link")).is_some());
+        }
+
+        // A path that cannot be canonicalized (does not exist) still
+        // matches what a hand-edited registry stored lexically.
+        reg.repos.push(RepoRecord {
+            path: PathBuf::from("/beskar-nonexistent/repo"),
+            ..Default::default()
+        });
+        assert!(reg.repo(Path::new("/beskar-nonexistent/repo")).is_some());
+        assert!(reg.repo(Path::new("/beskar-elsewhere")).is_none());
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

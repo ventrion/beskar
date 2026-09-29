@@ -118,6 +118,7 @@ impl Config {
         let doc = bsk::parse_document(&path, &text)?;
 
         let mut version: Option<u64> = None;
+        let mut version_line = 0usize;
         let mut library: Option<String> = None;
         let mut registry: Option<String> = None;
         let mut skills_dir: Option<String> = None;
@@ -129,8 +130,10 @@ impl Config {
                 "version" => {
                     let v = e.value().ok_or_else(|| bad("version needs a value"))?;
                     let n: u64 = v.parse().map_err(|_| bad("version must be a number"))?;
-                    if let Some(prev) = version {
-                        return Err(bad(&format!("duplicate version (also on line {n}, first was {prev})")));
+                    if version.is_some() {
+                        return Err(bad(&format!(
+                            "duplicate version (first one is on line {version_line})"
+                        )));
                     }
                     if n != 1 {
                         return Err(bad(&format!(
@@ -138,6 +141,7 @@ impl Config {
                         )));
                     }
                     version = Some(n);
+                    version_line = e.line;
                 }
                 "library-path" => {
                     library = Some(single_value(e).map_err(|m| bad(&m))?);
@@ -327,6 +331,18 @@ mod tests {
         assert!(err.contains("unknown config key `libray-path`"), "{err}");
         assert!(err.contains("config.bsk:2"), "{err}");
 
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn duplicate_version_reports_the_first_line() {
+        let home = std::env::temp_dir().join(format!("beskar-cfg-dup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(Config::config_file(&home), "version 1\nversion 1\n").unwrap();
+        let err = Config::load(&home).unwrap_err().to_string();
+        assert!(err.contains("duplicate version (first one is on line 1)"), "{err}");
+        assert!(!err.contains("first was"), "{err}");
         let _ = std::fs::remove_dir_all(&home);
     }
 

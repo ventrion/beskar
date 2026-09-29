@@ -111,16 +111,26 @@ impl Profile {
     }
 
     /// Remove skill entries. Returns how many were removed. Pending save.
+    /// Lines carrying several ids (`skill a b`) are rewritten without the
+    /// requested ones (and dropped when none remain), so the document and
+    /// `self.skills` stay in step.
     pub fn remove_skills(&mut self, ids: &[String]) -> usize {
         let mut removed = 0;
-        self.doc.entries.retain(|e| {
-            if e.is("skill") && e.value().map(|v| ids.iter().any(|id| id == v)).unwrap_or(false) {
-                removed += 1;
-                false
-            } else {
-                true
+        for e in self.doc.entries.iter_mut() {
+            if e.words.len() < 2 || e.words[0] != "skill" {
+                continue;
             }
-        });
+            let mut kept = vec![e.words[0].clone()];
+            for w in &e.words[1..] {
+                if ids.iter().any(|id| id == w) {
+                    removed += 1;
+                } else {
+                    kept.push(w.clone());
+                }
+            }
+            e.words = kept;
+        }
+        self.doc.entries.retain(|e| !(e.is("skill") && e.words.len() == 1));
         self.skills.retain(|s| !ids.iter().any(|id| id == s));
         removed
     }
@@ -245,6 +255,43 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("skill a") && !text.contains("skill b"));
         assert!(text.contains("description desc"));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn remove_from_multi_value_lines() {
+        // Hand-written profiles may pack several ids on one `skill` line.
+        let path = tmpfile("multi");
+        fs::write(&path, "name multi\nskill a b\nskill c\n").unwrap();
+        let mut p = Profile::load(&path).unwrap();
+        assert_eq!(p.skills, vec!["a", "b", "c"]);
+
+        // Removing the second id on a shared line keeps the first.
+        assert_eq!(p.remove_skills(&["b".into()]), 1);
+        assert_eq!(p.skills, vec!["a", "c"]);
+        p.save().unwrap();
+        let reloaded = Profile::load(&path).unwrap();
+        assert_eq!(reloaded.skills, vec!["a", "c"], "the file must match memory");
+
+        // Removing the first id keeps the rest on the line.
+        let mut p = reloaded;
+        assert_eq!(p.remove_skills(&["a".into()]), 1);
+        assert_eq!(p.skills, vec!["c"]);
+        p.save().unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("skill c"), "{text}");
+        assert!(!text.contains("skill a"), "{text}");
+        let reloaded = Profile::load(&path).unwrap();
+        assert_eq!(reloaded.skills, vec!["c"]);
+
+        // Removing the last id on a line drops the line entirely.
+        let mut p = reloaded;
+        assert_eq!(p.remove_skills(&["c".into()]), 1);
+        assert!(p.skills.is_empty());
+        p.save().unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("skill c"), "{text}");
+        assert!(!text.contains("skill a"), "{text}");
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 

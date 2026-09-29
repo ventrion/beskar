@@ -100,10 +100,11 @@ profile work {
 }
 ```
 
-The `{` must be the last token on the line. A `}` that is not alone on
-its line is an error, and so is a `{` glued to other characters. Both
-fail with a file name and line number instead of being parsed into
-something you did not mean.
+The `{` must be the last token on its line, though a comment may follow
+it. A `}` shares its line only with whitespace and an optional comment;
+anything else after either brace is an error, and so is a `{` glued to
+other characters. All of these fail with a file name and line number
+instead of being parsed into something you did not mean.
 
 ## Comments and blank lines
 

@@ -304,6 +304,11 @@ fn repo_add_through_symlink() {
     let out = sb.ok(&["repo", "add", real.to_str().unwrap()]);
     assert!(out.contains("already registered"), "{out}");
 
+    // Lookup-only commands resolve the symlink too.
+    let out = sb.ok(&["repo", "status", link.to_str().unwrap()]);
+    assert!(out.contains("Repository"), "{out}");
+    sb.ok(&["repo", "update", link.to_str().unwrap()]);
+
     let _ = fs::remove_dir_all(&real);
     fs::remove_file(&link).ok();
 }

@@ -58,6 +58,10 @@ pub struct Entry {
     pub comment_blanks: u8,
     /// Trailing comment on the entry's own line, without the leading `#`.
     pub trailing_comment: Option<String>,
+    /// Comment after the `{` that opens this entry's block.
+    pub open_comment: Option<String>,
+    /// Comment after the `}` that closes this entry's block.
+    pub close_comment: Option<String>,
     /// Entries inside this entry's `{ ... }` block.
     pub children: Vec<Entry>,
 }
@@ -160,10 +164,19 @@ fn write_entries(out: &mut String, entries: &[Entry], depth: usize, trailer: &[S
             out.push_str(tc);
         }
         if !e.children.is_empty() {
-            out.push_str(" {\n");
+            out.push_str(" {");
+            if let Some(oc) = &e.open_comment {
+                out.push_str("  #");
+                out.push_str(oc);
+            }
+            out.push('\n');
             write_entries(out, &e.children, depth + 1, &[]);
             out.push_str(&indent);
             out.push('}');
+            if let Some(cc) = &e.close_comment {
+                out.push_str("  #");
+                out.push_str(cc);
+            }
         }
         out.push('\n');
     }
@@ -201,11 +214,12 @@ pub fn parse_document(file: &Path, text: &str) -> Result<Document> {
 
         let words = tokenize(file, line_no, trimmed)?;
 
-        // `}` closes the innermost open block; it must be alone on its line.
+        // `}` closes the innermost open block; only a comment may follow it.
         if words.terminated_brace {
-            let entry = stack.pop().ok_or_else(|| {
+            let mut entry = stack.pop().ok_or_else(|| {
                 Error::parse(file, line_no, "unexpected `}` — there is no open block here")
             })?;
+            entry.close_comment = words.trailing_comment;
             if let Some(parent) = stack.last_mut() {
                 parent.children.push(entry);
             } else {
@@ -224,6 +238,8 @@ pub fn parse_document(file: &Path, text: &str) -> Result<Document> {
             blanks: blanks_post,
             comment_blanks: blanks_pre,
             trailing_comment: words.trailing_comment,
+            open_comment: words.open_comment,
+            close_comment: None,
             children: Vec::new(),
         };
         blanks_pre = 0;
@@ -255,10 +271,13 @@ struct LineWords {
     /// The line is a lone `}` (closes a block).
     terminated_brace: bool,
     trailing_comment: Option<String>,
+    /// Comment after the opening `{`.
+    open_comment: Option<String>,
 }
 
-/// Tokenize one line. `{` is only allowed as the final token (block opener);
-/// a bare `}` alone is reported via `terminated_brace`.
+/// Tokenize one line. `{` may be followed only by whitespace and a
+/// comment; a bare `}` likewise is reported via `terminated_brace`,
+/// with anything after it that is not a comment an error.
 fn tokenize(file: &Path, line_no: usize, line: &str) -> Result<LineWords> {
     let mut out = LineWords::default();
     let chars: Vec<char> = line.chars().collect();
@@ -274,22 +293,42 @@ fn tokenize(file: &Path, line_no: usize, line: &str) -> Result<LineWords> {
             break;
         }
         if c == '{' {
-            if !out.tokens.is_empty() && i + 1 == chars.len() {
-                out.opened_brace = true;
-                return Ok(out);
-            }
             if out.tokens.is_empty() {
                 return Err(Error::parse(file, line_no,
                     "`{` must open the block of an entry written on the same line"));
             }
-            return Err(Error::parse(file, line_no, "`{` must be the last thing on its line"));
+            // After `{`, whitespace and at most a comment may follow.
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j < chars.len() && chars[j] != '#' {
+                return Err(Error::parse(file, line_no,
+                    "`{` must be the last thing on its line (a comment may follow)"));
+            }
+            out.opened_brace = true;
+            if j < chars.len() {
+                out.open_comment = Some(chars[j + 1..].iter().collect());
+            }
+            return Ok(out);
         }
         if c == '}' {
-            if out.tokens.is_empty() && i + 1 == chars.len() {
-                out.terminated_brace = true;
-                return Ok(out);
+            if !out.tokens.is_empty() {
+                return Err(Error::parse(file, line_no, "`}` must be on its own line"));
             }
-            return Err(Error::parse(file, line_no, "`}` must be on its own line"));
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j < chars.len() && chars[j] != '#' {
+                return Err(Error::parse(file, line_no,
+                    "`}` must be on its own line (a comment may follow)"));
+            }
+            out.terminated_brace = true;
+            if j < chars.len() {
+                out.trailing_comment = Some(chars[j + 1..].iter().collect());
+            }
+            return Ok(out);
         }
         if c == '"' {
             i += 1;
@@ -428,11 +467,28 @@ mod tests {
     }
 
     #[test]
+    fn block_braces_take_trailing_comments() {
+        let src = "repo /p {  # work\n  profile a  # because\n}  # end of work\n";
+        let doc = parse(src).unwrap();
+        assert_eq!(doc.entries[0].children.len(), 1);
+        assert_eq!(doc.entries[0].open_comment.as_deref(), Some(" work"));
+        assert_eq!(doc.entries[0].close_comment.as_deref(), Some(" end of work"));
+        assert_eq!(write_document(&doc), src);
+
+        // A bare `{` / `}` with no comment still parses.
+        let plain = parse("a 1 {\n  b 2\n}\n").unwrap();
+        assert!(plain.entries[0].open_comment.is_none());
+        assert!(plain.entries[0].close_comment.is_none());
+    }
+
+    #[test]
     fn rejects_errors_with_lines() {
         let cases = [
             ("skill a {\n", "never closed"),
             ("}\n", "no open block"),
             ("skill a b }\n", "`}` must be on its own line"),
+            ("} trailing words\n", "`}` must be on its own line"),
+            ("skill a { trailing words\n", "last thing on its line"),
             ("skill \"unclosed\n", "never closed"),
             ("skill \"bad \\x escape\"\n", "unknown escape"),
             ("a#comment-glued\n", "must be separated"),
