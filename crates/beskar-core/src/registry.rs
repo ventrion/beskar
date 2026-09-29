@@ -1,0 +1,401 @@
+//! The registry: machine-local deployment state. It records which
+//! workspaces Beskar manages, which profiles each one has enabled, and
+//! which skills Beskar installed there, with the fingerprint of the library
+//! version each installed copy is based on.
+//!
+//! ```text
+//! version: 1
+//!
+//! [repo /home/me/code/api]
+//! profile: coding
+//! profile: backend
+//! synced: 2026-09-29T10:15:03Z
+//! installed: code-review 3f9a2c41d0b7…
+//! ```
+//!
+//! It lives outside the library because it holds absolute paths that only
+//! make sense on this machine.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use bsk::Document;
+
+use crate::fingerprint::Fingerprint;
+use crate::fsx;
+use crate::names::{ProfileName, SkillId};
+use crate::timestamp::Timestamp;
+use crate::{Error, Result};
+
+pub const REGISTRY_VERSION: &str = "1";
+
+/// One managed workspace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepoEntry {
+    /// Absolute path of the workspace root.
+    pub path: PathBuf,
+    /// Enabled profiles, in the order they were enabled.
+    pub profiles: Vec<ProfileName>,
+    /// Skills Beskar installed, each with the fingerprint of the library
+    /// version the workspace copy is based on. Comparing that fingerprint
+    /// with the library and with the workspace copy tells who changed what.
+    pub installed: BTreeMap<SkillId, Fingerprint>,
+    /// When Beskar last finished reconciling this workspace.
+    pub synced: Option<Timestamp>,
+}
+
+impl RepoEntry {
+    pub fn new(path: PathBuf) -> Self {
+        RepoEntry {
+            path,
+            profiles: Vec::new(),
+            installed: BTreeMap::new(),
+            synced: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Registry {
+    path: PathBuf,
+    repos: BTreeMap<PathBuf, RepoEntry>,
+}
+
+impl Registry {
+    pub fn empty(path: &Path) -> Self {
+        Registry {
+            path: path.to_path_buf(),
+            repos: BTreeMap::new(),
+        }
+    }
+
+    /// Load the registry. A missing file is an error rather than an empty
+    /// registry: saving over a mistyped `registry:` path would otherwise
+    /// forget what Beskar installed where. `beskar init` creates the file.
+    pub fn load(path: &Path) -> Result<Registry> {
+        if !fsx::exists(path) {
+            return Err(Error::not_found(format!(
+                "the registry {} does not exist",
+                path.display()
+            ))
+            .hint("run `beskar init` to create it, or check `registry:` in the config"));
+        }
+        Registry::parse(&fsx::read_to_string(path)?, path)
+    }
+
+    pub fn parse(text: &str, path: &Path) -> Result<Registry> {
+        let fail = |diagnostic: bsk::Error| Error::bsk(path, diagnostic);
+        let doc = Document::parse(text).map_err(fail)?;
+        let root = doc.root();
+        root.check_keys(&["version"]).map_err(fail)?;
+        if let Some(entry) = root.get("version").map_err(fail)?
+            && entry.value() != REGISTRY_VERSION
+        {
+            return Err(fail(
+                entry
+                    .error(format!("unsupported registry version `{}`", entry.value()))
+                    .with_help(format!("this beskar reads version {REGISTRY_VERSION}; a newer beskar wrote this file")),
+            ));
+        }
+
+        let mut repos = BTreeMap::new();
+        for section in doc.sections() {
+            if section.name() != Some("repo") {
+                return Err(fail(
+                    section
+                        .error(format!(
+                            "unknown section `[{}]`",
+                            section.name().unwrap_or_default()
+                        ))
+                        .with_help("the registry has one `[repo <path>]` section per workspace"),
+                ));
+            }
+            let label = section.label();
+            if label.is_empty() {
+                return Err(fail(
+                    section
+                        .error("`[repo]` needs the workspace path")
+                        .with_help("write `[repo /path/to/workspace]`"),
+                ));
+            }
+            let repo_path = PathBuf::from(label);
+            if !repo_path.is_absolute() {
+                return Err(fail(
+                    section.label_error("workspace paths in the registry are absolute"),
+                ));
+            }
+            if repos.contains_key(&repo_path) {
+                return Err(fail(
+                    section
+                        .label_error(format!("{label} is listed twice"))
+                        .with_help("merge the two sections"),
+                ));
+            }
+            section
+                .check_keys(&["profile", "installed", "synced"])
+                .map_err(fail)?;
+
+            let mut profiles = Vec::new();
+            for entry in section.all("profile") {
+                let name =
+                    ProfileName::new(entry.value()).map_err(|e| fail(entry.error(e.message)))?;
+                if profiles.contains(&name) {
+                    return Err(fail(
+                        entry.error(format!("profile `{name}` is listed twice")),
+                    ));
+                }
+                profiles.push(name);
+            }
+
+            let mut installed = BTreeMap::new();
+            for entry in section.all("installed") {
+                let parts: Vec<&str> = entry.value().split_whitespace().collect();
+                let [skill, fingerprint] = parts.as_slice() else {
+                    return Err(fail(entry.error("expected `<skill> <fingerprint>`")));
+                };
+                let skill = SkillId::new(skill).map_err(|e| fail(entry.error(e.message)))?;
+                let fingerprint = Fingerprint::parse(fingerprint).ok_or_else(|| {
+                    fail(entry.error("the fingerprint is not 64 lowercase hexadecimal digits"))
+                })?;
+                if installed.insert(skill.clone(), fingerprint).is_some() {
+                    return Err(fail(entry.error(format!("`{skill}` is listed twice"))));
+                }
+            }
+
+            let synced = match section.get("synced").map_err(fail)? {
+                None => None,
+                Some(entry) => Some(Timestamp::parse(entry.value()).ok_or_else(|| {
+                    fail(entry.error("expected a UTC time like `2026-09-29T10:15:03Z`"))
+                })?),
+            };
+
+            repos.insert(
+                repo_path.clone(),
+                RepoEntry {
+                    path: repo_path,
+                    profiles,
+                    installed,
+                    synced,
+                },
+            );
+        }
+        Ok(Registry {
+            path: path.to_path_buf(),
+            repos,
+        })
+    }
+
+    /// The registry in canonical form: workspaces sorted by path, installed
+    /// skills sorted by name.
+    pub fn render(&self) -> String {
+        let mut doc = Document::new();
+        doc.push_comment("Beskar registry: the workspaces Beskar manages on this machine.");
+        doc.push_comment(
+            "Beskar rewrites this file on every change, so comments here are not kept.",
+        );
+        doc.push_comment("`beskar help format` describes the syntax.");
+        let push = |doc: &mut Document, key: &str, value: &str| {
+            doc.push_entry(key, value)
+                .expect("registry values are validated before they are stored");
+        };
+        push(&mut doc, "version", REGISTRY_VERSION);
+        for repo in self.repos.values() {
+            doc.push_blank();
+            doc.push_section("repo", &repo.path.to_string_lossy())
+                .expect("registry paths are validated before they are stored");
+            for profile in &repo.profiles {
+                push(&mut doc, "profile", profile.as_str());
+            }
+            if let Some(synced) = repo.synced {
+                push(&mut doc, "synced", &synced.to_string());
+            }
+            for (skill, fingerprint) in &repo.installed {
+                push(&mut doc, "installed", &format!("{skill} {fingerprint}"));
+            }
+        }
+        doc.to_string()
+    }
+
+    pub fn save(&self) -> Result<()> {
+        if let Some(dir) = self.path.parent() {
+            fsx::create_dir_all(dir)?;
+        }
+        fsx::write_atomic(&self.path, &self.render())
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Workspaces, sorted by path.
+    pub fn repos(&self) -> impl Iterator<Item = &RepoEntry> {
+        self.repos.values()
+    }
+
+    pub fn len(&self) -> usize {
+        self.repos.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.repos.is_empty()
+    }
+
+    pub fn get(&self, path: &Path) -> Option<&RepoEntry> {
+        self.repos.get(path)
+    }
+
+    pub fn get_mut(&mut self, path: &Path) -> Option<&mut RepoEntry> {
+        self.repos.get_mut(path)
+    }
+
+    /// The registered workspace that contains `dir`: the workspace root
+    /// itself or its nearest registered ancestor.
+    pub fn containing(&self, dir: &Path) -> Option<&RepoEntry> {
+        self.repos
+            .values()
+            .filter(|repo| dir.starts_with(&repo.path))
+            .max_by_key(|repo| repo.path.components().count())
+    }
+
+    /// Register a workspace. Returns `false` if it already was registered.
+    pub fn add(&mut self, path: PathBuf) -> Result<bool> {
+        check_storable(&path)?;
+        if self.repos.contains_key(&path) {
+            return Ok(false);
+        }
+        self.repos.insert(path.clone(), RepoEntry::new(path));
+        Ok(true)
+    }
+
+    pub fn remove(&mut self, path: &Path) -> Option<RepoEntry> {
+        self.repos.remove(path)
+    }
+}
+
+/// Whether a workspace path can be written into the registry unchanged.
+fn check_storable(path: &Path) -> Result<()> {
+    let Some(text) = path.to_str() else {
+        return Err(Error::invalid(format!(
+            "{} is not valid UTF-8, so the registry cannot store it",
+            path.display()
+        )));
+    };
+    if !path.is_absolute() {
+        return Err(Error::invalid(format!("{text} is not an absolute path")));
+    }
+    if text.chars().any(char::is_control) || text.trim() != text {
+        return Err(Error::invalid(format!(
+            "{text:?} contains line breaks or control characters, or starts or ends with whitespace, so the registry cannot store it"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fp(byte: u8) -> Fingerprint {
+        Fingerprint::fake(byte)
+    }
+
+    fn sample() -> Registry {
+        let mut registry = Registry::empty(Path::new("/state/registry.bsk"));
+        registry.add(PathBuf::from("/code/site")).unwrap();
+        registry.add(PathBuf::from("/code/api")).unwrap();
+        let api = registry.get_mut(Path::new("/code/api")).unwrap();
+        api.profiles = vec![
+            ProfileName::new("coding").unwrap(),
+            ProfileName::new("backend").unwrap(),
+        ];
+        api.installed.insert(SkillId::new("git").unwrap(), fp(1));
+        api.installed
+            .insert(SkillId::new("code-review").unwrap(), fp(2));
+        api.synced = Timestamp::parse("2026-09-29T10:15:03Z");
+        registry
+    }
+
+    #[test]
+    fn renders_canonically_and_parses_back() {
+        let registry = sample();
+        let text = registry.render();
+        assert!(text.contains("\n[repo /code/api]\nprofile: coding\nprofile: backend\nsynced: 2026-09-29T10:15:03Z\ninstalled: code-review 0202"), "{text}");
+        assert!(text.find("[repo /code/api]") < text.find("[repo /code/site]"));
+        let back = Registry::parse(&text, registry.path()).unwrap();
+        assert_eq!(
+            back.repos().collect::<Vec<_>>(),
+            registry.repos().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn finds_the_nearest_registered_ancestor() {
+        let mut registry = sample();
+        registry
+            .add(PathBuf::from("/code/api/packages/web"))
+            .unwrap();
+        let find = |dir: &str| {
+            registry
+                .containing(Path::new(dir))
+                .map(|r| r.path.display().to_string())
+        };
+        assert_eq!(find("/code/api").as_deref(), Some("/code/api"));
+        assert_eq!(find("/code/api/src/lib").as_deref(), Some("/code/api"));
+        assert_eq!(
+            find("/code/api/packages/web/src").as_deref(),
+            Some("/code/api/packages/web")
+        );
+        assert_eq!(find("/code/apiary"), None);
+        assert_eq!(find("/elsewhere"), None);
+    }
+
+    #[test]
+    fn add_is_idempotent_and_validates_paths() {
+        let mut registry = Registry::empty(Path::new("/r.bsk"));
+        assert!(registry.add(PathBuf::from("/code/x")).unwrap());
+        assert!(!registry.add(PathBuf::from("/code/x")).unwrap());
+        assert!(registry.add(PathBuf::from("relative")).is_err());
+        assert!(registry.add(PathBuf::from("/code/line\nbreak")).is_err());
+        assert!(registry.add(PathBuf::from("/code/My Code")).unwrap());
+    }
+
+    #[test]
+    fn rejects_malformed_registries() {
+        let parse = |text: &str| {
+            Registry::parse(text, Path::new("/r.bsk"))
+                .unwrap_err()
+                .message
+        };
+        assert_eq!(parse("version: 2\n"), "unsupported registry version `2`");
+        assert_eq!(parse("[workspace /x]\n"), "unknown section `[workspace]`");
+        assert_eq!(parse("[repo]\n"), "`[repo]` needs the workspace path");
+        assert_eq!(
+            parse("[repo relative]\n"),
+            "workspace paths in the registry are absolute"
+        );
+        assert_eq!(parse("[repo /x]\n[repo /x]\n"), "/x is listed twice");
+        assert_eq!(
+            parse("[repo /x]\ninstalled: git\n"),
+            "expected `<skill> <fingerprint>`"
+        );
+        assert_eq!(
+            parse("[repo /x]\ninstalled: git abc\n"),
+            "the fingerprint is not 64 lowercase hexadecimal digits"
+        );
+        assert_eq!(
+            parse("[repo /x]\nsynced: yesterday\n"),
+            "expected a UTC time like `2026-09-29T10:15:03Z`"
+        );
+        assert_eq!(parse("[repo /x]\nprofiles: a\n"), "unknown key `profiles`");
+    }
+
+    #[test]
+    fn a_missing_file_is_an_error() {
+        let error = Registry::load(Path::new("/definitely/not/here/registry.bsk")).unwrap_err();
+        assert_eq!(error.kind, crate::ErrorKind::NotFound);
+        assert_eq!(
+            error.hints[0],
+            "run `beskar init` to create it, or check `registry:` in the config"
+        );
+    }
+}
