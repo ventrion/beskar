@@ -373,6 +373,70 @@ fn broken_profile_fails_update_instead_of_removing_skills() {
 }
 
 #[test]
+fn abort_keeps_tracking_untouched_skills() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new("abort");
+    sb.ok(&["init"]);
+
+    let src = unique("src");
+    write_skill(&src, "aaa", "v1\n");
+    write_skill(&src, "zzz", "v1\n");
+    sb.ok(&["--yes", "library", "scan", src.to_str().unwrap()]);
+    sb.ok(&["profile", "create", "team"]);
+    sb.ok(&["profile", "add", "team", "aaa", "zzz"]);
+
+    let repo = unique("repo");
+    fs::create_dir_all(&repo).unwrap();
+    let repo_s = repo.to_str().unwrap();
+    sb.ok(&["repo", "add", repo_s]);
+    sb.ok(&["repo", "enable", "team", "--repo", repo_s]);
+    sb.ok(&["repo", "update", repo_s]);
+
+    // The library moves on for both skills; the workspace aaa copy is
+    // modified locally. aaa becomes a both-changed conflict, zzz a plain
+    // pending update.
+    fs::write(
+        sb.home.join("library").join("skills").join("aaa").join("SKILL.md"),
+        "---\nname: aaa\ndescription: the aaa skill\n---\nv2\n",
+    )
+    .unwrap();
+    fs::write(
+        sb.home.join("library").join("skills").join("zzz").join("SKILL.md"),
+        "---\nname: zzz\ndescription: the zzz skill\n---\nv2\n",
+    )
+    .unwrap();
+    fs::write(repo.join(".agents").join("skills").join("aaa").join("SKILL.md"), "local work\n")
+        .unwrap();
+
+    // Aborting at the aaa conflict must not drop the records of skills
+    // the run never reached.
+    let out = sb.fails(&["repo", "update", repo_s, "--conflict", "abort"], 1);
+    assert!(out.contains("aborted"), "{out}");
+    let reg = read(sb.home.join("registry.bsk"));
+    assert!(reg.contains("installed aaa"), "abort must keep aaa tracked: {reg}");
+    assert!(reg.contains("installed zzz"), "abort must keep zzz tracked: {reg}");
+
+    // zzz is still tracked: a pending update, not untracked drift.
+    let out = sb.ok(&["repo", "status", repo_s]);
+    assert!(out.contains("newer version"), "{out}");
+    assert!(!out.contains("untracked"), "{out}");
+
+    // The next update converges: zzz updates, aaa stays one conflict.
+    sb.fails(&["repo", "update", repo_s], 1);
+    assert!(read(repo.join(".agents").join("skills").join("zzz").join("SKILL.md")).contains("v2"));
+    assert!(
+        read(repo.join(".agents").join("skills").join("aaa").join("SKILL.md")).contains("local work"),
+        "skip must not touch the conflicted file"
+    );
+
+    // Resolving the conflict leaves the repo fully in sync.
+    sb.ok(&["repo", "update", repo_s, "--conflict", "replace"]);
+    assert!(read(repo.join(".agents").join("skills").join("aaa").join("SKILL.md")).contains("v2"));
+    let out = sb.ok(&["repo", "status", repo_s]);
+    assert!(out.contains("in sync"), "{out}");
+}
+
+#[test]
 fn usage_errors_exit_2() {
     let sb = Sandbox::new("usage");
     let out = sb.fails(&["frobnicate"], 2);

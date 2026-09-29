@@ -240,8 +240,10 @@ pub struct Applier<'a> {
 impl<'a> Applier<'a> {
     /// Walk the plan, printing each step and performing the filesystem work
     /// (unless `dry_run`). Returns the repo's new installed records and a
-    /// summary; the caller persists them into the registry. On abort the
-    /// records cover only what was applied before the stop.
+    /// summary; the caller persists them into the registry. Records the
+    /// run did not act on are carried forward: an abort leaves the
+    /// remaining skills tracked, and a missing-library warning does not
+    /// untrack the workspace copy.
     pub fn apply(
         &mut self,
         actions: &[Action],
@@ -249,6 +251,9 @@ impl<'a> Applier<'a> {
     ) -> Result<(Vec<InstalledSkill>, Summary)> {
         let mut summary = Summary::default();
         let mut records: Vec<InstalledSkill> = Vec::new();
+        // Records intentionally dropped this run (removals): they must
+        // not come back when an abort carries the untouched ones forward.
+        let mut dropped: std::collections::BTreeSet<String> = Default::default();
 
         for action in actions {
             match action {
@@ -285,6 +290,7 @@ impl<'a> Applier<'a> {
                         let dst = self.skills_dir.join(skill);
                         util::remove_tree(&dst)?;
                     }
+                    dropped.insert(skill.clone());
                 }
                 Action::Keep { skill, drifted } => {
                     if *drifted {
@@ -336,6 +342,20 @@ impl<'a> Applier<'a> {
                             self.line("!", skill, "aborted — remaining actions skipped")?;
                             summary.conflicts += 1;
                             summary.failed = true;
+                            // Nothing after this point ran, and the
+                            // conflicted skill itself is untouched: carry
+                            // their records forward, so these skills stay
+                            // tracked instead of turning into untracked
+                            // drift on the next run.
+                            if !self.dry_run {
+                                for r in &repo.installed {
+                                    if !records.iter().any(|x| x.id == r.id)
+                                        && !dropped.contains(&r.id)
+                                    {
+                                        records.push(r.clone());
+                                    }
+                                }
+                            }
                             return Ok((records, summary));
                         }
                     }
@@ -343,6 +363,15 @@ impl<'a> Applier<'a> {
                 Action::Warn { skill, msg } => {
                     self.line("!", skill, msg)?;
                     summary.warnings += 1;
+                    // The library lost its copy, but the skill may still
+                    // be installed and on disk. Keep the record so it
+                    // stays tracked (and purgeable) rather than turning
+                    // into untracked drift.
+                    if !self.dry_run {
+                        if let Some(rec) = repo.installed(skill) {
+                            records.push(rec.clone());
+                        }
+                    }
                 }
             }
         }
@@ -751,6 +780,66 @@ mod tests {
             std::fs::read_to_string(skills_dir.join("a").join("SKILL.md")).unwrap(),
             "library version\n"
         );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn abort_carries_forward_untouched_records() {
+        // Plan order (sorted): a is removed, m conflicts (abort), z would
+        // update. The abort must not untrack m or z, and must not
+        // resurrect a's dropped record.
+        let installed = vec![rec("a", 1, 1), rec("m", 1, 1), rec("z", 1, 1)];
+        let repo = crate::registry::RepoRecord { installed, ..Default::default() };
+        let actions = vec![
+            Action::Remove { skill: "a".into(), already_gone: false },
+            Action::Conflict { skill: "m".into(), reason: ConflictReason::BothChanged },
+            Action::Update { skill: "z".into() },
+        ];
+
+        let base = std::env::temp_dir().join(format!("beskar-abort-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let lib = Library::new(&base.join("library")); // never touched before the abort
+        let ui = crate::ui::Ui { color: false };
+        let mut applier = Applier {
+            library: &lib,
+            skills_dir: base.join("ws"),
+            ui: &ui,
+            policy: ConflictPolicy::Abort,
+            dry_run: false,
+            promoted: BTreeMap::new(),
+        };
+        let (records, summary) = applier.apply(&actions, &repo).unwrap();
+        assert!(summary.failed, "abort must fail the run");
+        let ids: Vec<&str> = records.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["m", "z"], "untouched records survive, removed ones do not");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn warn_keeps_the_existing_record() {
+        // Registered, still on disk, but the library lost its copy.
+        let installed = vec![rec("g", 1, 1)];
+        let repo = crate::registry::RepoRecord { installed, ..Default::default() };
+        let actions = vec![Action::Warn {
+            skill: "g".into(),
+            msg: "wanted by enabled profiles but missing in the library".into(),
+        }];
+        let base = std::env::temp_dir().join(format!("beskar-warn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let lib = Library::new(&base.join("library"));
+        let ui = crate::ui::Ui { color: false };
+        let mut applier = Applier {
+            library: &lib,
+            skills_dir: base.join("ws"),
+            ui: &ui,
+            policy: ConflictPolicy::Skip,
+            dry_run: false,
+            promoted: BTreeMap::new(),
+        };
+        let (records, summary) = applier.apply(&actions, &repo).unwrap();
+        assert_eq!(summary.warnings, 1);
+        assert_eq!(records.len(), 1, "the record must not be dropped");
+        assert_eq!(records[0].id, "g");
         let _ = std::fs::remove_dir_all(&base);
     }
 
