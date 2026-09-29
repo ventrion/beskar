@@ -78,7 +78,7 @@ Beskar writes the full 64-digit fingerprint. The value above illustrates the fie
 
 ## Local changes
 
-Beskar fingerprints each installed tree, including file contents, paths, empty directories, and executable bits on Unix. An update stops before writing anything if it would overwrite or remove a locally edited skill. It also stops if an unmanaged directory already occupies a selected skill name.
+Beskar fingerprints each installed tree, including file contents, paths, empty directories, and executable bits on Unix. An update stops before writing anything if it would overwrite or remove a locally edited skill. It also stops if an unmanaged file, directory, or symlink already occupies a selected skill name.
 
 You can resolve a conflict explicitly:
 
@@ -89,4 +89,4 @@ beskar repo update --on-conflict replace
 
 `keep` leaves conflicted workspace copies in place and updates other skills. The conflict remains visible on the next status or update. `replace` discards the conflicting workspace copy and installs the library copy, or removes it if no active profile selects it. Review the dry run before using `replace`. The same policies work with `registry update --all`.
 
-Beskar rejects symlinks and special files inside skill trees. This keeps copies self-contained and prevents a skill from reaching outside its directory during import or update. It does not change directories in `.agents/skills/` that are neither selected nor tracked in the registry.
+Beskar rejects symlinks and special files inside skill trees. This keeps copies self-contained and prevents a skill from reaching outside its directory during import or update. An explicit `replace` removes an occupied skill-path symlink itself; it does not touch the symlink target. Beskar does not change paths in `.agents/skills/` that are neither selected nor tracked in the registry.

@@ -158,3 +158,57 @@ fn unmanaged_skill_requires_explicit_policy() {
         "library"
     );
 }
+
+#[test]
+fn non_directory_targets_obey_conflict_policy() {
+    let t = Sandbox::new();
+    let source = t.path("source").join("manual");
+    let repo = t.path("repo");
+    let target = repo.join(".agents/skills/manual");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    fs::write(source.join("SKILL.md"), "library").unwrap();
+    fs::write(&target, "workspace file").unwrap();
+    t.run(&t.0, &["init"], true);
+    t.run(&t.0, &["library", "add", source.to_str().unwrap()], true);
+    t.run(&t.0, &["profile", "create", "p"], true);
+    t.run(&t.0, &["profile", "add", "p", "manual"], true);
+    t.run(&repo, &["repo", "add"], true);
+    t.run(&repo, &["repo", "enable", "p"], true);
+
+    let preview = t.run(&repo, &["repo", "update", "--dry-run"], true);
+    assert!(preview.contains("non-directory path occupies skill name"));
+    t.run(&repo, &["repo", "update"], false);
+    t.run(&repo, &["repo", "update", "--on-conflict", "keep"], true);
+    assert_eq!(fs::read_to_string(&target).unwrap(), "workspace file");
+    t.run(&repo, &["repo", "update", "--on-conflict", "replace"], true);
+    assert_eq!(
+        fs::read_to_string(target.join("SKILL.md")).unwrap(),
+        "library"
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let elsewhere = t.path("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        fs::write(elsewhere.join("keep.txt"), "untouched").unwrap();
+        fs::remove_dir_all(&target).unwrap();
+        symlink(&elsewhere, &target).unwrap();
+        t.run(&repo, &["repo", "update"], false);
+        t.run(&repo, &["repo", "update", "--on-conflict", "replace"], true);
+        assert!(target.is_dir());
+        assert_eq!(
+            fs::read_to_string(elsewhere.join("keep.txt")).unwrap(),
+            "untouched"
+        );
+    }
+
+    t.run(&repo, &["repo", "disable", "p"], true);
+    fs::remove_dir_all(&target).unwrap();
+    fs::write(&target, "local replacement").unwrap();
+    t.run(&repo, &["repo", "update"], false);
+    assert_eq!(fs::read_to_string(&target).unwrap(), "local replacement");
+    t.run(&repo, &["repo", "update", "--on-conflict", "replace"], true);
+    assert!(!target.exists());
+}

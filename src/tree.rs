@@ -3,6 +3,38 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Target {
+    Missing,
+    Directory(String),
+    File(String),
+    Symlink(PathBuf),
+    Unsupported,
+}
+
+pub fn inspect_target(path: &Path) -> Result<Target> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Target::Missing),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let ty = metadata.file_type();
+    if ty.is_dir() {
+        Ok(Target::Directory(fingerprint(path)?))
+    } else if ty.is_file() {
+        let mut hash = Sha256::new();
+        hash.update(b"file");
+        hash_file(path, &mut hash)?;
+        Ok(Target::File(hex(hash.finish())))
+    } else if ty.is_symlink() {
+        Ok(Target::Symlink(
+            fs::read_link(path).map_err(|e| format!("{}: {e}", path.display()))?,
+        ))
+    } else {
+        Ok(Target::Unsupported)
+    }
+}
+
 pub fn entries(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut entries = fs::read_dir(dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?
@@ -34,7 +66,11 @@ pub fn fingerprint(dir: &Path) -> Result<String> {
     }
     let mut hash = Sha256::new();
     walk_hash(dir, dir, &mut hash)?;
-    Ok(hash.finish().iter().map(|b| format!("{b:02x}")).collect())
+    Ok(hex(hash.finish()))
+}
+
+fn hex(bytes: [u8; 32]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn walk_hash(root: &Path, dir: &Path, hash: &mut Sha256) -> Result<()> {
@@ -50,29 +86,34 @@ fn walk_hash(root: &Path, dir: &Path, hash: &mut Sha256) -> Result<()> {
         if ty.is_dir() {
             walk_hash(root, &path, hash)?;
         } else {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mode = fs::metadata(&path)
-                    .map_err(|e| format!("{}: {e}", path.display()))?
-                    .permissions()
-                    .mode();
-                hash.update(&[(mode & 0o111) as u8]);
-            }
-            let mut file = fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let length = file.metadata().map_err(|e| e.to_string())?.len();
-            hash.update(&length.to_be_bytes());
-            let mut buffer = [0u8; 8192];
-            loop {
-                let n = file
-                    .read(&mut buffer)
-                    .map_err(|e| format!("{}: {e}", path.display()))?;
-                if n == 0 {
-                    break;
-                }
-                hash.update(&buffer[..n]);
-            }
+            hash_file(&path, hash)?;
         }
+    }
+    Ok(())
+}
+
+fn hash_file(path: &Path, hash: &mut Sha256) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(path)
+            .map_err(|e| format!("{}: {e}", path.display()))?
+            .permissions()
+            .mode();
+        hash.update(&[(mode & 0o111) as u8]);
+    }
+    let mut file = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let length = file.metadata().map_err(|e| e.to_string())?.len();
+    hash.update(&length.to_be_bytes());
+    let mut buffer = [0u8; 8192];
+    loop {
+        let n = file
+            .read(&mut buffer)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buffer[..n]);
     }
     Ok(())
 }
