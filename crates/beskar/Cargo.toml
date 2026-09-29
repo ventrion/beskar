@@ -1,0 +1,15 @@
+[package]
+name = "beskar"
+description = "Beskar - Better Skill Arrangement. Manage agent skills across workspaces."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "beskar"
+path = "src/main.rs"
+
+[dependencies]
+slate = { path = "../slate" }
+beskar-core = { path = "../beskar-core" }

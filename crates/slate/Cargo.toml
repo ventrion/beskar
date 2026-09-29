@@ -1,0 +1,9 @@
+[package]
+name = "slate"
+description = "Slate: a line-oriented configuration format with a comment-preserving editor. Zero dependencies."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
