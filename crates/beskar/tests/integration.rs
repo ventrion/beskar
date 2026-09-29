@@ -309,6 +309,65 @@ fn repo_add_through_symlink() {
 }
 
 #[test]
+fn profile_delete_refuses_traversal_names() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new("proftrav");
+    sb.ok(&["init"]);
+
+    // `../../config` would resolve to the beskar config itself.
+    let out = sb.fails(&["--yes", "profile", "delete", "../../config"], 1);
+    assert!(out.contains("profile name cannot"), "{out}");
+    assert!(
+        sb.home.join("config.bsk").is_file(),
+        "the config must survive a traversal delete attempt"
+    );
+
+    // A well-formed but unknown name still fails with the usual message.
+    let out = sb.fails(&["profile", "delete", "nope"], 1);
+    assert!(out.contains("no profile"), "{out}");
+}
+
+#[test]
+fn broken_profile_fails_update_instead_of_removing_skills() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new("brokenprof");
+    sb.ok(&["init"]);
+
+    let src = unique("src");
+    write_skill(&src, "keeper", "keep me\n");
+    sb.ok(&["--yes", "library", "add", src.join("keeper").to_str().unwrap()]);
+    sb.ok(&["profile", "create", "team"]);
+    sb.ok(&["profile", "add", "team", "keeper"]);
+
+    let repo = unique("repo");
+    fs::create_dir_all(&repo).unwrap();
+    let repo_s = repo.to_str().unwrap();
+    sb.ok(&["repo", "add", repo_s]);
+    sb.ok(&["repo", "enable", "team", "--repo", repo_s]);
+    sb.ok(&["repo", "update", repo_s]);
+    let installed = repo.join(".agents").join("skills").join("keeper");
+    assert!(installed.is_dir());
+
+    // A typo that breaks the profile file must stop the update with a
+    // parse error — not be mistaken for a deleted profile, which would
+    // remove the skills and exit 0.
+    let profile_file = sb.home.join("library").join("profiles").join("team.bsk");
+    fs::write(&profile_file, "name team\nfrobnicate yes\n").unwrap();
+    let out = sb.fails(&["repo", "update", repo_s], 1);
+    assert!(out.contains("frobnicate"), "{out}");
+    assert!(installed.is_dir(), "a broken profile must not remove skills");
+
+    // And `repo status` refuses the same way.
+    let out = sb.fails(&["repo", "status", repo_s], 1);
+    assert!(out.contains("frobnicate"), "{out}");
+
+    // Repairing the file makes everything reconcile again.
+    fs::write(&profile_file, "name team\nskill keeper\n").unwrap();
+    sb.ok(&["repo", "update", repo_s]);
+    assert!(installed.is_dir());
+}
+
+#[test]
 fn usage_errors_exit_2() {
     let sb = Sandbox::new("usage");
     let out = sb.fails(&["frobnicate"], 2);

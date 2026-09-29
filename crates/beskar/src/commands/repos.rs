@@ -283,6 +283,9 @@ fn toggle_profile(
     mode: Toggle,
 ) -> Result<Exit> {
     let target = repo_path_arg(path.as_deref())?;
+    // Profile names are file names; validate before they reach the
+    // filesystem or the registry.
+    crate::profile::validate_name(&profile)?;
     let canonical = std::fs::canonicalize(&target)
         .map_err(|e| Error::msg(format!("{}: {e} (is the repo directory still there?)", util::display_path(&target))))?;
     let rec = registry

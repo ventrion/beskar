@@ -141,6 +141,7 @@ impl Library {
     }
 
     pub fn load_profile(&self, name: &str) -> Result<Profile> {
+        crate::profile::validate_name(name)?;
         let path = self.profile_path(name);
         if !path.is_file() {
             return Err(Error::msg(format!(
@@ -318,6 +319,16 @@ mod tests {
 
         lib.remove_skill("myskill").unwrap();
         assert!(!lib.has_skill("myskill"));
+        let _ = fs::remove_dir_all(&lib.root);
+    }
+
+    #[test]
+    fn traversal_profile_names_are_rejected() {
+        let (_dir, lib) = tmplib();
+        // load_profile guards every command that reads a profile by name.
+        for bad in ["../../evil", "..", "a/b", ".hidden"] {
+            assert!(lib.load_profile(bad).is_err(), "`{bad}` must not load");
+        }
         let _ = fs::remove_dir_all(&lib.root);
     }
 

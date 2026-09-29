@@ -86,6 +86,9 @@ impl Registry {
                         match c.keyword() {
                             "profile" | "enabled-profile" => {
                                 for p in c.values() {
+                                    if crate::profile::validate_name(p).is_err() {
+                                        return Err(cbad(format!("invalid profile name `{p}`")));
+                                    }
                                     if rec.has_profile(p) {
                                         return Err(cbad(format!("duplicate profile `{p}`")));
                                     }
@@ -360,6 +363,11 @@ mod tests {
         std::fs::write(&path, "version 1\nrepo \"/x\" {\n  installed .. {\n    source-fingerprint a\n    installed-fingerprint b\n  }\n}\n").unwrap();
         let err = Registry::load(&path).unwrap_err().to_string();
         assert!(err.contains("invalid skill id `..`"), "{err}");
+
+        // The same goes for profile names.
+        std::fs::write(&path, "version 1\nrepo \"/x\" {\n  enabled-profile ../../evil\n}\n").unwrap();
+        let err = Registry::load(&path).unwrap_err().to_string();
+        assert!(err.contains("invalid profile name"), "{err}");
 
         let _ = std::fs::remove_file(&path);
     }

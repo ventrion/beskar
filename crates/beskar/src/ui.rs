@@ -74,9 +74,16 @@ impl Ui {
     // ---- printing ---------------------------------------------------------
 
     pub fn action_line(&self, sym: &str, skill: &str, note: &str, dry_run: bool) {
-        let sym_s = format!("{sym:>2}");
-        println!(" {} {} {}", self.symbol(&sym_s), self.bold(skill), self.dim(note));
+        println!("{}", self.format_action_line(sym, skill, note));
         let _ = dry_run;
+    }
+
+    /// One plan row. The symbol is colorized unpadded and padded outside
+    /// the escape codes, so the color lookup sees the bare symbol and the
+    /// column alignment survives coloring.
+    pub fn format_action_line(&self, sym: &str, skill: &str, note: &str) -> String {
+        let pad = " ".repeat(sym.chars().count().max(2) - sym.chars().count());
+        format!(" {pad}{} {} {}", self.symbol(sym), self.bold(skill), self.dim(note))
     }
 
     pub fn header(&self, text: &str) {
@@ -160,5 +167,27 @@ impl Ui {
         let mut buf = String::new();
         let _ = std::io::stdin().read_to_string(&mut buf);
         buf.lines().map(|s| s.to_string()).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_lines_align_and_color_symbols() {
+        // Plain mode pins the layout: symbol right-aligned to width 2.
+        let plain = Ui { color: false };
+        assert_eq!(plain.format_action_line("+", "skill", "installed"), "  + skill installed");
+        assert_eq!(plain.format_action_line("!!", "skill", "conflict"), " !! skill conflict");
+
+        // Colored mode must match on the bare symbol: `+` is green, and a
+        // padded `" +"` would fall into the red fallback.
+        let colored = Ui { color: true };
+        let line = colored.format_action_line("+", "skill", "installed");
+        assert!(line.contains("\x1b[32m+\x1b[0m"), "{line}");
+        assert!(!line.contains("\x1b[31m"), "{line}");
+        let line = colored.format_action_line("=", "skill", "unchanged");
+        assert!(line.contains("\x1b[2m=\x1b[0m"), "{line}");
     }
 }

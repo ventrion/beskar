@@ -120,7 +120,16 @@ pub fn resolve_desired(lib: &Library, enabled: &[String]) -> Result<Desired> {
                     bringers.entry(s.clone()).or_default().push(profile.name.clone());
                 }
             }
-            Err(_) => unknown_profiles.push(pname.clone()),
+            Err(e) => {
+                if lib.profile_path(pname).is_file() {
+                    // The file is there but does not parse: a hard error,
+                    // never a silent downgrade. Treating a broken profile
+                    // as "gone" would plan to remove everything it
+                    // installed and exit 0.
+                    return Err(e);
+                }
+                unknown_profiles.push(pname.clone());
+            }
         }
     }
 

@@ -40,6 +40,9 @@ fn create(ctx: &Ctx, lib: &Library, name: String, description: Option<String>) -
 }
 
 fn delete(ctx: &Ctx, cfg: &crate::config::Config, lib: &Library, name: String, force: bool) -> Result<Exit> {
+    // Profile names are file names; reject anything that could climb out
+    // of the profiles directory before it reaches the filesystem.
+    validate_name(&name)?;
     let path = lib.profile_path(&name);
     if !path.is_file() {
         return Err(Error::msg(format!("no profile `{name}`")));
