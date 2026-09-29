@@ -360,6 +360,20 @@ fn a_skill_replaced_by_a_symlink_is_treated_as_a_local_edit() {
     assert!(env.read("app/.agents/skills/git/SKILL.md").contains("upstream"));
 }
 
+#[cfg(unix)]
+#[test]
+fn skills_are_never_materialized_into_the_library_through_a_symlink() {
+    let env = Env::setup();
+    // `.agents/skills` does not exist yet, so only resolving the link on the
+    // existing part of the path reveals where files would land.
+    fs::create_dir_all(env.library().join("notes")).unwrap();
+    std::os::unix::fs::symlink(env.library().join("notes"), env.path("app/.agents")).unwrap();
+    let r = env.run_in(&env.app(), &["repo", "update"]);
+    assert_eq!(r.code, 1, "{}{}", r.out, r.err);
+    assert!(r.err.contains("resolves into the library"), "{}", r.err);
+    assert!(!env.library().join("notes/skills").exists());
+}
+
 #[test]
 fn promote_does_not_hijack_the_library_or_manage_foreign_dirs() {
     let env = Env::setup();

@@ -35,15 +35,30 @@ pub fn display(path: &Path) -> String {
     tilde(path)
 }
 
-/// An absolute, lexically normalized path. Existing paths are resolved
-/// through symlinks so the same directory always gets the same identity.
+/// An absolute, normalized path with symlinks resolved, so the same
+/// directory always gets the same identity. For a path that does not exist
+/// yet, its deepest existing ancestor is resolved and the rest appended:
+/// `repo/.agents/skills` with `.agents` linking elsewhere resolves to where
+/// the files would really be written.
 pub fn absolute(path: &Path) -> Result<PathBuf> {
     if let Ok(canonical) = path.canonicalize() {
         return Ok(strip_verbatim(canonical));
     }
-    let abs =
-        std::path::absolute(path).map_err(|e| Error::new(format!("could not resolve {}: {e}", path.display())))?;
-    Ok(normalize(&abs))
+    let abs = normalize(
+        &std::path::absolute(path).map_err(|e| Error::new(format!("could not resolve {}: {e}", path.display())))?,
+    );
+    let mut rest = Vec::new();
+    let mut existing = abs.as_path();
+    while let (Some(parent), Some(name)) = (existing.parent(), existing.file_name()) {
+        rest.push(name);
+        existing = parent;
+        if let Ok(canonical) = existing.canonicalize() {
+            let mut out = strip_verbatim(canonical);
+            out.extend(rest.iter().rev());
+            return Ok(out);
+        }
+    }
+    Ok(abs)
 }
 
 /// Remove `.` and resolve `..` without touching the filesystem.
@@ -85,6 +100,15 @@ mod tests {
     fn expand_relative_and_normalize() {
         assert_eq!(expand("lib/../skills", Path::new("/base")).unwrap(), PathBuf::from("/base/skills"));
         assert_eq!(expand("/abs", Path::new("/base")).unwrap(), PathBuf::from("/abs"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absolute_resolves_links_in_missing_paths() {
+        let t = crate::testutil::TempDir::new();
+        std::fs::create_dir_all(t.path().join("real")).unwrap();
+        std::os::unix::fs::symlink(t.path().join("real"), t.path().join("link")).unwrap();
+        assert_eq!(absolute(&t.path().join("link/not/yet")).unwrap(), t.path().join("real/not/yet"));
     }
 
     #[test]
