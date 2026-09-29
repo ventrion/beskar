@@ -448,6 +448,36 @@ fn help_version_and_cli_errors_are_available_without_initialization() {
 
 #[cfg(unix)]
 #[test]
+fn library_add_and_scan_reject_symlinks_to_clean_directories() {
+    use std::os::unix::fs::symlink;
+
+    let s = Sandbox::new();
+    let source = s.root.join("clean");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("SKILL.md"), "# A regular skill\n").unwrap();
+    let alias = s.root.join("alias");
+    symlink(&source, &alias).unwrap();
+    let before = files(&s.home);
+
+    s.err(
+        &["library", "add", alias.to_str().unwrap()],
+        "source must be a directory, not a symlink",
+    );
+    s.err(
+        &["library", "scan", alias.to_str().unwrap(), "--yes"],
+        "source must be a directory, not a symlink",
+    );
+    assert_eq!(files(&s.home), before);
+    assert!(!s.library("clean").exists());
+    assert!(!s.library("alias").exists());
+
+    // The target is independently importable; its contents cannot cause rejection.
+    s.ok(&["library", "add", source.to_str().unwrap()]);
+    assert!(s.library("clean").join("SKILL.md").exists());
+}
+
+#[cfg(unix)]
+#[test]
 fn symlinks_in_sources_and_workspace_boundaries_are_rejected() {
     use std::os::unix::fs::symlink;
     let s = Sandbox::new();

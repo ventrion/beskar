@@ -50,6 +50,7 @@ pub fn absolute(path: &Path) -> Result<PathBuf> {
     Ok(result)
 }
 
+/// Inspect the path itself without following a final symlink; absence is `None`.
 pub fn metadata(path: &Path) -> Result<Option<fs::Metadata>> {
     match fs::symlink_metadata(path) {
         Ok(m) => Ok(Some(m)),
