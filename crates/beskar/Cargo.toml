@@ -1,0 +1,11 @@
+[package]
+name = "beskar"
+version = "0.1.0"
+edition = "2021"
+description = "Better Skill Arrangement - manage reusable agent skills across workspaces"
+publish = false
+
+# Deliberately empty: beskar is std-only. The CLI parser, config format
+# ("bsk"), and SHA-256 are all implemented in-tree. Keep it that way
+# unless a dependency earns its weight.
+[dependencies]
