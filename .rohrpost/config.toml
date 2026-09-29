@@ -3,5 +3,5 @@
 # renaming it here re-renders every ticket id with no migration.
 
 [project]
-prefix = "BESKA"
-# default_branch = "main"   # the branch `rp compact` requires
+prefix = "BESKAR"
+default_branch = "main"   # the branch `rp compact` requires
