@@ -104,7 +104,7 @@ A plan also lists `ignored_dirs`: directories in the skills directory whose name
 }
 ```
 
-`result` is `up_to_date`, `planned` (a dry run), `stopped` (conflicts needed a decision; nothing changed), `applied`, `failed` (applied, but a skill failed, is blocked or is missing from the library) or `error` (the workspace could not be planned; see its `error`). In a dry run, conflict steps carry `would`: `keep`, `replace` or `stop`, and the summary counts `to_update` instead of `updated`. `done` is one of `installed`, `restored`, `updated`, `removed`, `forgotten`, `recorded`, `kept_local`, `released`, `replaced` or `promoted`.
+`result` is `up_to_date`, `planned` (a dry run), `stopped` (conflicts needed a decision; nothing changed), `applied`, `failed` (applied, but a skill failed, is blocked or is missing from the library) or `error` (the workspace could not be planned; see its `error`). When the command updates a single workspace and it cannot be planned, that is also the document's top-level `error`. In a dry run, conflict steps carry `would`: `keep`, `replace` or `stop`, and the summary counts `to_update` instead of `updated`. `done` is one of `installed`, `restored`, `updated`, `removed`, `forgotten`, `recorded`, `kept_local`, `released`, `replaced` or `promoted`.
 
 ### `status`, `repo status`
 
