@@ -28,6 +28,7 @@ The consolidation adds checks beyond the selected foundation:
 - Recheck originals after moving them into backup, and retain detected concurrent edits with the recovery journal.
 - Journal temporary roots before staging starts so recovery can remove interrupted copies without changing targets.
 - Coordinate separate homes that share a library, registry, or workspace using persistent kernel lock files.
+- Reject nested workspace registrations in either order before writing the registry, keeping subsequent commands usable.
 - Unlock explicitly when closing a session, including when another thread briefly inherits descriptors while launching a subprocess.
 - Recover a configuration file from its transaction backup before opening state, and acquire workspace locks before recovery.
 - Preserve the old baseline and sync timestamp when keeping drift; leave a no-op update's registry unchanged.
@@ -43,4 +44,4 @@ The candidate formats are unreleased alternatives, not formats that this PR prom
 
 ## Consolidated validation
 
-The consolidated workspace passes 57 tests on both Rust 1.89.0 and the installed stable toolchain. Clippy with warnings denied, formatting, rustdoc with warnings denied, and the offline release builds pass. A release-binary smoke test parsed 45 JSON responses and exercised terminal conflict choices, abort without changes, explicit replacement, and lock release after SIGKILL. A separate SIGKILL test interrupted a 5,001-file import during staging, then verified recovery, library listing, and a successful retry. GitHub CI repeats the tests and release build on Rust 1.89.0 and stable, with lint and documentation checks on stable. Validation was performed on Linux.
+The consolidated workspace passes 59 tests on both Rust 1.89.0 and the installed stable toolchain. Clippy with warnings denied, formatting, rustdoc with warnings denied, and the offline release builds pass. A release-binary smoke test parsed 45 JSON responses and exercised terminal conflict choices, abort without changes, explicit replacement, and lock release after SIGKILL. A separate SIGKILL test interrupted a 5,001-file import during staging, then verified recovery, library listing, and a successful retry. GitHub CI repeats the tests and release build on Rust 1.89.0 and stable, with lint and documentation checks on stable. Validation was performed on Linux.

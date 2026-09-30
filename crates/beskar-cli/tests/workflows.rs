@@ -364,6 +364,56 @@ fn references_usage_stats_unregister_and_prune() {
 }
 
 #[test]
+fn nested_workspaces_are_rejected_in_both_registration_orders() {
+    for destination in [".agents/skills", "tools/custom-skills"] {
+        for child_first in [true, false] {
+            let s = Sandbox::new();
+            s.ok(&["init", "--agent-skills", destination]);
+            let child = s.repo.join("nested");
+            fs::create_dir(&child).unwrap();
+            let (first, second) = if child_first {
+                (&child, &s.repo)
+            } else {
+                (&s.repo, &child)
+            };
+            s.ok(&["repo", "add", first.to_str().unwrap()]);
+            let before = snapshot(&s.root);
+
+            s.fail(
+                &["repo", "add", second.to_str().unwrap()],
+                "overlapping workspace destinations",
+            );
+
+            assert_eq!(before, snapshot(&s.root));
+            assert!(s.ok(&["repo", "list"]).contains(first.to_str().unwrap()));
+            s.ok(&["doctor"]);
+            s.ok(&["repo", "remove", first.to_str().unwrap()]);
+            assert!(s.ok(&["repo", "list"]).is_empty());
+            s.ok(&["repo", "add", second.to_str().unwrap()]);
+            s.ok(&["doctor"]);
+        }
+    }
+}
+
+#[test]
+fn sibling_workspaces_with_shared_name_prefixes_can_be_registered_repeatedly() {
+    let s = Sandbox::new();
+    s.init();
+    let sibling = s.repo.with_file_name(format!(
+        "{}-other",
+        s.repo.file_name().unwrap().to_str().unwrap()
+    ));
+    fs::create_dir(&sibling).unwrap();
+    for path in [&s.repo, &sibling, &s.repo, &sibling] {
+        s.ok(&["repo", "add", path.to_str().unwrap()]);
+    }
+    let session = beskar_core::Beskar::open(&s.home, false).unwrap();
+    assert_eq!(session.registry().repos.len(), 2);
+    assert!(session.registry().repos.contains_key(&s.repo));
+    assert!(session.registry().repos.contains_key(&sibling));
+}
+
+#[test]
 fn nested_cwd_and_malformed_configuration() {
     let s = Sandbox::new();
     s.init();

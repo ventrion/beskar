@@ -398,10 +398,8 @@ impl Store {
             }
         }
         for other in self.registry.repos.keys().filter(|p| p.as_path() != path) {
-            if !disjoint(&target, &other.join(&config.agent_skills))
-                || target.starts_with(other)
-                || other.starts_with(&target)
-            {
+            // Destinations stay below their roots. Reject nesting in either registration order.
+            if !disjoint(path, other) {
                 return Err(format!(
                     "{}: overlapping workspace destinations",
                     path.display()

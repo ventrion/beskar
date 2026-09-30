@@ -53,7 +53,7 @@ Every command supports `--help` and `--json`. `beskar help format` describes the
 | Local edits | `skill diff NAME`, `skill promote NAME` |
 | Shortcuts | `status [--all]`, `update [--all]`, `repo diff`, `repo promote` |
 
-Repository commands use the nearest registered ancestor of the current directory. `--repo PATH` targets another registered workspace. Global updates plan every selected workspace before changing any of them.
+Repository commands use the nearest registered ancestor of the current directory. `--repo PATH` targets another registered workspace. Registered workspaces cannot contain one another; `repo add` rejects nesting before changing the registry. Global updates plan every selected workspace before changing any of them.
 
 `library add` accepts a directory with any contents; `SKILL.md` is optional. Use `--name NAME` when its directory name is unsuitable. `library scan` discovers directories containing `SKILL.md`, stops descending at each skill, and skips `.git` directories while searching. Scan previews a batch before import and requires `--yes` when no terminal is attached. `--dry-run` performs validation without importing.
 
