@@ -493,7 +493,15 @@ fn a_conflict_stops_without_a_policy_and_changes_nothing() {
         .to_string();
 
     let doc = w.json("api", &["update"]).code(3).quiet();
-    assert!(!doc.value.has("error"), "{}", doc.stdout);
+    assert_eq!(doc["error"]["kind"].as_str(), "conflict", "{}", doc.stdout);
+    assert!(
+        doc["error"]["hints"]
+            .strs()
+            .iter()
+            .any(|h| h.contains("--on-conflict keep")),
+        "{}",
+        doc.stdout
+    );
     let repo = &doc["data"]["repos"][0];
     assert_eq!(repo["result"].as_str(), "stopped");
     assert!(repo["outcomes"].as_array().is_empty());

@@ -475,18 +475,31 @@ fn leftovers_that_hold_other_files_stay_and_are_reported() {
 }
 
 #[test]
-fn leftovers_of_a_running_process_are_left_alone() {
+fn leftovers_are_recovered_even_when_their_process_id_is_in_use_again() {
+    // In a container Beskar can get the same process id on every run, so
+    // an interrupted run's leftovers can carry the id of a live process
+    // (here, this test). Only the lock says who is working, and the next
+    // run holds it.
     let w = World::with_library();
     w.workspace("api", &["coding"]);
-    // This test process is alive, so its entries are still in use.
-    let busy = format!(
-        "api/.agents/skills/.beskar/trash-pdf-{}-0/SKILL.md",
-        std::process::id()
+    let skills = "api/.agents/skills";
+    let pid = std::process::id();
+    w.write(
+        &format!("{skills}/.beskar/staging-git-{pid}-0/.env"),
+        "SECRET=1\n",
     );
-    w.write(&busy, "being deleted\n");
+    w.write(
+        &format!("{skills}/.beskar/trash-old-{pid}-1/SKILL.md"),
+        "being deleted\n",
+    );
+    w.write(
+        ".beskar/config.bsk",
+        &(w.read(".beskar/config.bsk") + "ignore: .env\n"),
+    );
     let doc = w.json("api", &["update"]).ok();
-    assert!(doc.notices().is_empty(), "{}", doc.stdout);
-    assert!(w.exists(&busy));
+    assert_eq!(doc.notices().len(), 2, "{}", doc.stdout);
+    assert_eq!(w.read(&format!("{skills}/git/.env")), "SECRET=1\n");
+    assert!(!w.exists(&format!("{skills}/.beskar")));
 }
 
 #[test]

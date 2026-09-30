@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use crate::names::{ProfileName, SkillId};
 use crate::reconcile::Action;
 use crate::registry::RepoEntry;
-use crate::sync::{self, RepoPlan};
+use crate::sync::RepoPlan;
 use crate::usage::{self, SkillUse, Stats};
 use crate::{Beskar, Error, Result};
 
@@ -122,14 +122,14 @@ impl Beskar {
 
     /// Every registered workspace's state.
     pub fn health(&self) -> Result<Vec<RepoHealth>> {
-        Ok(self
-            .registry()?
+        let registry = self.registry()?;
+        Ok(registry
             .repos()
             .map(|entry| RepoHealth {
                 state: if crate::fsx::is_gone(&entry.path) {
                     Health::Gone
                 } else {
-                    match sync::plan_repo(self, entry) {
+                    match self.plan(&registry, entry) {
                         Ok(plan) => {
                             let counts = Counts::of(&plan);
                             Health::Planned(plan, counts)

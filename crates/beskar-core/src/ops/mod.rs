@@ -43,6 +43,10 @@ pub trait Resolver {
     fn asks(&self) -> bool {
         false
     }
+
+    /// A decision about `step` no longer applies, because the skill changed
+    /// after it was made; [`Resolver::resolve`] is asked again next.
+    fn reconsider(&mut self, _step: &Step) {}
 }
 
 /// A policy decides every conflict the same way. `ask` has nobody to ask

@@ -10,7 +10,7 @@ use crate::ignore::VCS_PATTERNS;
 use crate::library::{Imported, Library};
 use crate::names::{ProfileName, SkillId};
 use crate::reconcile::{self, Action, Conflict, Resolution, Step, Wanted};
-use crate::registry::{Installation, RepoEntry};
+use crate::registry::{Installation, Registry, RepoEntry};
 use crate::timestamp::Timestamp;
 use crate::workspace::Workspace;
 use crate::{Beskar, Error, ErrorKind, Result, fsx};
@@ -169,6 +169,28 @@ pub fn plan_repo(beskar: &Beskar, entry: &RepoEntry) -> Result<RepoPlan> {
         stays,
         others: observed.others,
     })
+}
+
+/// Fail if another registered workspace uses this workspace's skills
+/// directory, or one holds the other: for example because one `.agents`
+/// became a link to the other's after both were registered. Planning one
+/// workspace would then install, replace and delete the other's skills.
+pub fn check_unshared(beskar: &Beskar, registry: &Registry, entry: &RepoEntry) -> Result<()> {
+    let own = fsx::resolve(beskar.workspace(&entry.path).skills_dir());
+    for other in registry.repos().filter(|other| other.path != entry.path) {
+        let theirs = fsx::resolve(beskar.workspace(&other.path).skills_dir());
+        if own.starts_with(&theirs) || theirs.starts_with(&own) {
+            return Err(Error::invalid(format!(
+                "{} is the skills directory of the workspace {} too",
+                beskar.display(beskar.workspace(&entry.path).skills_dir()),
+                beskar.display(&other.path)
+            ))
+            .hint(
+                "give each workspace a skills directory of its own; a linked .agents shares one",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Fail if the skills directory setting changed since Beskar installed
@@ -591,8 +613,20 @@ pub fn promote(
     force: bool,
 ) -> Result<Promotion> {
     let workspace = beskar.workspace(&entry.path);
+    check_separate(beskar, &workspace)?;
+    check_skills_dir(beskar, entry)?;
     let path = workspace.skill_path(id);
     if let Ok(target) = fs::read_link(&path) {
+        let real = fs::canonicalize(&path).ok();
+        if real.is_some() && real == fs::canonicalize(beskar.library.skill_dir(id)).ok() {
+            return Err(Error::invalid(format!(
+                "{} is a symbolic link to the library's own `{id}`, so there is nothing to promote",
+                beskar.display(&path)
+            ))
+            .hint(format!(
+                "`beskar repo restore {id}` replaces the link with a copy Beskar manages"
+            )));
+        }
         return Err(Error::invalid(format!(
             "{} is a symbolic link to {}, not a copy Beskar manages",
             beskar.display(&path),
@@ -673,7 +707,7 @@ pub fn restore(beskar: &Beskar, entry: &mut RepoEntry, id: &SkillId) -> Result<D
         return Err(Error::invalid(format!(
             "no profile enabled in this workspace includes `{id}`"
         ))
-        .hint("`beskar repo update` removes skills that no enabled profile wants"));
+        .hint("`beskar repo update` removes it, and asks first if it has local changes"));
     }
     let library = beskar.library.fingerprint(id)?.expect("checked above");
     let workspace = beskar.workspace(&entry.path);

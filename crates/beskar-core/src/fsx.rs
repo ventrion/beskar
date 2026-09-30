@@ -14,7 +14,9 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ignore::Ignore;
 use crate::{Error, Result};
@@ -55,16 +57,30 @@ impl Temp {
     }
 }
 
+/// A token for this process, unique across runs: the process id and the
+/// time it started. Process ids repeat, in a container even on every run,
+/// so the id alone would not tell this run's temporary entries from an
+/// interrupted run's.
+pub fn process_token() -> &'static str {
+    static TOKEN: OnceLock<String> = OnceLock::new();
+    TOKEN.get_or_init(|| {
+        let started = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        format!("{}.{started:x}", std::process::id())
+    })
+}
+
 /// A fresh temporary path for an entry of `dir`: the purpose, the name of
-/// the entry it stands in for, the process id and a counter. A file being
-/// written is a sibling, `dir/.beskar-write-registry.bsk-4242-0`; directory
-/// copies go into the work directory, `dir/.beskar/staging-pdf-4242-1`,
-/// which [`prepare`] creates.
+/// the entry it stands in for, the [`process_token`] and a counter. A file
+/// being written is a sibling, `dir/.beskar-write-registry.bsk-4242.1a2b-0`;
+/// directory copies go into the work directory,
+/// `dir/.beskar/staging-pdf-4242.1a2b-1`, which [`prepare`] creates.
 pub fn temp_path(dir: &Path, purpose: Temp, name: &str) -> PathBuf {
     let unique = format!(
         "{}-{name}-{}-{}",
         purpose.as_str(),
-        std::process::id(),
+        process_token(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     );
     match purpose {
@@ -84,17 +100,20 @@ pub fn tidy(dir: &Path) {
 }
 
 /// A temporary entry's name taken apart: what it was for, the name of the
-/// entry it stands in for, and the process that made it. Takes the name of
-/// an entry in the work directory, or of a `.beskar-` sibling.
-pub fn parse_temp(file_name: &str) -> Option<(Temp, String, u32)> {
+/// entry it stands in for, and the token of the process that made it.
+/// Takes the name of an entry in the work directory, or of a `.beskar-`
+/// sibling.
+pub fn parse_temp(file_name: &str) -> Option<(Temp, String, String)> {
     let rest = file_name.strip_prefix(TEMP_PREFIX).unwrap_or(file_name);
     let (purpose, rest) = rest.split_once('-')?;
     let purpose = Temp::ALL.into_iter().find(|p| p.as_str() == purpose)?;
     let mut parts = rest.rsplitn(3, '-');
     let _counter: u64 = parts.next()?.parse().ok()?;
-    let pid = parts.next()?.parse().ok()?;
+    let token = parts
+        .next()
+        .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_hexdigit() || c == '.'))?;
     let name = parts.next().filter(|name| !name.is_empty())?;
-    Some((purpose, name.to_string(), pid))
+    Some((purpose, name.to_string(), token.to_string()))
 }
 
 pub fn read_to_string(path: &Path) -> Result<String> {
@@ -196,16 +215,18 @@ pub fn is_real_dir(path: &Path) -> bool {
 /// inside the tree are recreated, not followed; a symlink at `src` itself
 /// is followed. Ignored names are skipped.
 pub fn copy_tree(src: &Path, dst: &Path, ignore: &Ignore) -> Result<()> {
-    copy_dir(src, dst, ignore).map_err(|err| {
-        Error::io(
-            &err,
-            format_args!("copy {} to {}", src.display(), dst.display()),
-        )
-    })
+    fs::create_dir(dst)
+        .and_then(|()| copy_into(src, dst, ignore))
+        .map_err(|err| {
+            Error::io(
+                &err,
+                format_args!("copy {} to {}", src.display(), dst.display()),
+            )
+        })
 }
 
-fn copy_dir(src: &Path, dst: &Path, ignore: &Ignore) -> io::Result<()> {
-    fs::create_dir(dst)?;
+/// Copy the contents of `src` into the existing directory `dst`.
+fn copy_into(src: &Path, dst: &Path, ignore: &Ignore) -> io::Result<()> {
     let mut entries = fs::read_dir(src)?.collect::<io::Result<Vec<_>>>()?;
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
@@ -216,7 +237,8 @@ fn copy_dir(src: &Path, dst: &Path, ignore: &Ignore) -> io::Result<()> {
         let (from, to) = (entry.path(), dst.join(&name));
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
-            copy_dir(&from, &to, ignore)?;
+            fs::create_dir(&to)?;
+            copy_into(&from, &to, ignore)?;
         } else if file_type.is_symlink() {
             copy_symlink(&from, &to)?;
         } else if file_type.is_file() {
@@ -463,10 +485,17 @@ pub fn install_tree(src: &Path, target: &Path, ignore: &Ignore) -> Result<PathBu
     create_dir_all(dir)?;
     prepare(dir)?;
     let staged = temp_path(dir, Temp::Staging, &name);
-    if let Err(err) = copy_tree(src, &staged, ignore) {
+    // Create the staging directory on its own first: if something is
+    // already there, it is not ours to delete.
+    fs::create_dir(&staged)
+        .map_err(|err| Error::io(&err, format_args!("create {}", staged.display())))?;
+    if let Err(err) = copy_into(src, &staged, ignore) {
         let _ = remove_all(&staged);
         tidy(dir);
-        return Err(err);
+        return Err(Error::io(
+            &err,
+            format_args!("copy {} to {}", src.display(), staged.display()),
+        ));
     }
     Ok(staged)
 }
@@ -514,11 +543,15 @@ mod tests {
         let name = path.file_name().unwrap().to_str().unwrap();
         assert_eq!(
             parse_temp(name),
-            Some((Temp::Staging, "code-review".to_string(), std::process::id()))
+            Some((
+                Temp::Staging,
+                "code-review".to_string(),
+                process_token().to_string()
+            ))
         );
         assert_eq!(
             parse_temp(".beskar-write-registry.bsk-12-3"),
-            Some((Temp::Write, "registry.bsk".to_string(), 12))
+            Some((Temp::Write, "registry.bsk".to_string(), "12".to_string()))
         );
         assert_eq!(parse_temp(".beskar-odd-x-1-2"), None);
         assert_eq!(parse_temp(".beskar-old--1-2"), None);

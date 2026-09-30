@@ -125,6 +125,37 @@ impl Library {
         Ok(ids)
     }
 
+    /// The directories holding the targets of skills symlinked into the
+    /// library, sorted. Replacing such a skill works next to its target, so
+    /// an interrupted replacement leaves its temporary copies there. A link
+    /// whose target is gone (moved aside by an interrupted replacement)
+    /// counts too.
+    pub fn link_homes(&self) -> Vec<PathBuf> {
+        let dir = self.skills_dir();
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+        let mut homes: Vec<PathBuf> = entries
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| fs::read_link(entry.path()).ok())
+            .filter_map(|target| {
+                let target = crate::config::normalize(&dir.join(target));
+                target.parent().map(Path::to_path_buf)
+            })
+            .collect();
+        homes.sort();
+        homes.dedup();
+        homes
+    }
+
+    /// Where Beskar may leave temporary entries for library files: the
+    /// library's skills and profiles directories and [`Library::link_homes`].
+    pub fn work_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = vec![self.skills_dir(), self.profiles_dir()];
+        dirs.extend(self.link_homes());
+        dirs
+    }
+
     /// Entries of `skills/` that are not skills: files, and directories
     /// whose names are not valid skill names.
     pub fn stray_entries(&self) -> Result<Vec<String>> {

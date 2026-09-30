@@ -2,9 +2,10 @@
 //! out of disk space).
 //!
 //! Every change Beskar makes to a skills directory or to its own files
-//! goes through a temporary entry named `<purpose>-<name>-<pid>-<n>` in the
-//! directory's `.beskar` work directory, or `.beskar-write-<file>-<pid>-<n>`
-//! for a file (see [`fsx`]). A finished run leaves none behind. Recovery runs while
+//! goes through a temporary entry named `<purpose>-<name>-<run>-<n>` in the
+//! directory's `.beskar` work directory, or `.beskar-write-<file>-<run>-<n>`
+//! for a file (see [`fsx`]), where `<run>` identifies the process and when
+//! it started. A finished run leaves none behind. Recovery runs while
 //! holding the lock, so no other Beskar process can be working on these
 //! entries, and it puts each one back the way the interrupted step would
 //! have been undone:
@@ -50,15 +51,17 @@ pub enum Recovery {
 
 /// Recover every leftover directly inside `dir`. `ignore` says which
 /// entries of a skill copy are not part of it (and so may need to go back
-/// to their copy). Leftovers of processes that are still running are left
-/// alone, as are names Beskar does not recognize.
+/// to their copy). Entries of this very process, and names Beskar does not
+/// recognize, are left alone. Every other Beskar process that could be
+/// working here waits for the lock the caller holds, so whatever else is
+/// there was left by a run that ended.
 pub fn sweep(dir: &Path, ignore: &Ignore) -> Vec<Recovered> {
     let mut leftovers: Vec<(Temp, String, PathBuf)> = fsx::leftovers(dir)
         .into_iter()
         .filter_map(|path| {
             let file_name = path.file_name()?.to_str()?.to_string();
-            let (purpose, name, pid) = fsx::parse_temp(&file_name)?;
-            (!is_running(pid)).then_some((purpose, name, path))
+            let (purpose, name, token) = fsx::parse_temp(&file_name)?;
+            (token != fsx::process_token()).then_some((purpose, name, path))
         })
         .collect();
     // An interrupted swap leaves both `old-` and `staging-`: the old copy
@@ -171,17 +174,6 @@ fn list(paths: &[PathBuf]) -> String {
         .join(", ")
 }
 
-/// Whether process `pid` is alive, where the system can tell. Beskar only
-/// ever works on these entries while holding the lock, so this matters only
-/// for a second Beskar with a different home managing the same workspace.
-fn is_running(pid: u32) -> bool {
-    if pid == std::process::id() {
-        return true;
-    }
-    let proc = Path::new("/proc");
-    proc.is_dir() && proc.join(pid.to_string()).exists()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,9 +277,12 @@ mod tests {
     }
 
     #[test]
-    fn entries_of_running_processes_and_unknown_names_stay() {
+    fn entries_of_this_process_and_unknown_names_stay() {
         let tmp = TempDir::new();
-        let mine = format!("skills/.beskar/trash-pdf-{}-0/SKILL.md", std::process::id());
+        let mine = format!(
+            "skills/.beskar/trash-pdf-{}-0/SKILL.md",
+            fsx::process_token()
+        );
         tmp.write(&mine, "x");
         tmp.write("skills/.beskar-notes/readme", "x");
         assert!(sweep(&tmp.path().join("skills"), &Ignore::default()).is_empty());

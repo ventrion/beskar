@@ -165,13 +165,13 @@ impl Beskar {
     /// expands `~` in configured paths.
     pub fn load(home: &Path, user_home: Option<&Path>) -> Result<Beskar> {
         let config = Config::load(home, user_home)?;
-        let located = |error: Error| {
+        init::check_library_location(&config.library, &config.skills_dir).map_err(|error| {
             error
                 .in_file(&config.path)
                 .hint("`beskar init --library <path>` points the config at another library")
-        };
-        init::check_library_location(&config.library, &config.skills_dir).map_err(located)?;
-        init::check_registry_location(&config.registry, &config.library).map_err(located)?;
+        })?;
+        init::check_registry_location(&config.registry, &config.library)
+            .map_err(|error| error.in_file(&config.path))?;
         let library = Library::new(config.library.clone(), config.ignore_rules());
         Ok(Beskar {
             config,
@@ -250,15 +250,12 @@ impl Beskar {
         result
     }
 
-    /// Clean up after interrupted runs in Beskar's home, the library's
-    /// skills and its profiles. Call only while holding the lock.
+    /// Clean up after interrupted runs in Beskar's home and the library,
+    /// including next to the targets of symlinked skills. Call only while
+    /// holding the lock.
     fn recover_own_files(&self) {
-        let dirs = [
-            self.config.home.clone(),
-            self.library.skills_dir(),
-            self.library.profiles_dir(),
-        ];
-        for dir in dirs {
+        self.recover_dir(&self.config.home);
+        for dir in self.library.work_dirs() {
             self.recover_dir(&dir);
         }
     }

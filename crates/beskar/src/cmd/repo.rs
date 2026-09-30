@@ -160,19 +160,33 @@ fn policy_word(app: &App, policy: ConflictPolicy) -> &'static str {
     }
 }
 
-/// Advice after conflicts stopped an update of some workspaces.
-fn conflict_advice(app: &App, policy: ConflictPolicy) -> &'static str {
+/// Advice after conflicts stopped an update of some workspaces. `orphaned`
+/// says whether some conflicts are copies no profile wants, which replace
+/// deletes rather than updates.
+fn conflict_advice(app: &App, policy: ConflictPolicy, orphaned: bool) -> String {
+    let replace = if orphaned {
+        "--on-conflict replace (take the library versions, and delete changed copies no profile wants)"
+    } else {
+        "--on-conflict replace (take the library versions)"
+    };
+    let keep = "--on-conflict keep (keep local copies)";
     match policy {
-        ConflictPolicy::Ask if !app.env.interactive => {
-            "Conflicts need a decision and there is no terminal to ask on. Run again with --on-conflict keep (keep local copies) or --on-conflict replace (take the library versions)."
-        }
-        ConflictPolicy::Abort => {
-            "Conflicts need a decision. Run again with --on-conflict keep (keep local copies), --on-conflict replace (take the library versions) or --on-conflict ask (choose one by one)."
-        }
-        _ => {
-            "Conflicts need a decision. Run again with --on-conflict keep (keep local copies) or --on-conflict replace (take the library versions), or in a terminal to be asked."
-        }
+        ConflictPolicy::Ask if !app.env.interactive => format!(
+            "Conflicts need a decision and there is no terminal to ask on. Run again with {keep} or {replace}."
+        ),
+        ConflictPolicy::Ask => format!(
+            "Conflicts need a decision. Run again to be asked once more, or pass {keep} or {replace}."
+        ),
+        _ => format!(
+            "Conflicts need a decision. Run again with {keep}, {replace} or --on-conflict ask (choose one by one)."
+        ),
     }
+}
+
+/// Whether a plan has conflicts over copies no profile wants.
+fn has_orphans(plan: &RepoPlan) -> bool {
+    plan.conflicts()
+        .any(|step| step.action == Action::Conflict(Conflict::Orphaned))
 }
 
 /// The conflict policy for a command, and whether it may ask: an explicit
@@ -274,7 +288,7 @@ pub fn remove(app: &mut App, m: &Matches) -> Outcome {
                         "Dry run: {place} would stay registered, because {because}."
                     ));
                     if stops {
-                        app.out.line(conflict_advice(app, policy));
+                        app.out.line(conflict_advice(app, policy, true));
                     }
                     return Ok(if update.plan.blocked.is_empty() {
                         EXIT_CONFLICT
@@ -291,7 +305,15 @@ pub fn remove(app: &mut App, m: &Matches) -> Outcome {
                 print_plan(app, &update.plan, None);
                 app.out
                     .line(format!("Nothing changed; {place} is still registered."));
-                app.out.line(conflict_advice(app, policy));
+                let advice = conflict_advice(app, policy, true);
+                app.out.line(&advice);
+                if app.json {
+                    return Err(Error::conflict(format!(
+                        "some skills in {place} have local changes and need a decision"
+                    ))
+                    .hint(advice)
+                    .into());
+                }
                 return Ok(EXIT_CONFLICT);
             }
             UpdateResult::Applied(outcomes) => {
@@ -314,9 +336,14 @@ pub fn remove(app: &mut App, m: &Matches) -> Outcome {
         .line(format!("Unregistered {}.", style.bold(&place)));
     if removed.left_in_place > 0 {
         app.out.line(format!(
-            "Its {} stay in {} and are no longer managed.",
-            count(removed.left_in_place, "installed skill"),
-            beskar.config.skills_dir.display()
+            "Its {} in {} and {} no longer managed.",
+            counted(removed.left_in_place, "installed skill", "stays", "stay"),
+            beskar.config.skills_dir.display(),
+            if removed.left_in_place == 1 {
+                "is"
+            } else {
+                "are"
+            }
         ));
     }
     Ok(EXIT_OK)
@@ -527,11 +554,14 @@ fn status_advice(app: &App, status: &RepoStatus) -> Vec<String> {
         .into_iter()
         .filter(|name| !kept.contains(name))
         .collect();
-    if !kept.is_empty() {
+    if let [only] = kept.as_slice() {
         lines.push(format!(
-            "{} {} kept over a newer library version: `beskar repo diff` shows the difference; `beskar repo promote <skill> --force` makes the local copy the library version, `beskar repo restore <skill>` takes the library's.",
-            join_and(&kept),
-            if kept.len() == 1 { "is" } else { "are" }
+            "{only} is kept over a newer library version: `beskar repo diff {only}` shows the difference; `beskar repo promote {only} --force` makes the local copy the library version, `beskar repo restore {only}` takes the library's."
+        ));
+    } else if !kept.is_empty() {
+        lines.push(format!(
+            "{} are kept over newer library versions: `beskar repo diff` shows the differences; `beskar repo promote <skill> --force` makes a local copy the library version, `beskar repo restore <skill>` takes the library's.",
+            join_and(&kept)
         ));
     }
     if let [only] = local.as_slice() {
@@ -545,6 +575,11 @@ fn status_advice(app: &App, status: &RepoStatus) -> Vec<String> {
         ));
     }
     let missing = names(&|a| a == Action::MissingSource);
+    if !missing.is_empty() && !status.library_leftovers.is_empty() && status.busy.is_none() {
+        lines.push(
+            "An interrupted run left temporary copies in the library, so skills may look missing: the next command that changes the library puts them back. Run `beskar update`, then check again before removing anything from a profile.".to_string(),
+        );
+    }
     if !missing.is_empty() {
         let (verb, them) = if missing.len() == 1 {
             ("is", "it")
@@ -564,7 +599,12 @@ fn status_advice(app: &App, status: &RepoStatus) -> Vec<String> {
             ));
         }
     }
-    if !status.leftovers.is_empty() {
+    if let Some(holder) = &status.busy {
+        lines.push(format!(
+            "Another beskar process is working right now ({}), so this may change in a moment.",
+            crate::output::tilde(holder, app.env.user_home.as_deref())
+        ));
+    } else if !status.leftovers.is_empty() {
         lines.push(format!(
             "An interrupted run left {} here; the next `beskar repo update` cleans {} up.",
             count(status.leftovers.len(), "temporary item"),
@@ -688,6 +728,7 @@ pub fn update_many(
     }
     let style = app.out.style();
     let (mut changed, mut unchanged, mut stopped, mut failed) = (0, 0, 0, 0);
+    let mut orphans = false;
     let mut found = Vec::new();
     for (i, path) in targets.iter().enumerate() {
         if i > 0 && targets.len() > 1 {
@@ -763,6 +804,7 @@ pub fn update_many(
                     && policy_note(app, policy).is_none()
                 {
                     stopped += 1;
+                    orphans |= has_orphans(&update.plan);
                 } else if visible {
                     changed += 1;
                 } else {
@@ -776,6 +818,7 @@ pub fn update_many(
                     style.yellow("nothing changed here: conflicts need a decision")
                 ));
                 stopped += 1;
+                orphans |= has_orphans(&update.plan);
             }
             UpdateResult::Applied(outcomes) => {
                 print_outcomes(app, &update.plan, outcomes);
@@ -833,7 +876,17 @@ pub fn update_many(
         }
     }
     if stopped > 0 {
-        app.out.line(conflict_advice(app, policy));
+        let advice = conflict_advice(app, policy, orphans);
+        app.out.line(&advice);
+        if app.json && failed == 0 && !dry_run {
+            return Err(Error::conflict(format!(
+                "{} need{} a decision; nothing was changed there",
+                count(stopped, "workspace"),
+                if stopped == 1 { "s" } else { "" }
+            ))
+            .hint(advice)
+            .into());
+        }
     }
     Ok(if failed > 0 {
         EXIT_ERROR

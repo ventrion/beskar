@@ -82,9 +82,15 @@ impl ProfilesChanged {
 pub struct RepoStatus {
     pub entry: RepoEntry,
     pub plan: RepoPlan,
-    /// Temporary entries an interrupted run left in the skills directory;
-    /// the next update cleans them up.
+    /// Temporary entries in the skills directory: left by an interrupted
+    /// run, which the next update cleans up, or in use right now if
+    /// `busy`.
     pub leftovers: Vec<PathBuf>,
+    /// Temporary entries for library files. After an interrupted library
+    /// change, a skill can look missing until they are put back.
+    pub library_leftovers: Vec<PathBuf>,
+    /// Who holds the lock, if another Beskar process is working now.
+    pub busy: Option<String>,
 }
 
 /// What updating one workspace did.
@@ -357,7 +363,7 @@ impl Beskar {
                 disabled,
                 already_enabled,
                 not_enabled,
-                pending: sync::plan_repo(self, &entry),
+                pending: self.plan(registry, &entry),
             };
             Ok(report)
         })
@@ -370,12 +376,20 @@ impl Beskar {
             .get(path)
             .cloned()
             .ok_or_else(|| not_registered(self, path))?;
-        let plan = sync::plan_repo(self, &entry)?;
+        let plan = self.plan(&registry, &entry)?;
         let leftovers = self.workspace(path).leftovers();
+        let library_leftovers = self
+            .library
+            .work_dirs()
+            .iter()
+            .flat_map(|dir| fsx::leftovers(dir))
+            .collect();
         Ok(RepoStatus {
             entry,
             plan,
             leftovers,
+            library_leftovers,
+            busy: crate::Lock::holder(&self.config.home),
         })
     }
 
@@ -423,7 +437,8 @@ impl Beskar {
             })
         };
         if dry_run {
-            let plan = sync::plan_repo(self, &entry_of(&self.registry()?)?)?;
+            let registry = self.registry()?;
+            let plan = self.plan(&registry, &entry_of(&registry)?)?;
             let result = if plan.is_up_to_date() {
                 UpdateResult::UpToDate
             } else {
@@ -445,14 +460,14 @@ impl Beskar {
         let mut decided: BTreeMap<SkillId, (Step, Resolution)> = BTreeMap::new();
         for _ in 0..ATTEMPTS {
             if resolver.asks() {
-                let preview = sync::plan_repo(self, &entry_of(&self.registry()?)?)?;
+                let registry = self.registry()?;
+                let preview = self.plan(&registry, &entry_of(&registry)?)?;
                 let conflicts: Vec<Step> = preview.conflicts().cloned().collect();
                 for step in &conflicts {
-                    if decided
-                        .get(&step.skill)
-                        .is_some_and(|(seen, _)| same_state(seen, step))
-                    {
-                        continue;
+                    match decided.get(&step.skill) {
+                        Some((seen, _)) if same_state(seen, step) => continue,
+                        Some(_) => resolver.reconsider(step),
+                        None => {}
                     }
                     match resolver.resolve(self, &preview, step) {
                         Some(resolution) => {
@@ -474,7 +489,7 @@ impl Beskar {
                 if entry.path.is_dir() {
                     self.recover_workspace(&entry.path);
                 }
-                let plan = sync::plan_repo(self, &entry)?;
+                let plan = self.plan(registry, &entry)?;
                 let repo = entry.path.clone();
                 let mut decisions = BTreeMap::new();
                 let conflicts: Vec<Step> = plan.conflicts().cloned().collect();
@@ -537,7 +552,7 @@ impl Beskar {
         let path = self.find_repo(&registry, at)?;
         let entry = registry.get(&path).expect("found above");
         let workspace = self.workspace(&path);
-        let plan = sync::plan_repo(self, entry)?;
+        let plan = self.plan(&registry, entry)?;
         let wanted = |id: &SkillId| {
             plan.steps
                 .iter()
@@ -582,6 +597,7 @@ impl Beskar {
             let path = self.find_repo(registry, at)?;
             self.recover_workspace(&path);
             let mut entry = registry.get(&path).cloned().expect("found above");
+            self.check_skills_dirs(registry, &entry)?;
             let id = existing_skill(self, &self.workspace(&path), &entry, name)?;
             let promotion = sync::promote(self, &mut entry, &id, force)?;
             *registry.get_mut(&path).expect("found above") = entry;
@@ -611,6 +627,14 @@ impl Beskar {
         let workspace = self.workspace(&path);
         sync::check_separate(self, &workspace)?;
         let id = existing_skill(self, &workspace, entry, name)?;
+        if self.library.contains(&id) && !sync::is_wanted(&self.library, entry, &id) {
+            return Err(Error::invalid(format!(
+                "no profile enabled in this workspace includes `{id}`, so there is no library version to restore here"
+            ))
+            .hint(
+                "`beskar repo update` removes it, and asks first if it has local changes",
+            ));
+        }
         let present = workspace.fingerprint(&id, self.ignore())?;
         let library = self.library.fingerprint(&id)?;
         // A copy that is still its recorded base has no changes of its own:
@@ -638,6 +662,7 @@ impl Beskar {
                 .cloned()
                 .ok_or_else(|| not_registered(self, path))?;
             self.recover_workspace(path);
+            self.check_skills_dirs(registry, &entry)?;
             let id = &preview.skill;
             if self.workspace(path).fingerprint(id, self.ignore())? != preview.present {
                 return Err(Error::conflict(format!(
@@ -654,6 +679,22 @@ impl Beskar {
                 done,
             })
         })
+    }
+
+    /// Plan a workspace, refusing one whose skills directory another
+    /// registered workspace uses too.
+    pub(crate) fn plan(&self, registry: &Registry, entry: &RepoEntry) -> Result<RepoPlan> {
+        self.check_skills_dirs(registry, entry)?;
+        sync::plan_repo(self, entry)
+    }
+
+    /// The workspace's skills directory must lead neither into Beskar's own
+    /// files nor into another workspace's skills directory.
+    fn check_skills_dirs(&self, registry: &Registry, entry: &RepoEntry) -> Result<()> {
+        if !fsx::is_gone(&entry.path) {
+            sync::check_separate(self, &self.workspace(&entry.path))?;
+        }
+        sync::check_unshared(self, registry, entry)
     }
 
     /// Clean up after interrupted runs in a workspace's skills directory.
@@ -933,6 +974,54 @@ mod tests {
         assert!(removed.unregistered);
         assert!(!world.repo().join(".agents/skills/git").exists());
         assert!(world.beskar.registry().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_workspace_whose_agents_directory_became_a_link_to_another_is_refused() {
+        let world = World::new();
+        world.update(ConflictPolicy::Abort);
+        let other = world.tmp.path().join("other");
+        fs::create_dir_all(&other).unwrap();
+        world.beskar.add_repo(&other).unwrap();
+        std::os::unix::fs::symlink(world.repo().join(".agents"), other.join(".agents")).unwrap();
+        let mut replace = ConflictPolicy::Replace;
+        let error = world
+            .beskar
+            .update_repo(&other, false, &mut replace)
+            .unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("the skills directory of the workspace"),
+            "{}",
+            error.message
+        );
+        assert!(world.repo().join(".agents/skills/git").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_interrupted_change_to_a_symlinked_library_skill_is_recovered() {
+        let world = World::new();
+        let outside = world.tmp.path().join("elsewhere");
+        world.tmp.write("elsewhere/ext/SKILL.md", "external skill");
+        std::os::unix::fs::symlink(
+            outside.join("ext"),
+            world.tmp.path().join(".beskar/library/skills/ext"),
+        )
+        .unwrap();
+        // A promote into `ext` was killed after moving the target aside.
+        fs::create_dir_all(outside.join(".beskar")).unwrap();
+        fs::rename(
+            outside.join("ext"),
+            outside.join(".beskar/old-ext-4194305-0"),
+        )
+        .unwrap();
+        world.beskar.create_profile("anything", &[], None).unwrap();
+        assert_eq!(world.tmp.read("elsewhere/ext/SKILL.md"), "external skill");
+        assert!(!outside.join(".beskar").exists());
+        assert!(world.beskar.library.contains(&SkillId::new("ext").unwrap()));
     }
 
     #[test]

@@ -169,23 +169,27 @@ fn check_library(beskar: &Beskar, report: &mut Report) -> bool {
             );
         }
     }
-    for dir in [
-        beskar.config.home.clone(),
-        library.skills_dir(),
-        library.profiles_dir(),
-    ] {
+    let busy = Lock::holder(&beskar.config.home);
+    let mut dirs = vec![beskar.config.home.clone()];
+    dirs.extend(library.work_dirs());
+    for dir in dirs {
         for leftover in fsx::leftovers(&dir) {
-            section.add(
-                Level::Warning,
-                format!(
-                    "leftover of an interrupted run: {}",
-                    beskar.display(&leftover)
+            let place = beskar.display(&leftover);
+            match &busy {
+                Some(holder) => section.add(
+                    Level::Note,
+                    format!("in use by a running beskar process ({holder}): {place}"),
+                    None,
                 ),
-                Some(
-                    "the next command that changes the library or the registry cleans it up"
-                        .to_string(),
+                None => section.add(
+                    Level::Warning,
+                    format!("leftover of an interrupted run: {place}"),
+                    Some(
+                        "the next command that changes the library or the registry cleans it up"
+                            .to_string(),
+                    ),
                 ),
-            );
+            }
         }
     }
     report.sections.push(section);
@@ -297,19 +301,28 @@ fn check_registry(beskar: &Beskar, library_ok: bool, report: &mut Report) {
             );
         }
         for leftover in beskar.workspace(&repo.path).leftovers() {
-            section.add(
-                Level::Warning,
-                format!(
-                    "{place}: leftover of an interrupted run: {}",
-                    beskar.display(&leftover)
-                ),
-                Some("`beskar repo update` there cleans it up".to_string()),
-            );
+            let shown = beskar.display(&leftover);
+            if Lock::holder(&beskar.config.home).is_some() {
+                section.add(
+                    Level::Note,
+                    format!("{place}: in use by a running beskar process: {shown}"),
+                    None,
+                );
+            } else {
+                section.add(
+                    Level::Warning,
+                    format!("{place}: leftover of an interrupted run: {shown}"),
+                    Some("`beskar repo update` there cleans it up".to_string()),
+                );
+            }
         }
         if !library_ok {
             continue;
         }
-        let plan = match plan_repo(beskar, repo) {
+        let plan = match crate::sync::check_separate(beskar, &beskar.workspace(&repo.path))
+            .and_then(|()| crate::sync::check_unshared(beskar, &registry, repo))
+            .and_then(|()| plan_repo(beskar, repo))
+        {
             Ok(plan) => plan,
             Err(error) => {
                 let mut error = error;

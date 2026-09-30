@@ -199,18 +199,21 @@ impl App {
         ))
     }
 
-    /// `$BESKAR_LOCK_TIMEOUT`, if it is set.
+    /// `$BESKAR_LOCK_TIMEOUT`, if it is set to a number of seconds. Any
+    /// other value is ignored with a warning, so that commands which take
+    /// no lock still work.
     fn lock_timeout(&self) -> Result<Option<Duration>, Failure> {
         match &self.env.lock_timeout {
             None => Ok(None),
             Some(Ok(timeout)) => Ok(Some(*timeout)),
-            Some(Err(text)) => Err(Failure::Error(
-                Error::invalid(format!(
-                    "BESKAR_LOCK_TIMEOUT is `{}`, not a number of seconds",
+            Some(Err(text)) => {
+                self.out.err_line(format!(
+                    "{}: BESKAR_LOCK_TIMEOUT is `{}`, not a number of seconds, so it is ignored",
+                    self.err_style().bold("warning"),
                     crate::output::clean(text)
-                ))
-                .hint("set it to a whole number such as 300, or 0 not to wait"),
-            )),
+                ));
+                Ok(None)
+            }
         }
     }
 

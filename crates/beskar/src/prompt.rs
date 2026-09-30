@@ -31,6 +31,14 @@ impl Resolver for Prompt<'_> {
         self.policy == ConflictPolicy::Ask && self.app.env.interactive
     }
 
+    fn reconsider(&mut self, step: &Step) {
+        self.app.out.err_line(format!(
+            "{}: {} changed while you were deciding, so here it is again.",
+            self.app.err_style().bold("note"),
+            step.skill
+        ));
+    }
+
     fn resolve(&mut self, beskar: &Beskar, plan: &RepoPlan, step: &Step) -> Option<Resolution> {
         if self.asks() {
             ask(self.app, beskar, plan, step)
@@ -93,7 +101,9 @@ fn ask(app: &App, beskar: &Beskar, plan: &RepoPlan, step: &Step) -> Option<Resol
                     return Some(Resolution::Replace);
                 }
             }
-            'p' if step.action == Action::Conflict(Conflict::Orphaned) => {
+            'p' if step.action == Action::Conflict(Conflict::Orphaned)
+                && !beskar.library.contains(&step.skill) =>
+            {
                 return Some(Resolution::Promote);
             }
             'p' => {

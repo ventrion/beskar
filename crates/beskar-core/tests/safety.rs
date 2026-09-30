@@ -821,10 +821,20 @@ impl World {
     /// Restore through the preview a front end shows first.
     fn restore(&mut self, w: usize, skill: &'static str) -> Result<Restored> {
         self.note(format!("{}: restore {skill}", WORKSPACES[w]));
-        let preview = self
-            .beskar
-            .restore_preview(&self.at(w), skill)
-            .unwrap_or_else(|error| self.fail(format!("restore preview: {}", error.message)));
+        let wanted = self.wanted(w).contains(skill);
+        // A skill no enabled profile wants has no library version to
+        // restore here; the preview already says so, before any question.
+        let preview = match self.beskar.restore_preview(&self.at(w), skill) {
+            Ok(preview) => preview,
+            Err(error) => {
+                self.noted(format!("refused ({:?})", error.kind));
+                self.ensure(!wanted && error.kind == ErrorKind::Invalid, || {
+                    format!("restore preview: {}", error.message)
+                });
+                self.check();
+                return Err(error);
+            }
+        };
         let library = self.library[skill].clone();
         let space = &self.spaces[w];
         let copy = space.files.get(skill);
@@ -845,7 +855,6 @@ impl World {
             None if space.recorded(skill) => Done::Restored,
             None => Done::Installed,
         };
-        let wanted = self.wanted(w).contains(skill);
         let result = self.beskar.restore(&preview);
         self.noted(match &result {
             Ok(restored) => format!("{:?}", restored.done),
