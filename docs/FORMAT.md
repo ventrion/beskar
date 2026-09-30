@@ -48,7 +48,7 @@ agent-skills ".agents/skills"
 | `registry PATH` | Absolute machine-local state file, outside the library. |
 | `agent-skills PATH` | Relative deployment directory within every workspace. No `.` or `..` components. |
 
-The default home is `$HOME/.beskar`, falling back to `$USERPROFILE/.beskar` if `HOME` is absent. `--home PATH` takes precedence over `BESKAR_HOME`. Configure alternative state paths during `init`, or edit this file while Beskar is idle.
+The default home is `$HOME/.beskar`, falling back to `$USERPROFILE/.beskar` if `HOME` is absent. `--home PATH` takes precedence over `BESKAR_HOME`. Configure alternative state paths during `init`, use `config set`, or edit this file while Beskar is idle. Configuration edits through the CLI preserve comments and use the transaction journal.
 
 The library cannot live within `.agents/skills`, `.claude/skills`, or `.codex/skills`, or directly at `.agents`, `.claude`, or `.codex`, where its own `skills/` directory would be discoverable. Deployment destinations cannot overlap the library, registry, Beskar home, or another deployment. Symlinked paths are rejected.
 
@@ -96,7 +96,7 @@ The example fingerprint illustrates the field shape; Beskar calculates real fing
 | `destination PATH` | Relative path where the recorded skills were deployed. Beskar requires it when reconciling tracked installations. |
 | `profile NAME` | Enable a portable library profile in this workspace. |
 | `installed NAME HASH` | Record the SHA-256 fingerprint of the last installed content. |
-| `synced SECONDS` | Optional Unix timestamp for the last reconciliation. |
+| `synced SECONDS` | Optional Unix timestamp for the last changed reconciliation with no kept drift. |
 | `end` | Close the workspace block. |
 
 `destination`, `installed`, and `synced` describe what Beskar deployed. Users and agents should edit desired `profile` records or use the CLI, and leave deployment records to Beskar. Editing a baseline can conceal local drift. A changed configured destination blocks reconciliation of tracked skills.
@@ -119,4 +119,4 @@ An invalid configuration, registry, or selected profile blocks the operation. Be
 
 `mkdir PATH` records a missing destination parent directory before Beskar creates it. Rollback removes these directories from deepest to shallowest if they are still empty. Nonempty directories are preserved; completed transactions retain their destination directories.
 
-Only `doctor --recover` reads this journal for recovery. Other commands refuse to proceed while it exists. Recovery validates all entries and preserves post-interruption edits.
+Only `doctor --recover` reads this journal for recovery. Other state operations refuse to proceed while it exists. Recovery validates all entries and preserves post-interruption edits.

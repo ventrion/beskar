@@ -1,20 +1,18 @@
 # Beskar
 
-Beskar manages a global skill library, groups skills into profiles, and copies enabled profiles into local workspaces. It runs offline and uses Rust's standard library. There are no third-party dependencies.
+Beskar keeps one curated library of agent skills, groups them into profiles, and copies selected profiles into local workspaces. It works offline, requires no Git repository, and uses Rust's standard library with no third-party dependencies.
 
-The library contains canonical skill directories and portable profile files. The machine-local registry records workspace paths, enabled profiles, and the fingerprints of installed copies. Agents see only the copies in each workspace's `.agents/skills/` directory.
+The library is portable. The registry is machine-local. Agents see the copies in each workspace's `.agents/skills/` directory.
 
-## Build and install
+## Install
 
 Rust 1.89 or newer is required.
 
 ```sh
-cargo build --release --offline
-cargo install --path crates/beskar --offline
-beskar --help
+cargo install --path crates/beskar-cli --offline
 ```
 
-To run directly from the checkout, use `cargo run --offline -- <arguments>`.
+Or run `cargo build --release --offline` and use `target/release/beskar`.
 
 ## First use
 
@@ -22,9 +20,7 @@ To run directly from the checkout, use `cargo run --offline -- <arguments>`.
 beskar init
 beskar library scan ~/my-skills --dry-run
 beskar library scan ~/my-skills --yes
-
-beskar profile create coding
-beskar profile add coding code-review testing
+beskar profile create coding code-review testing
 
 cd ~/projects/my-app
 beskar repo add .
@@ -33,120 +29,153 @@ beskar repo update --dry-run
 beskar repo update
 ```
 
-Enabling, disabling, or toggling a profile changes desired configuration. `update` applies that configuration to the filesystem. Multiple enabled profiles produce a union of skills, with one copy of each skill.
+Enabling a profile records what you want. Updating installs its skills. Several enabled profiles produce a union, with one copy of each skill. Copies retain binary content, empty directories, and file permissions, so a workspace keeps working when the library moves or becomes unavailable.
 
-Workspaces can be ordinary directories. Beskar does not require Git. Copies retain binary files, empty directories, and file permissions. Changing or moving the library does not change already installed copies.
-
-## Configuration you can edit
-
-Beskar uses `.bsk` files. Each line contains a named record. Quote paths with spaces, use `#` for comments, and list one skill per line. There are no indentation rules, implicit types, includes, or variable substitutions. Unknown records and duplicates are errors with file and line information.
-
-The default `~/.beskar/config.bsk` looks like this:
-
-```text
-beskar 1
-library "/home/user/.beskar/library"
-registry "/home/user/.beskar/registry.bsk"
-agent-skills ".agents/skills"
-```
-
-A profile named `coding` lives at `library/profiles/coding.bsk`:
-
-```text
-beskar 1
-# Check changes before shipping.
-skill code-review
-skill testing
-```
-
-Profile commands preserve existing comments and formatting. They append new skills and remove the requested records. Generated registry files use deterministic ordering.
-
-Set `BESKAR_HOME` or pass `--home PATH` to use a different configuration directory. Initialize custom locations with:
+After editing a library skill, update all registered workspaces with:
 
 ```sh
-beskar init --library ~/skill-library --registry ~/.local/state/beskar/registry.bsk
-```
-
-The shell expands `~` in that command. Paths inside `.bsk` files are literal. Library and registry paths must be absolute; `agent-skills` must be relative to a workspace. Keep the registry outside the library, and keep the library outside automatically discovered agent skill directories.
-
-See [the complete format reference](docs/FORMAT.md) for the grammar, schemas, and editing rules.
-
-## Commands
-
-| Area | Commands |
-| --- | --- |
-| Setup | `init`, `doctor`, `doctor --recover` |
-| Library | `library init`, `add PATH`, `scan PATH`, `list`, `show NAME`, `remove NAME` |
-| Profiles | `profile create NAME`, `delete NAME`, `list`, `show NAME`, `add NAME SKILL...`, `remove NAME SKILL...` |
-| Workspaces | `repo add [PATH]`, `remove [PATH]`, `list`, `status`, `enable PROFILE...`, `disable PROFILE...`, `toggle PROFILE...`, `update` |
-| Registry | `registry list`, `status`, `stats`, `where --profile NAME`, `where --skill NAME`, `update --all`, `prune` |
-| Local edits | `skill promote NAME` |
-| Shortcuts | `status`, `status --all`, `update`, `update --all` |
-
-Repository commands use the nearest registered ancestor of the current directory. Pass `--repo PATH` to target another workspace. `repo update --all` and `registry update --all` reconcile all registered workspaces.
-
-`library add` imports any directory, even without `SKILL.md`. It uses the directory name unless you pass `--name NAME`. `library scan` recursively discovers directories containing `SKILL.md`, stops descending when it finds a skill, and skips `.git` directories. It previews a batch before importing. Scripts must pass `--yes`; `--dry-run` previews without asking.
-
-`library show` prints the fingerprint, profile membership, workspace usage, and optional `SKILL.md` contents. Beskar treats the skill's internal format as opaque.
-
-`registry where` reports profile usage and tracked or desired skill installations, including which enabled profiles select each skill. `registry stats` counts tracked installations. A library skill is unused if neither a profile nor a tracked installation refers to it.
-
-`repo remove` unregisters a workspace and preserves all its files. Re-registering it makes those existing copies unmanaged. `registry prune` removes only entries whose workspace paths no longer exist. Both library removals and pruning support `--dry-run`. A skill referenced by a profile, or a profile enabled in a workspace, must have its references removed before deletion.
-
-## Updating without losing local work
-
-```sh
-beskar status --all
 beskar update --all --dry-run
 beskar update --all
 ```
 
-An update compares the current workspace fingerprint with the fingerprint recorded when Beskar installed that skill. A change in the library updates clean workspace copies. A change in the workspace, including deletion or a changed executable bit, is local drift.
+## Commands
 
-The default conflict policy is `abort`. Beskar preflights every selected workspace and refuses the whole batch if any conflict or invalid source exists. Use an explicit policy after reviewing the local changes:
+Every command supports `--help` and `--json`. `beskar help format` describes the file format.
+
+| Area | Commands |
+| --- | --- |
+| Setup | `init`, `doctor`, `doctor --recover` |
+| Configuration | `config show`, `path`, `set KEY VALUE` |
+| Library | `library init`, `add PATH`, `scan PATH`, `list`, `show NAME`, `remove NAME` |
+| Profiles | `profile create NAME [SKILL...]`, `delete`, `list`, `show`, `add NAME SKILL...`, `remove NAME SKILL...` |
+| Workspaces | `repo add [PATH]`, `remove [PATH]`, `list`, `status`, `enable PROFILE...`, `disable PROFILE...`, `toggle PROFILE...`, `update` |
+| Registry | `registry list`, `status`, `stats`, `where`, `update --all`, `prune` |
+| Local edits | `skill diff NAME`, `skill promote NAME` |
+| Shortcuts | `status [--all]`, `update [--all]`, `repo diff`, `repo promote` |
+
+Repository commands use the nearest registered ancestor of the current directory. `--repo PATH` targets another registered workspace. Global updates plan every selected workspace before changing any of them.
+
+`library add` accepts a directory with any contents; `SKILL.md` is optional. Use `--name NAME` when its directory name is unsuitable. `library scan` discovers directories containing `SKILL.md`, stops descending at each skill, and skips `.git` directories while searching. Scan previews a batch before import and requires `--yes` when no terminal is attached. `--dry-run` performs validation without importing.
+
+Names use lowercase letters, digits, hyphens, or underscores. `library show` displays content, a fingerprint, profile membership, and workspace usage. Removing a referenced library skill or enabled profile requires removing its references first.
 
 ```sh
-# Keep conflicting copies and update other skills.
-beskar repo update --conflict keep
-
-# Replace or remove conflicting copies according to the enabled profiles.
-beskar repo update --conflict replace
+beskar registry list --profile coding
+beskar registry where --skill code-review
+beskar registry stats
 ```
 
-Keeping a copy retains its original baseline, so future updates still report drift. If the workspace already matches the current library, Beskar can refresh its baseline without copying files. Updates leave unchanged skills alone.
+`repo remove` unregisters a workspace and preserves its copies. Re-registering makes those existing copies unmanaged. `registry prune` removes only records whose workspace paths no longer exist. Library imports and removals, promotion, updates, and pruning support dry runs.
 
-Beskar preserves unrelated unmanaged skills. An unmanaged directory at a desired skill's destination blocks an update even with `--conflict replace`. Move it aside or import it under another name before proceeding.
+## Local changes
 
-To make a local improvement canonical:
+Beskar compares three fingerprints for each installed skill: the last installed version, the current workspace copy, and the current library version. Status distinguishes clean copies, library changes, local drift, and divergence. Deleting a tracked copy also counts as local drift.
+
+When an update encounters drift, a terminal user can keep the copy, replace or remove it, inspect a diff, or abort. Replacing requires confirmation. All choices are collected before any files change. Without a terminal, the default stops the whole selected batch.
+
+Scripts choose a policy explicitly:
 
 ```sh
+beskar update --conflict keep
+beskar update --conflict replace
+beskar update --conflict abort
+```
+
+`--on-conflict` is an alias; `fail` means `abort`. `--conflict ask` requests terminal choices and fails safely when no terminal is available. JSON mode never prompts.
+
+Keeping drift retains its recorded baseline, so future updates still report it. Unmanaged destinations are never overwritten or automatically adopted, even when their contents match the library. Unrelated unmanaged skills remain untouched.
+
+Review and promote a local improvement with:
+
+```sh
+beskar skill diff code-review
 beskar skill promote code-review --dry-run
 beskar skill promote code-review
 beskar update --all
 ```
 
-Promotion copies the tracked workspace skill back to the library and records its new baseline for that workspace. If the library also changed since installation, promotion fails until you review the changes and explicitly pass `--conflict replace`.
+Promotion updates both the library and that workspace's baseline in one transaction. If the library also changed, it requires `--conflict replace` after review. Promotion is a separate command, so aborting an update cannot leave a promotion partially applied.
 
-## Interrupted operations
+## Configuration
 
-Imports, promotion, and reconciliation stage replacements on each destination's filesystem. A journal records replacements, backups, and new deployment directories. The registry participates in the same transaction as installed skills. Filesystem errors trigger recovery; interrupted processes leave a journal for the next run to detect. Rollback removes new empty deployment directories and preserves directories containing unrelated files.
+State defaults to `~/.beskar`. `--home PATH` overrides `BESKAR_HOME`, which overrides the default.
 
-Run `beskar doctor --recover` to finish a fully applied transaction or restore the originals from a partial transaction. Recovery checks fingerprints first. If you edited a target or backup after interruption, it preserves both and asks for manual recovery. The journal contains the exact target and backup paths.
+```text
+~/.beskar/
+  config.bsk
+  registry.bsk
+  library/
+    skills/
+    profiles/
+```
 
-A machine-local `.lock` prevents simultaneous Beskar processes from writing state. After a terminated process, verify that no Beskar process is running before removing the stale lock. Do not edit profiles or deployed files while an update is running.
+Beskar uses versioned `.bsk` records. Paths with spaces or special characters are quoted. There are no inferred types, indentation rules, or environment substitutions.
 
-Beskar rejects symlinks and special files in managed skills and state paths, and requires UTF-8 paths. It never follows links into another workspace or library. Directory entries are synced on Unix; interruption recovery on other platforms depends on their filesystem's rename durability. File ownership, extended attributes, and directory permissions are not replicated.
+```text
+beskar 1
+library "/home/alex/.beskar/library"
+registry "/home/alex/.beskar/registry.bsk"
+agent-skills ".agents/skills"
+```
 
-Beskar records the deployment path and blocks updates or promotion if `agent-skills` changes while installations are tracked. Unregister and resolve the old copies first, then change the path and register again. Moving a library means moving its contents and editing the library path; Beskar does not synchronize it through Git.
+A profile at `library/profiles/coding.bsk`:
 
-## Implementation and checks
+```text
+beskar 1
+# Review changes before shipping.
+skill code-review
+skill testing
+```
 
-The `beskar` library crate separates format parsing, domain records, filesystem operations, storage, reconciliation, and transactions. CLI presentation lives in its own module. The same planner serves single-workspace and global updates. SHA-256 is implemented locally and tested against standard vectors; fingerprints include sorted relative paths, directory markers, file sizes, file bytes, and Unix executable bits.
+CLI edits preserve config and profile comments, record order, and existing line endings. The registry is generated bookkeeping and is rewritten deterministically. See [FORMAT.md](docs/FORMAT.md) for the complete grammar.
+
+Custom initial locations:
+
+```sh
+beskar init --library ~/skill-library --registry ~/.local/state/beskar/registry.bsk
+```
+
+Use `config set agent-skills .claude/skills` before installing copies. If installations are already tracked, Beskar refuses to abandon their old destination. Unregister and resolve those copies before switching paths.
+
+`config set library PATH` selects an existing library whose enabled profiles are valid. Prepare the new location before switching. `config set registry PATH` copies the current registry to a new file, or accepts an existing identical registry; its parent directory must exist. It refuses to replace unrelated state. Both changes are journaled. Alternatively, edit config while Beskar is idle.
+
+## Scripts and agents
+
+`--json` emits exactly one result document on standard output:
+
+```json
+{"ok": true, "data": {}, "error": null}
+```
+
+`data` contains the command's structured result. Update reports include repository paths, skill states, proposed actions, fingerprints, and profile membership. Failed updates retain their conflict reports. Errors include a `kind` and `message`; human-readable diagnostics also go to standard error.
+
+Exit codes are 0 for success, 1 for an operation failure or unresolved conflict, and 2 for invalid command syntax. Dry runs fail when the corresponding update would be blocked. Piping output into a program that closes early does not panic.
+
+## Recovery and concurrency
+
+Updates, imports, promotion, registry changes, and configuration changes stage replacements and keep originals in backups. One journal covers every selected workspace and the registry. Ordinary filesystem failures roll back partial work.
+
+After an interrupted operation, run:
+
+```sh
+beskar doctor --recover
+```
+
+Recovery restores originals from a partial transaction or finishes cleanup when all new targets are already in place. It checks fingerprints first. If a target or backup was edited after interruption, both are preserved for manual recovery; the journal records their locations. New empty deployment directories are removed during rollback, while directories containing unrelated files survive.
+
+Kernel locks coordinate the home, library, registry, and each registered repository, including across different Beskar homes. Locks release when the process exits or is killed. Their empty files remain: `.lock` in the home, `.beskar.lock` in library and repository roots, and `<registry-file>.lock`. Do not delete these files while Beskar runs. Exclude them from Git when applicable.
+
+Skills contain regular files and directories. Beskar fingerprints all their contents, including `.git` and caches, and rejects symlinks and special files. Paths must be UTF-8. File ownership, extended attributes, and directory permissions are not replicated. Directory entries are synced on Unix; rename durability on other systems depends on their filesystem. The implementation has been tested on Linux.
+
+## Development
 
 ```sh
 cargo test --workspace --offline
 cargo clippy --workspace --all-targets --offline -- -D warnings
 cargo fmt --all --check
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --offline
 ```
 
-Tests exercise CLI workflows in isolated temporary directories, drift and ownership protection, dry-run behavior, global preflight, promotion, and interrupted transactions. Classification and network synchronization remain optional future integrations.
+The [architecture](docs/ARCHITECTURE.md) explains the three crates, immutable plans, locking, and recovery. The [consolidation review](docs/CONSOLIDATION.md) records all nine source PRs and why their designs were selected or adapted. Domain vocabulary is in [CONTEXT-MAP.md](CONTEXT-MAP.md).
+
+The original brief is [docs/BRIEF.md](docs/BRIEF.md). Classification, Git synchronization, and a TUI remain outside this implementation.

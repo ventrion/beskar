@@ -1,9 +1,0 @@
-[package]
-name = "beskar"
-version = "0.1.0"
-description = "Manage a curated skill library and deploy profiles to local workspaces"
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-
-[dependencies]

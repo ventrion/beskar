@@ -3,5 +3,20 @@
 version = 4
 
 [[package]]
-name = "beskar"
+name = "beskar-cli"
+version = "0.1.0"
+dependencies = [
+ "beskar-core",
+ "bsk",
+]
+
+[[package]]
+name = "beskar-core"
+version = "0.1.0"
+dependencies = [
+ "bsk",
+]
+
+[[package]]
+name = "bsk"
 version = "0.1.0"

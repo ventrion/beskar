@@ -1,4 +1,24 @@
-use beskar::{format, tree};
+use bsk as format;
+mod tree {
+    pub use beskar_core::fingerprint;
+    pub fn unique() -> String {
+        format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )
+    }
+    pub fn children(path: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+        let mut paths = std::fs::read_dir(path)?
+            .map(|e| e.map(|e| e.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        paths.sort();
+        Ok(paths)
+    }
+}
 use std::{
     collections::BTreeMap,
     fs,
@@ -321,7 +341,7 @@ fn references_usage_stats_unregister_and_prune() {
     let missing = s.root.join("to delete");
     fs::create_dir(&missing).unwrap();
     s.ok(&["repo", "add", missing.to_str().unwrap()]);
-    fs::remove_dir(&missing).unwrap();
+    fs::remove_dir_all(&missing).unwrap();
     let before = snapshot(&s.root);
     s.ok(&["registry", "prune", "--dry-run"]);
     assert_eq!(before, snapshot(&s.root));
@@ -541,7 +561,11 @@ fn recovery_refuses_post_interruption_edits_and_retains_backups() {
 fn lock_contention_prevents_mutation() {
     let s = Sandbox::new();
     s.init();
-    fs::write(s.home.join(".lock"), "pid 999999\n").unwrap();
+    let lock = fs::OpenOptions::new()
+        .write(true)
+        .open(s.home.join(".lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
     s.fail(
         &["profile", "create", "coding"],
         "cannot acquire Beskar lock",
@@ -599,106 +623,22 @@ fn profile_commands_preserve_comments_and_existing_record_order() {
     s.ok(&["profile", "add", "coding", "c"]);
     assert_eq!(
         fs::read_to_string(&file).unwrap(),
-        format!("{original}\nskill c\n")
+        format!("{original}\r\nskill c\r\n")
     );
     s.ok(&["profile", "remove", "coding", "b"]);
     let edited = fs::read_to_string(&file).unwrap();
     assert!(edited.contains("  # browser\r\n"));
     assert!(edited.contains("# My own notes\r\n"));
-    assert!(edited.contains("# Future plans\nskill c\n"));
+    assert!(edited.contains("# Future plans\r\nskill c\r\n"));
     assert!(!edited.contains("skill b"));
     assert_eq!(
-        beskar::model::Profile::decode(&format::parse(&edited).unwrap())
+        beskar_core::Profile::decode(&format::parse(&edited).unwrap())
             .unwrap()
             .skills
             .into_iter()
             .collect::<Vec<_>>(),
         ["a", "c"]
     );
-}
-
-#[test]
-fn filesystem_failure_rolls_back_applied_changes_and_registry() {
-    use beskar::transaction::Transaction;
-    let s = Sandbox::new();
-    s.init();
-    let source = s.root.join("new skill");
-    fs::create_dir(&source).unwrap();
-    fs::write(source.join("file"), "new").unwrap();
-    let target = s.repo.join("old skill");
-    fs::create_dir(&target).unwrap();
-    fs::write(target.join("file"), "original").unwrap();
-    let old = tree::fingerprint(&target).unwrap();
-    let new = tree::fingerprint(&source).unwrap();
-    let registry = s.home.join("registry.bsk");
-    let registry_before = fs::read(&registry).unwrap();
-    let mut transaction = Transaction::new(&s.home);
-    transaction
-        .copy(&target, &source, &s.repo, Some(old), &new)
-        .unwrap();
-    // This parent disappears or is absent at commit time, after the first replacement.
-    transaction
-        .copy(
-            &s.repo.join("missing parent/skill"),
-            &source,
-            &s.repo,
-            None,
-            &new,
-        )
-        .unwrap();
-    transaction
-        .text(
-            &registry,
-            "beskar 1\n# new registry\n",
-            tree::optional_hash(&registry).unwrap(),
-        )
-        .unwrap();
-    let error = transaction.commit().unwrap_err();
-    assert!(error.contains("recovered"), "{error}");
-    assert_eq!(fs::read_to_string(target.join("file")).unwrap(), "original");
-    assert_eq!(fs::read(&registry).unwrap(), registry_before);
-    assert!(!s.home.join("transaction.bsk").exists());
-    assert!(tree::children(&s.repo).unwrap().iter().all(|p| {
-        !p.file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with(".beskar-txn-")
-    }));
-}
-
-#[test]
-fn target_change_after_staging_is_detected_before_replacing_any_target() {
-    use beskar::transaction::Transaction;
-    let s = Sandbox::new();
-    s.init();
-    let source = s.root.join("source");
-    fs::create_dir(&source).unwrap();
-    fs::write(source.join("file"), "new").unwrap();
-    let target = s.repo.join("target");
-    fs::create_dir(&target).unwrap();
-    fs::write(target.join("file"), "original").unwrap();
-    let mut transaction = Transaction::new(&s.home);
-    transaction
-        .copy(
-            &target,
-            &source,
-            &s.repo,
-            tree::optional_hash(&target).unwrap(),
-            &tree::fingerprint(&source).unwrap(),
-        )
-        .unwrap();
-    fs::write(target.join("file"), "user edited while staging").unwrap();
-    assert!(
-        transaction
-            .commit()
-            .unwrap_err()
-            .contains("changed since planning")
-    );
-    assert_eq!(
-        fs::read_to_string(target.join("file")).unwrap(),
-        "user edited while staging"
-    );
-    assert!(!s.home.join("transaction.bsk").exists());
 }
 
 #[test]
@@ -735,23 +675,23 @@ fn changed_deployment_configuration_does_not_reuse_baselines_at_another_path() {
 
 #[test]
 fn removal_plan_does_not_recreate_a_destination_deleted_after_planning() {
-    use beskar::{
-        reconcile::{self, Action, Policy},
-        store::Store,
-    };
+    use beskar_core::{Action, Beskar, Policy};
     let s = Sandbox::new();
     s.init();
     s.add_skill("a", "original");
     s.activate("coding", &["a"]);
     s.ok(&["update"]);
     s.ok(&["repo", "disable", "coding"]);
-    let mut store = Store::open(s.home.clone(), false).unwrap();
-    let plan = reconcile::plan(&store, &s.repo, Policy::Abort).unwrap();
-    assert_eq!(plan.skills[0].action, Action::Remove);
+    let mut store = Beskar::open(&s.home, false).unwrap();
+    let plan = store
+        .plan(std::slice::from_ref(&s.repo), Policy::Abort)
+        .unwrap()
+        .remove(0);
+    assert_eq!(plan.skills()[0].action(), Action::Remove);
 
     fs::remove_dir_all(s.repo.join(".agents")).unwrap();
     let before = snapshot(&s.root);
-    let error = reconcile::apply(&mut store, &[plan]).unwrap_err();
+    let error = store.apply(&[plan]).unwrap_err();
 
     assert!(error.contains("changed since planning"), "{error}");
     assert!(!s.repo.join(".agents").exists());
@@ -785,17 +725,17 @@ fn library_roots_cannot_expose_their_canonical_skills_to_agents() {
 
 #[test]
 fn failed_addition_staging_does_not_leave_deployment_directories() {
-    use beskar::{
-        reconcile::{self, Action, Policy},
-        store::Store,
-    };
+    use beskar_core::{Action, Beskar, Policy};
     let s = Sandbox::new();
     s.init();
     s.add_skill("a", "original");
     s.activate("coding", &["a"]);
-    let mut store = Store::open(s.home.clone(), false).unwrap();
-    let plan = reconcile::plan(&store, &s.repo, Policy::Abort).unwrap();
-    assert_eq!(plan.skills[0].action, Action::Add);
+    let mut store = Beskar::open(&s.home, false).unwrap();
+    let plan = store
+        .plan(std::slice::from_ref(&s.repo), Policy::Abort)
+        .unwrap()
+        .remove(0);
+    assert_eq!(plan.skills()[0].action(), Action::Add);
     fs::write(
         s.library_skill("a").join("SKILL.md"),
         "changed after planning",
@@ -803,50 +743,10 @@ fn failed_addition_staging_does_not_leave_deployment_directories() {
     .unwrap();
     let before = snapshot(&s.root);
 
-    let error = reconcile::apply(&mut store, &[plan]).unwrap_err();
+    let error = store.apply(&[plan]).unwrap_err();
 
-    assert!(error.contains("changed while staging"), "{error}");
+    assert!(error.contains("changed since planning"), "{error}");
     assert!(!s.repo.join(".agents").exists());
-    assert_eq!(before, snapshot(&s.root));
-}
-
-#[test]
-fn filesystem_failure_rolls_back_new_destination_directories() {
-    use beskar::transaction::Transaction;
-    let s = Sandbox::new();
-    s.init();
-    let source = s.root.join("source");
-    fs::create_dir(&source).unwrap();
-    fs::write(source.join("file"), "new").unwrap();
-    let hash = tree::fingerprint(&source).unwrap();
-    let destination = s.repo.join("new/deep/skills");
-    let registry = s.home.join("registry.bsk");
-    let before = snapshot(&s.root);
-
-    let mut transaction = Transaction::new(&s.home);
-    transaction.ensure_directory(&destination).unwrap();
-    transaction
-        .copy(&destination.join("a"), &source, &s.repo, None, &hash)
-        .unwrap();
-    // An unprepared destination fails after the first replacement has been installed.
-    transaction
-        .copy(&s.repo.join("missing/skill"), &source, &s.repo, None, &hash)
-        .unwrap();
-    transaction
-        .text(
-            &registry,
-            "beskar 1\n# updated registry\n",
-            tree::optional_hash(&registry).unwrap(),
-        )
-        .unwrap();
-    assert!(
-        !destination.exists(),
-        "staging must leave destinations untouched"
-    );
-
-    let error = transaction.commit().unwrap_err();
-    assert!(error.contains("recovered"), "{error}");
-    assert!(!s.repo.join("new").exists());
     assert_eq!(before, snapshot(&s.root));
 }
 
@@ -920,33 +820,309 @@ fn completed_transaction_recovery_keeps_new_destination_directories() {
 }
 
 #[test]
-fn planned_destination_directories_are_rechecked_before_commit() {
-    use beskar::transaction::Transaction;
+fn stale_plans_reject_changed_unchanged_copies_sources_profiles_and_registry() {
+    use beskar_core::{Beskar, Policy};
+    for change in ["copy", "source", "profile", "registry", "config"] {
+        let s = Sandbox::new();
+        s.init();
+        s.add_skill("a", "A");
+        s.activate("coding", &["a"]);
+        s.ok(&["update"]);
+        let mut app = Beskar::open(&s.home, false).unwrap();
+        let plans = app
+            .plan(std::slice::from_ref(&s.repo), Policy::Abort)
+            .unwrap();
+        let path = match change {
+            "copy" => s.local_skill("a").join("SKILL.md"),
+            "source" => s.library_skill("a").join("SKILL.md"),
+            "profile" => s.home.join("library/profiles/coding.bsk"),
+            "registry" => s.home.join("registry.bsk"),
+            _ => s.home.join("config.bsk"),
+        };
+        if change == "profile" {
+            fs::write(path, "beskar 1\n").unwrap();
+        } else {
+            use std::io::Write;
+            fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .unwrap()
+                .write_all(b"\n# edited after preview\n")
+                .unwrap();
+        }
+        let before = snapshot(&s.root);
+        assert!(app.apply(&plans).is_err(), "stale {change} plan applied");
+        assert_eq!(before, snapshot(&s.root), "{change}");
+    }
+}
+
+#[test]
+fn kept_drift_and_noop_updates_do_not_claim_a_new_sync() {
     let s = Sandbox::new();
     s.init();
-    let source = s.root.join("source");
-    fs::create_dir(&source).unwrap();
-    fs::write(source.join("file"), "new").unwrap();
-    let outer = s.repo.join("new");
-    let inner = outer.join("skills");
-    let mut transaction = Transaction::new(&s.home);
-    transaction.ensure_directory(&inner).unwrap();
-    transaction
-        .copy(
-            &inner.join("a"),
-            &source,
-            &s.repo,
-            None,
-            &tree::fingerprint(&source).unwrap(),
-        )
+    s.add_skill("a", "A");
+    s.activate("coding", &["a"]);
+    s.ok(&["update"]);
+    let registry = fs::read(s.home.join("registry.bsk")).unwrap();
+    s.ok(&["update"]);
+    assert_eq!(registry, fs::read(s.home.join("registry.bsk")).unwrap());
+    fs::write(s.local_skill("a").join("SKILL.md"), "local edit").unwrap();
+    s.ok(&["update", "--on-conflict", "keep"]);
+    assert_eq!(registry, fs::read(s.home.join("registry.bsk")).unwrap());
+    assert!(s.ok(&["status"]).contains("local-drift"));
+}
+
+#[test]
+fn conflict_resolutions_are_per_skill_and_never_adopt_unmanaged_files() {
+    use beskar_core::{Beskar, Policy};
+    let s = Sandbox::new();
+    s.init();
+    s.add_skill("a", "A");
+    s.add_skill("b", "B");
+    s.activate("coding", &["a", "b"]);
+    s.ok(&["update"]);
+    fs::write(s.local_skill("a").join("SKILL.md"), "local A").unwrap();
+    fs::write(s.local_skill("b").join("SKILL.md"), "local B").unwrap();
+    let mut app = Beskar::open(&s.home, false).unwrap();
+    let mut plans = app
+        .plan(std::slice::from_ref(&s.repo), Policy::Abort)
         .unwrap();
-    fs::create_dir(&outer).unwrap();
-    fs::write(outer.join("keep"), "user file").unwrap();
+    plans[0].resolve("a", Policy::Keep).unwrap();
+    plans[0].resolve("b", Policy::Replace).unwrap();
+    app.apply(&plans).unwrap();
+    assert_eq!(
+        fs::read_to_string(s.local_skill("a").join("SKILL.md")).unwrap(),
+        "local A"
+    );
+    assert_eq!(
+        fs::read_to_string(s.local_skill("b").join("SKILL.md")).unwrap(),
+        "B"
+    );
+    drop(app);
+    s.ok(&["repo", "remove"]);
+    s.ok(&["repo", "add"]);
+    s.ok(&["repo", "enable", "coding"]);
+    let app = Beskar::open(&s.home, false).unwrap();
+    let mut plans = app
+        .plan(std::slice::from_ref(&s.repo), Policy::Abort)
+        .unwrap();
+    assert!(plans[0].resolve("b", Policy::Replace).is_err());
+}
 
-    let error = transaction.commit().unwrap_err();
+#[test]
+fn shared_library_registry_and_workspace_locks_coordinate_different_homes() {
+    use beskar_core::{Beskar, Config};
+    for shared in ["library", "registry", "workspace"] {
+        let s = Sandbox::new();
+        s.init();
+        s.ok(&["repo", "add"]);
+        let other_home = s.root.join("other-state");
+        let config = Config {
+            library: if shared == "library" {
+                s.home.join("library")
+            } else {
+                other_home.join("library")
+            },
+            registry: if shared == "registry" {
+                s.home.join("registry.bsk")
+            } else {
+                other_home.join("registry.bsk")
+            },
+            agent_skills: ".agents/skills".into(),
+        };
+        let mut other = Beskar::init(&other_home, Some(config)).unwrap();
+        if shared == "workspace" {
+            other.register(&s.repo).unwrap();
+        }
+        drop(other);
+        let app = Beskar::open(&s.home, false).unwrap();
+        let error = match Beskar::open(&other_home, false) {
+            Ok(_) => panic!("concurrent {shared} state was not locked"),
+            Err(e) => e,
+        };
+        assert!(error.contains("cannot acquire Beskar lock"), "{error}");
+        drop(app);
+        Beskar::open(&other_home, false).unwrap();
+    }
+}
 
-    assert!(error.contains("appeared since planning"), "{error}");
-    assert_eq!(fs::read_to_string(outer.join("keep")).unwrap(), "user file");
-    assert!(!inner.exists());
-    assert!(!s.home.join("transaction.bsk").exists());
+#[test]
+fn command_validation_runs_before_opening_state_and_json_errors_are_single_documents() {
+    let s = Sandbox::new();
+    for args in [
+        vec!["repo", "wat"],
+        vec!["profile", "create"],
+        vec!["repo", "update", "--conflict", "typo"],
+        vec!["library", "list", "--all"],
+    ] {
+        let result = s.output(&args);
+        assert_eq!(result.status.code(), Some(2), "{args:?}");
+        assert!(!s.home.exists());
+    }
+    let result = s.output(&["--json", "repo", "wat"]);
+    let text = String::from_utf8(result.stdout).unwrap();
+    assert!(text.starts_with("{\n"));
+    assert!(text.ends_with("}\n"));
+    assert!(text.contains("\"kind\": \"usage\""));
+    assert!(
+        s.ok(&["repo", "update", "--help"])
+            .contains("Reconcile copies")
+    );
+    assert!(!s.home.exists());
+}
+
+#[test]
+fn diffs_include_content_binary_mode_empty_directories_and_final_newlines() {
+    let s = Sandbox::new();
+    s.init();
+    s.add_skill("a", "first\nsecond\n");
+    s.activate("coding", &["a"]);
+    s.ok(&["update"]);
+    fs::write(s.local_skill("a").join("SKILL.md"), "first\nchanged").unwrap();
+    fs::write(s.local_skill("a").join("binary"), [0, 1, 2]).unwrap();
+    fs::create_dir(s.local_skill("a").join("new-empty")).unwrap();
+    let before = snapshot(&s.root);
+    let diff = s.ok(&["skill", "diff", "a"]);
+    assert!(diff.contains("-second\n+changed\n\\ No newline at end of file"));
+    assert!(diff.contains("binary"));
+    assert!(diff.contains("new-empty"));
+    assert_eq!(before, snapshot(&s.root));
+}
+
+#[test]
+fn config_edits_preserve_comments_and_reject_abandoning_installed_copies() {
+    let s = Sandbox::new();
+    s.init();
+    let config = s.home.join("config.bsk");
+    let text = fs::read_to_string(&config).unwrap().replace(
+        "agent-skills \".agents/skills\"",
+        "agent-skills \".agents/skills\" # keep this note",
+    );
+    fs::write(&config, text).unwrap();
+    s.ok(&["config", "set", "agent-skills", ".claude/skills"]);
+    assert!(
+        fs::read_to_string(&config)
+            .unwrap()
+            .contains("agent-skills \".claude/skills\" # keep this note")
+    );
+    s.add_skill("a", "A");
+    s.activate("coding", &["a"]);
+    s.ok(&["update"]);
+    let before = snapshot(&s.root);
+    s.fail(
+        &["config", "set", "agent-skills", "other/skills"],
+        "installations are tracked",
+    );
+    assert_eq!(before, snapshot(&s.root));
+}
+
+#[test]
+fn explicit_import_name_accepts_arbitrary_source_directory_names() {
+    let s = Sandbox::new();
+    s.init();
+    let source = s.root.join("My Skills 雪");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("anything"), "opaque content").unwrap();
+    s.ok(&[
+        "library",
+        "add",
+        source.to_str().unwrap(),
+        "--name",
+        "my-skill",
+    ]);
+    assert_eq!(
+        fs::read_to_string(s.library_skill("my-skill").join("anything")).unwrap(),
+        "opaque content"
+    );
+}
+
+#[test]
+fn registry_relocation_preserves_deployments_and_refuses_unrelated_state() {
+    use beskar_core::{Beskar, Policy};
+    let s = Sandbox::new();
+    s.init();
+    s.add_skill("a", "A");
+    s.activate("coding", &["a"]);
+    s.ok(&["update"]);
+    let destination = s.root.join("relocated registry.bsk");
+    let before = fs::read(s.home.join("registry.bsk")).unwrap();
+    let mut app = Beskar::open(&s.home, false).unwrap();
+    app.set_config("registry", destination.to_str().unwrap())
+        .unwrap();
+    assert_eq!(before, fs::read(&destination).unwrap());
+    let plans = app
+        .plan(std::slice::from_ref(&s.repo), Policy::Abort)
+        .unwrap();
+    app.apply(&plans).unwrap();
+    drop(app);
+    s.ok(&["doctor"]);
+    let unrelated = s.root.join("other.bsk");
+    fs::write(&unrelated, "beskar 1\n").unwrap();
+    s.fail(
+        &["config", "set", "registry", unrelated.to_str().unwrap()],
+        "different state",
+    );
+    assert_eq!(fs::read_to_string(unrelated).unwrap(), "beskar 1\n");
+}
+
+#[test]
+fn recovery_can_restore_a_config_that_was_moved_into_its_backup() {
+    let s = Sandbox::new();
+    s.init();
+    let config = s.home.join("config.bsk");
+    let before = fs::read(&config).unwrap();
+    let old = tree::fingerprint(&config).unwrap();
+    let root = s.home.join(".beskar-txn-config");
+    fs::create_dir(&root).unwrap();
+    let new_text = String::from_utf8(before.clone())
+        .unwrap()
+        .replace(".agents/skills", ".claude/skills");
+    fs::write(root.join("new"), new_text).unwrap();
+    let new = tree::fingerprint(&root.join("new")).unwrap();
+    let journal = format!(
+        "beskar 1\nchange {} {} {old} {new}\n",
+        format::quote(config.to_str().unwrap()),
+        format::quote(root.to_str().unwrap())
+    );
+    fs::write(s.home.join("transaction.bsk"), journal).unwrap();
+    fs::rename(&config, root.join("old")).unwrap();
+    s.ok(&["doctor", "--recover"]);
+    assert_eq!(before, fs::read(config).unwrap());
+    assert!(!root.exists());
+}
+
+#[test]
+fn recovery_respects_workspace_locks_even_with_an_incomplete_registry() {
+    let s = Sandbox::new();
+    s.init();
+    s.ok(&["repo", "add"]);
+    let target = s.repo.join("file");
+    fs::write(&target, "old").unwrap();
+    let old = tree::fingerprint(&target).unwrap();
+    let root = s.repo.join(".beskar-txn-recover");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("new"), "new").unwrap();
+    let new = tree::fingerprint(&root.join("new")).unwrap();
+    fs::write(
+        s.home.join("transaction.bsk"),
+        format!(
+            "beskar 1\nchange {} {} {old} {new}\n",
+            format::quote(target.to_str().unwrap()),
+            format::quote(root.to_str().unwrap())
+        ),
+    )
+    .unwrap();
+    fs::rename(&target, root.join("old")).unwrap();
+    let lock = fs::OpenOptions::new()
+        .write(true)
+        .open(s.repo.join(".beskar.lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+    let before = snapshot(&s.root);
+    s.fail(&["doctor", "--recover"], "cannot acquire Beskar lock");
+    assert_eq!(before, snapshot(&s.root));
+    lock.unlock().unwrap();
+    drop(lock);
+    s.ok(&["doctor", "--recover"]);
+    assert_eq!(fs::read_to_string(target).unwrap(), "old");
 }

@@ -7,7 +7,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub library: PathBuf,
     pub registry: PathBuf,
@@ -90,7 +90,7 @@ impl Config {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Profile {
     pub skills: BTreeSet<String>,
 }
@@ -119,7 +119,7 @@ impl Profile {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Repository {
     /// Where the recorded copies were actually deployed, even if config later changes.
     pub destination: Option<PathBuf>,
@@ -129,7 +129,7 @@ pub struct Repository {
     pub last_sync: Option<u64>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Registry {
     pub repos: BTreeMap<PathBuf, Repository>,
 }

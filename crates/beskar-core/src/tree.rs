@@ -130,6 +130,18 @@ pub fn fingerprint(path: &Path) -> Result<String> {
     Ok(hash.finish())
 }
 
+/// The tree fingerprint of a newly written, non-executable text file.
+pub fn text_fingerprint(text: &str) -> String {
+    let mut hash = Sha256::default();
+    hash.update(b"beskar-tree-v1\0");
+    feed(&mut hash, b"");
+    hash.update(b"F");
+    hash.update(&0u32.to_be_bytes());
+    hash.update(&(text.len() as u64).to_be_bytes());
+    hash.update(text.as_bytes());
+    hash.finish()
+}
+
 pub fn optional_hash(path: &Path) -> Result<Option<String>> {
     if exists(path)? {
         Ok(Some(fingerprint(path)?))
@@ -221,6 +233,9 @@ pub fn sync_dir(path: &Path) -> Result<()> {
 }
 
 pub fn absolute(path: &Path) -> Result<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return Err("path cannot be empty".into());
+    }
     let path = if path.is_absolute() {
         path.to_path_buf()
     } else {

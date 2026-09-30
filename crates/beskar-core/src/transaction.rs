@@ -26,6 +26,7 @@ pub struct Transaction {
     entries: Vec<Entry>,
     directories: Vec<PathBuf>,
     journaled: bool,
+    observations: Vec<(PathBuf, Option<String>)>,
 }
 
 impl Transaction {
@@ -35,7 +36,23 @@ impl Transaction {
             entries: Vec::new(),
             directories: Vec::new(),
             journaled: false,
+            observations: Vec::new(),
         }
+    }
+
+    /// Read-only observations must still hold when the transaction commits.
+    pub fn expect(&mut self, path: &Path, hash: Option<String>) -> Result<()> {
+        tree::safe_path(path)?;
+        self.observations.push((path.into(), hash));
+        Ok(())
+    }
+    fn validate_observations(&self) -> Result<()> {
+        for (path, expected) in &self.observations {
+            if &tree::optional_hash(path)? != expected {
+                return Err(format!("{} changed since planning; retry", path.display()));
+            }
+        }
+        Ok(())
     }
 
     /// Plan missing parent directories. Creation happens only after the journal is durable.
@@ -110,7 +127,15 @@ impl Transaction {
         Ok(())
     }
 
-    pub fn commit(mut self) -> Result<()> {
+    pub fn commit(self) -> Result<()> {
+        self.commit_after_move(|_| Ok(()))
+    }
+
+    pub(crate) fn commit_after_move(
+        mut self,
+        mut after_move: impl FnMut(&Path) -> Result<()>,
+    ) -> Result<()> {
+        self.validate_observations()?;
         if self.entries.is_empty() {
             return Ok(());
         }
@@ -167,12 +192,30 @@ impl Transaction {
                 }
                 if e.old.is_some() {
                     io(e.target.display(), fs::rename(&e.target, e.backup()))?;
+                    after_move(&e.backup())?;
+                    // An editor may have written between our check and the rename.
+                    if tree::optional_hash(&e.backup())? != e.old {
+                        return Err(format!(
+                            "{} changed while moving it; backup preserved",
+                            e.target.display()
+                        ));
+                    }
+                    tree::sync_dir(&e.root)?;
+                    tree::sync_dir(e.target.parent().ok_or("target needs a parent")?)?;
                 }
                 if e.new.is_some() {
                     io(e.target.display(), fs::rename(e.staged(), &e.target))?;
                 }
                 tree::sync_dir(&e.root)?;
                 tree::sync_dir(e.target.parent().ok_or("target needs a parent")?)?;
+            }
+            for e in &self.entries {
+                if tree::optional_hash(&e.backup())? != e.old {
+                    return Err(format!(
+                        "{}: backup changed; preserved for manual recovery",
+                        e.backup().display()
+                    ));
+                }
             }
             cleanup(&self.home, &self.entries)
         })();
@@ -333,4 +376,30 @@ pub fn recover(home: &Path) -> Result<()> {
     }
     rollback_directories(&directories)?;
     cleanup(home, &entries)
+}
+
+/// Paths needed to acquire locks before recovery, even when config.bsk is in a backup.
+pub(crate) fn recovery_paths(home: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+    let mut targets = Vec::new();
+    let mut configs = vec![home.join("config.bsk")];
+    for record in format::read(&home.join("transaction.bsk"))? {
+        if record.is("mkdir", 2) {
+            continue;
+        }
+        if !record.is("change", 5) {
+            return Err(record.error("invalid transaction record"));
+        }
+        let target = PathBuf::from(&record.fields[1]);
+        let root = PathBuf::from(&record.fields[2]);
+        if !target.is_absolute() || !root.is_absolute() {
+            return Err(record.error("transaction paths must be absolute"));
+        }
+        tree::safe_path(&target)?;
+        tree::safe_path(&root)?;
+        if target == home.join("config.bsk") {
+            configs.extend([root.join("old"), root.join("new")]);
+        }
+        targets.push(target);
+    }
+    Ok((targets, configs))
 }

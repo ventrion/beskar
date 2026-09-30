@@ -1,5 +1,5 @@
 //! The versioned, line-oriented .bsk syntax. No implicit types or expansion.
-use crate::{Result, io};
+pub type Result<T> = std::result::Result<T, String>;
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -19,7 +19,8 @@ impl Record {
 }
 
 pub fn read(path: &Path) -> Result<Vec<Record>> {
-    let source = io(path.display(), std::fs::read_to_string(path))?;
+    let source =
+        std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
     parse(&source).map_err(|error| format!("{}:{error}", path.display()))
 }
 
@@ -112,37 +113,6 @@ pub fn quote(value: &str) -> String {
     out
 }
 
-pub fn path_text(path: &Path) -> Result<&str> {
-    let value = path
-        .to_str()
-        .ok_or_else(|| format!("{}: Beskar requires UTF-8 paths", path.display()))?;
-    if value
-        .chars()
-        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
-    {
-        return Err(format!(
-            "{}: unsupported control character in path",
-            path.display()
-        ));
-    }
-    Ok(value)
-}
-
-pub fn name(value: &str) -> Result<()> {
-    if value.len() > 64
-        || value.is_empty()
-        || !value.as_bytes()[0].is_ascii_lowercase() && !value.as_bytes()[0].is_ascii_digit()
-        || !value
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'-' | b'_'))
-    {
-        return Err(format!(
-            "invalid name {value:?}; use 1-64 lowercase letters, digits, - or _, starting with a letter or digit"
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,8 +136,76 @@ mod tests {
         ] {
             assert!(parse(source).is_err(), "{source}");
         }
-        for value in ["../x", "A", "-a", "", "a/b"] {
-            assert!(name(value).is_err());
+    }
+}
+
+/// Replace a singleton record while preserving unrelated bytes, comments and line endings.
+pub fn set_record(source: &str, key: &str, values: &[&str]) -> Result<String> {
+    let records = parse(source)?;
+    let matching: Vec<_> = records.iter().filter(|r| r.fields[0] == key).collect();
+    if matching.len() != 1 {
+        return Err(format!("expected exactly one {key} record"));
+    }
+    let line_number = matching[0].line;
+    let replacement = std::iter::once(key.to_string())
+        .chain(values.iter().map(|v| quote(v)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut out = String::new();
+    for (i, line) in source.split_inclusive('\n').enumerate() {
+        if i + 1 != line_number {
+            out.push_str(line);
+            continue;
         }
+        let content = line.trim_end_matches(['\r', '\n']);
+        let ending = &line[content.len()..];
+        let indent = &content[..content.len() - content.trim_start_matches([' ', '\t']).len()];
+        out.push_str(indent);
+        out.push_str(&replacement);
+        if let Some(comment) = comment_start(content) {
+            let before = &content[..comment];
+            let whitespace = &before[before.trim_end_matches([' ', '\t']).len()..];
+            out.push_str(if whitespace.is_empty() {
+                " "
+            } else {
+                whitespace
+            });
+            out.push_str(&content[comment..]);
+        }
+        out.push_str(ending);
+    }
+    parse(&out)?;
+    Ok(out)
+}
+fn comment_start(line: &str) -> Option<usize> {
+    let mut quoted = false;
+    let mut escaped = false;
+    for (i, c) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            '#' if !quoted => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod editor_tests {
+    use super::*;
+    #[test]
+    fn edits_preserve_mixed_endings_comments_and_hashes_inside_values() {
+        let source = "# header\r\nbeskar 1\n  library \"/a/#b\"  # keep\r\nregistry /r";
+        let out = set_record(source, "library", &["/new/雪 # path"]).unwrap();
+        assert_eq!(
+            out,
+            "# header\r\nbeskar 1\n  library \"/new/雪 # path\"  # keep\r\nregistry /r"
+        );
+        assert_eq!(parse(&out).unwrap()[0].fields[1], "/new/雪 # path");
     }
 }
