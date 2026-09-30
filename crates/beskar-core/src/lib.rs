@@ -165,6 +165,13 @@ impl Beskar {
     /// expands `~` in configured paths.
     pub fn load(home: &Path, user_home: Option<&Path>) -> Result<Beskar> {
         let config = Config::load(home, user_home)?;
+        let located = |error: Error| {
+            error
+                .in_file(&config.path)
+                .hint("`beskar init --library <path>` points the config at another library")
+        };
+        init::check_library_location(&config.library, &config.skills_dir).map_err(located)?;
+        init::check_registry_location(&config.registry, &config.library).map_err(located)?;
         let library = Library::new(config.library.clone(), config.ignore_rules());
         Ok(Beskar {
             config,

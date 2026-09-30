@@ -321,7 +321,8 @@ pub fn normalize(path: &Path) -> PathBuf {
     out
 }
 
-fn check_skills_dir(value: &str) -> Result<PathBuf, String> {
+/// Check a `skills-dir` value: a relative path inside the workspace.
+pub fn check_skills_dir(value: &str) -> Result<PathBuf, String> {
     if value.is_empty() {
         return Err("the skills directory is empty".to_string());
     }

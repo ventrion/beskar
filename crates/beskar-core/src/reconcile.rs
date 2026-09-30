@@ -6,23 +6,28 @@
 //! * **L**, the library version (if the skill is wanted),
 //! * **R**, the recorded base: the library version the workspace copy was
 //!   installed from, as kept in the registry,
-//! * **W**, the workspace copy as it is now.
+//! * **W**, the workspace copy as it is now,
+//!
+//! plus **K**, a library version the person chose not to take when they
+//! kept their local copy (see [`Installation`]).
 //!
 //! This is a three-way comparison with R as the common ancestor, the same
 //! rule a version control merge uses per file:
 //!
-//! | wanted? | situation               | action                                  |
-//! |---------|-------------------------|-----------------------------------------|
-//! | yes     | no W                    | install (restore, if R exists)          |
-//! | yes     | W = L                   | nothing (record L if R differs)         |
-//! | yes     | W = R, L changed        | update: nobody touched the copy         |
-//! | yes     | W changed, L = R        | keep: the change is local only          |
-//! | yes     | W, L both changed       | conflict                                |
-//! | yes     | W present, no R, W ≠ L  | conflict: Beskar did not install it     |
-//! | no      | W = R                   | remove                                  |
-//! | no      | W changed               | conflict: removing would lose changes   |
-//! | no      | no W, R exists          | forget the record                       |
-//! | no      | W present, no R         | leave it: not Beskar's                  |
+//! | wanted? | situation                     | action                                 |
+//! |---------|-------------------------------|----------------------------------------|
+//! | yes     | no W                          | install (restore, if recorded)         |
+//! | yes     | W = L                         | nothing (record L if R differs)        |
+//! | yes     | W present, not recorded       | conflict: Beskar did not install it    |
+//! | yes     | W ≠ L, L = K                  | keep: the person chose the local copy  |
+//! | yes     | W ≠ L, kept without a base    | conflict: the library moved on         |
+//! | yes     | W = R, L changed              | update: nobody touched the copy        |
+//! | yes     | W changed, L = R              | keep: the change is local only         |
+//! | yes     | W, L both changed             | conflict                               |
+//! | no      | W = R                         | remove                                 |
+//! | no      | W changed (or no R)           | conflict: removing would lose changes  |
+//! | no      | no W, recorded                | forget the record                      |
+//! | no      | W present, not recorded       | leave it: not Beskar's                 |
 //!
 //! Given the same library, profiles and workspace, the plan is the same.
 
@@ -30,6 +35,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::fingerprint::Fingerprint;
 use crate::names::{ProfileName, SkillId};
+use crate::registry::Installation;
 
 /// A skill the enabled profiles ask for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,6 +76,12 @@ pub enum Action {
     /// In the workspace, not installed by Beskar and not wanted. Beskar
     /// leaves it alone.
     Unmanaged,
+    /// No longer wanted and untouched, but the copy holds files that are
+    /// not part of the skill (its own `.git`, a file the ignore patterns
+    /// name), so deleting it would lose them: it stays where it is and
+    /// Beskar stops managing it. Never decided by [`plan`], which cannot
+    /// see files; the workspace planner turns a `Remove` into this.
+    Release,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,8 +99,10 @@ pub enum Conflict {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Resolution {
     /// Keep the workspace copy. For a wanted skill, the current library
-    /// version counts as seen, so Beskar asks again only when the library
-    /// changes again. An unwanted skill stays and Beskar stops managing it.
+    /// version is recorded as declined, so Beskar asks again only when the
+    /// library changes again; the recorded base stays, so a later promote
+    /// still knows the library moved. An unwanted skill stays and Beskar
+    /// stops managing it.
     Keep,
     /// Take the library's side: install the library version, or delete an
     /// unwanted copy.
@@ -107,13 +121,19 @@ pub struct Step {
     pub profiles: Vec<ProfileName>,
     /// L: the library version, if the skill is wanted and in the library.
     pub library: Option<Fingerprint>,
-    /// R: the recorded base version.
-    pub recorded: Option<Fingerprint>,
+    /// What the registry records, if Beskar manages the skill here: R, the
+    /// recorded base, and K, a library version the person declined.
+    pub recorded: Option<Installation>,
     /// W: the workspace copy.
     pub present: Option<Fingerprint>,
 }
 
 impl Step {
+    /// R: the recorded base, the library version the copy came from.
+    pub fn base(&self) -> Option<Fingerprint> {
+        self.recorded.and_then(|installation| installation.base)
+    }
+
     /// Whether carrying out the step changes files in the workspace.
     pub fn changes_files(&self) -> bool {
         matches!(
@@ -132,7 +152,7 @@ impl Step {
 /// by skill name.
 pub fn plan(
     wanted: &BTreeMap<SkillId, Wanted>,
-    recorded: &BTreeMap<SkillId, Fingerprint>,
+    recorded: &BTreeMap<SkillId, Installation>,
     present: &BTreeMap<SkillId, Fingerprint>,
 ) -> Vec<Step> {
     let skills: BTreeSet<&SkillId> = wanted
@@ -162,34 +182,50 @@ pub fn plan(
 fn decide(
     wanted: bool,
     l: Option<Fingerprint>,
-    r: Option<Fingerprint>,
+    recorded: Option<Installation>,
     w: Option<Fingerprint>,
 ) -> Action {
+    let r = recorded.and_then(|installation| installation.base);
+    let k = recorded.and_then(|installation| installation.kept);
     if wanted {
         let Some(l) = l else {
             return Action::MissingSource;
         };
-        match (r, w) {
-            (None, None) => Action::Install,
-            (Some(_), None) => Action::Restore,
-            (r, Some(w)) if w == l => {
-                if r == Some(l) {
-                    Action::Unchanged
-                } else {
-                    Action::Record
-                }
-            }
-            (Some(r), Some(w)) if w == r => Action::Update,
-            (Some(r), Some(_)) if l == r => Action::KeepLocal,
-            (Some(_), Some(_)) => Action::Conflict(Conflict::Diverged),
-            (None, Some(_)) => Action::Conflict(Conflict::Untracked),
+        let Some(w) = w else {
+            return if recorded.is_some() {
+                Action::Restore
+            } else {
+                Action::Install
+            };
+        };
+        if w == l {
+            return if recorded == Some(Installation::of(l)) {
+                Action::Unchanged
+            } else {
+                Action::Record
+            };
+        }
+        if recorded.is_none() {
+            return Action::Conflict(Conflict::Untracked);
+        }
+        if r == Some(w) {
+            // Nobody changed the copy (or a kept change was undone).
+            return Action::Update;
+        }
+        if k == Some(l) {
+            return Action::KeepLocal;
+        }
+        match r {
+            None => Action::Conflict(Conflict::Untracked),
+            Some(r) if l == r => Action::KeepLocal,
+            Some(_) => Action::Conflict(Conflict::Diverged),
         }
     } else {
-        match (r, w) {
-            (Some(r), Some(w)) if w == r => Action::Remove,
-            (Some(_), Some(_)) => Action::Conflict(Conflict::Orphaned),
-            (Some(_), None) => Action::Forget,
+        match (recorded, w) {
             (None, _) => Action::Unmanaged,
+            (Some(_), None) => Action::Forget,
+            (Some(_), Some(w)) if r == Some(w) => Action::Remove,
+            (Some(_), Some(_)) => Action::Conflict(Conflict::Orphaned),
         }
     }
 }
@@ -202,6 +238,10 @@ mod tests {
         Some(Fingerprint::fake(byte))
     }
 
+    fn installed(base: u8) -> Installation {
+        Installation::of(Fingerprint::fake(base))
+    }
+
     const A: u8 = 1;
     const B: u8 = 2;
     const C: u8 = 3;
@@ -210,10 +250,10 @@ mod tests {
     fn decision_table() {
         use Action::*;
         let wanted = |l: u8, r: Option<u8>, w: Option<u8>| {
-            decide(true, fp(l), r.and_then(fp), w.and_then(fp))
+            decide(true, fp(l), r.map(installed), w.and_then(fp))
         };
         let unwanted =
-            |r: Option<u8>, w: Option<u8>| decide(false, None, r.and_then(fp), w.and_then(fp));
+            |r: Option<u8>, w: Option<u8>| decide(false, None, r.map(installed), w.and_then(fp));
 
         assert_eq!(wanted(A, None, None), Install);
         assert_eq!(wanted(A, Some(A), None), Restore);
@@ -247,7 +287,7 @@ mod tests {
             wanted(A, None, Some(B)),
             Conflict(super::Conflict::Untracked)
         );
-        assert_eq!(decide(true, None, fp(A), fp(A)), MissingSource);
+        assert_eq!(decide(true, None, Some(installed(A)), fp(A)), MissingSource);
         assert_eq!(decide(true, None, None, None), MissingSource);
 
         assert_eq!(unwanted(Some(A), Some(A)), Remove);
@@ -257,6 +297,43 @@ mod tests {
         );
         assert_eq!(unwanted(Some(A), None), Forget);
         assert_eq!(unwanted(None, Some(A)), Unmanaged);
+    }
+
+    #[test]
+    fn keeping_declines_one_library_version_and_keeps_the_base() {
+        use Action::*;
+        let kept = |base: Option<u8>, declined: u8| Installation {
+            base: base.and_then(fp),
+            kept: fp(declined),
+        };
+        // Changed here, library at B, the person kept their copy over B.
+        assert_eq!(
+            decide(true, fp(B), Some(kept(Some(A), B)), fp(C)),
+            KeepLocal
+        );
+        // The library moves on to C: ask again.
+        assert_eq!(
+            decide(true, fp(C), Some(kept(Some(A), B)), fp(4)),
+            Conflict(super::Conflict::Diverged)
+        );
+        // The person reverted their change: the copy is the base again, so
+        // it simply updates.
+        assert_eq!(decide(true, fp(B), Some(kept(Some(A), B)), fp(A)), Update);
+        // A directory Beskar never installed, kept over B, has no base.
+        assert_eq!(decide(true, fp(B), Some(kept(None, B)), fp(C)), KeepLocal);
+        assert_eq!(
+            decide(true, fp(4), Some(kept(None, B)), fp(C)),
+            Conflict(super::Conflict::Untracked)
+        );
+        // Unwanted, a kept copy is never removed silently.
+        assert_eq!(
+            decide(false, None, Some(kept(None, B)), fp(C)),
+            Conflict(super::Conflict::Orphaned)
+        );
+        assert_eq!(
+            decide(false, None, Some(kept(Some(A), B)), fp(C)),
+            Conflict(super::Conflict::Orphaned)
+        );
     }
 
     #[test]
@@ -275,11 +352,14 @@ mod tests {
             (id("playwright"), want(C)),
         ]);
         let recorded = BTreeMap::from([
-            (id("git"), Fingerprint::fake(A)),
-            (id("testing"), Fingerprint::fake(A)),
-            (id("pdf"), Fingerprint::fake(A)),
+            (id("git"), installed(A)),
+            (id("testing"), installed(A)),
+            (id("pdf"), installed(A)),
         ]);
-        let present = recorded.clone();
+        let present: BTreeMap<SkillId, Fingerprint> = recorded
+            .iter()
+            .map(|(id, installation)| (id.clone(), installation.base.unwrap()))
+            .collect();
 
         let steps = plan(&wanted, &recorded, &present);
         let summary: Vec<(&str, Action)> =

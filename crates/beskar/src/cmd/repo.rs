@@ -64,7 +64,7 @@ fn look(action: Action) -> (&'static str, Tone, &'static str) {
         Action::Conflict(Conflict::Untracked) => (
             "!",
             Tone::Problem,
-            "differs from the library; Beskar did not install it",
+            "differs from the library; Beskar does not manage it",
         ),
         Action::Conflict(Conflict::Orphaned) => (
             "!",
@@ -73,17 +73,33 @@ fn look(action: Action) -> (&'static str, Tone, &'static str) {
         ),
         Action::MissingSource => ("✗", Tone::Problem, "not in the library"),
         Action::Unmanaged => ("?", Tone::Quiet, "not managed by Beskar"),
+        Action::Release => (
+            "-",
+            Tone::Local,
+            "no enabled profile includes it; it stays here, no longer managed",
+        ),
     }
 }
 
-/// Like [`look`], but a blocked step shows why it cannot go ahead.
+/// Like [`look`], but a blocked step shows why it cannot go ahead, and a
+/// copy that stays shows why.
 fn look_step(plan: &RepoPlan, step: &Step) -> (&'static str, Tone, String) {
     let (symbol, tone, state) = look(step.action);
-    match plan.blocked.get(&step.skill) {
-        Some(blocker) => (
+    if let Some(blocker) = plan.blocked.get(&step.skill) {
+        return (
             "✗",
             Tone::Problem,
             format!("{state}, but it {}", blocker.reason),
+        );
+    }
+    match plan.stays.get(&step.skill) {
+        Some(reason) => (
+            symbol,
+            tone,
+            format!(
+                "no enabled profile includes it, but it {}; it stays here, no longer managed",
+                clean(reason)
+            ),
         ),
         None => (symbol, tone, state.to_string()),
     }
@@ -107,6 +123,7 @@ fn pending_summary(plan: &RepoPlan) -> Option<String> {
         ),
         (n(&|a| a == Action::Update), "update"),
         (n(&|a| a == Action::Remove), "remove"),
+        (n(&|a| a == Action::Release), "stop managing"),
     ]
     .into_iter()
     .filter(|(n, _)| *n > 0)
@@ -330,10 +347,12 @@ pub fn list(app: &mut App, _m: &Matches) -> Outcome {
             } else {
                 profiles
             };
-            let note = if entry.path.is_dir() {
-                String::new()
-            } else {
+            let note = if beskar_core::fsx::is_gone(&entry.path) {
                 style.red("directory not found")
+            } else if !entry.path.is_dir() {
+                style.red("cannot be read")
+            } else {
+                String::new()
             };
             vec![
                 Cell::styled(app.display(&entry.path), |t| style.bold(t)),
@@ -858,7 +877,10 @@ fn print_outcomes(app: &mut App, plan: &RepoPlan, outcomes: &[sync::Outcome]) ->
             Ok(Done::Released) => (
                 "!",
                 Tone::Local,
-                "kept the local copy; no longer managed".to_string(),
+                match plan.stays.get(&outcome.skill) {
+                    Some(reason) => format!("left in place: it {reason}; no longer managed"),
+                    None => "kept the local copy; no longer managed".to_string(),
+                },
             ),
             Ok(Done::Replaced) => (
                 "~",
@@ -1200,6 +1222,7 @@ mod tests {
             Conflict(super::Conflict::Orphaned),
             MissingSource,
             Unmanaged,
+            Release,
         ] {
             assert!(!look(action).2.is_empty());
             assert!(!super::super::action_name(action).is_empty());

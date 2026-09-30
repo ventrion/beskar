@@ -40,19 +40,50 @@ pub struct InitReport {
     pub library: LibraryState,
 }
 
-/// Fail if agents would discover the library's skills directly.
-pub fn check_library_location(library: &Path) -> Result<()> {
-    let name = library
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    if AGENT_DIRS.contains(&name.as_str()) {
+/// Fail if agents would discover the library's skills directly: the
+/// library is (or sits inside) an agent's skills directory, such as
+/// `~/.claude`, `~/.claude/skills` or a workspace's `.agents/skills`.
+/// `skills_dir` is the configured skills directory of workspaces. Symlinks
+/// are resolved first, and names are compared without regard to case,
+/// since some filesystems ignore it.
+pub fn check_library_location(library: &Path, skills_dir: &Path) -> Result<()> {
+    let resolved = crate::fsx::resolve(library);
+    let names: Vec<String> = resolved
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    let is_agent_dir = |name: &str| AGENT_DIRS.iter().any(|dir| dir.eq_ignore_ascii_case(name));
+    let last_is_agent_dir = names.last().is_some_and(|name| is_agent_dir(name));
+    let inside_agent_skills = names
+        .windows(2)
+        .any(|pair| is_agent_dir(&pair[0]) && pair[1] == "skills");
+    let wanted: Vec<String> = skills_dir
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    let inside_workspace_skills =
+        !wanted.is_empty() && names.windows(wanted.len()).any(|window| window == wanted);
+    if last_is_agent_dir || inside_agent_skills || inside_workspace_skills {
         return Err(Error::invalid(format!(
-            "{} would put the library's skills in {}/skills, where agents load skills from",
-            library.display(),
+            "the library at {} is where agents load skills from",
             library.display()
         ))
         .hint("the library must not be an agent skill directory; pick another location, such as ~/.beskar/library"));
+    }
+    Ok(())
+}
+
+/// Fail if the registry is inside the library: the library is portable and
+/// may be synced to other machines, and the registry holds paths that only
+/// make sense on this one.
+pub fn check_registry_location(registry: &Path, library: &Path) -> Result<()> {
+    if crate::fsx::resolve(registry).starts_with(crate::fsx::resolve(library)) {
+        return Err(Error::invalid(format!(
+            "the registry {} is inside the library {}",
+            registry.display(),
+            library.display()
+        ))
+        .hint("the registry holds this machine's paths and must not travel with the library; set `registry:` in the config to a path outside it, such as ~/.beskar/registry.bsk"));
     }
     Ok(())
 }
@@ -62,7 +93,7 @@ pub fn check_library_location(library: &Path) -> Result<()> {
 /// config is pointed at that library (created if needed).
 pub fn init(home: &Path, user_home: Option<&Path>, library: Option<&Path>) -> Result<InitReport> {
     if let Some(library) = library {
-        check_library_location(library)?;
+        check_library_location(library, Path::new(config::DEFAULT_SKILLS_DIR))?;
     }
     fsx::create_dir_all(home)?;
     let config_path = Config::file_in(home);
@@ -78,6 +109,10 @@ pub fn init(home: &Path, user_home: Option<&Path>, library: Option<&Path>) -> Re
         fsx::write_atomic(&config_path, &text)?;
     }
     let mut config = Config::load(home, user_home)?;
+    if let Some(library) = library {
+        check_library_location(library, &config.skills_dir)?;
+        check_registry_location(&config.registry, library)?;
+    }
 
     let mut switched_from = None;
     if let Some(library) = library
@@ -173,5 +208,35 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    #[test]
+    fn refuses_libraries_that_agents_would_load() {
+        let skills = Path::new(".agents/skills");
+        for bad in [
+            "/home/me/.claude",
+            "/home/me/.Claude/skills",
+            "/home/me/.claude/skills/lib",
+            "/home/me/proj/.agents/skills/lib",
+            "/home/me/.codex/skills",
+        ] {
+            assert!(
+                check_library_location(Path::new(bad), skills).is_err(),
+                "{bad}"
+            );
+        }
+        for good in [
+            "/home/me/.beskar/library",
+            "/home/me/src/skills",
+            "/srv/lib",
+        ] {
+            check_library_location(Path::new(good), skills).unwrap();
+        }
+        assert!(
+            check_library_location(Path::new("/p/ai/skills/lib"), Path::new("ai/skills")).is_err()
+        );
+        assert!(check_registry_location(Path::new("/lib/state.bsk"), Path::new("/lib")).is_err());
+        check_registry_location(Path::new("/home/.beskar/registry.bsk"), Path::new("/lib"))
+            .unwrap();
     }
 }

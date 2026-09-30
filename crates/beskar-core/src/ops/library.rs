@@ -6,7 +6,7 @@ use crate::fingerprint::Fingerprint;
 use crate::library::Imported;
 use crate::names::{ProfileName, SkillId};
 use crate::scan::{self, Candidate, Naming, Status};
-use crate::skill::{SKILL_FILE, Skill, SkillMeta};
+use crate::skill::{SKILL_FILE, Skill, SkillMeta, is_skill_dir};
 use crate::usage::{self, SkillUse};
 use crate::{Beskar, Error, Result};
 
@@ -94,6 +94,21 @@ impl Beskar {
     pub fn add_skill(&self, path: &Path, name: Option<&str>, replace: bool) -> Result<SkillAdded> {
         self.library.check()?;
         let source = skill_dir(self, path)?;
+        if !is_skill_dir(&source) {
+            let nested = scan::discover(&source, &[self.library.skills_dir()])?;
+            if !nested.is_empty() {
+                return Err(Error::invalid(format!(
+                    "{} has no {SKILL_FILE} of its own but holds {} below it, so it is a folder of skills, not one skill",
+                    self.display(&source),
+                    crate::count(nested.len(), "skill")
+                ))
+                .hint(format!(
+                    "import them with `beskar library scan {}`",
+                    crate::shell_quote(&self.display(&source))
+                ))
+                .hint("to import it as one skill anyway, add a SKILL.md to it first"));
+            }
+        }
         let (id, naming) = match name {
             Some(name) => (SkillId::new(name)?, None),
             None => match scan::name_for(&source, &SkillMeta::read(&source, None)) {

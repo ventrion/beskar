@@ -127,6 +127,7 @@ fn visit(dir: &Path, depth: usize, exclude: &[PathBuf], found: &mut Vec<PathBuf>
         let path = entry.path();
         if SKIP_DIRS.contains(&name.as_str())
             || name.starts_with(crate::fsx::TEMP_PREFIX)
+            || name == crate::fsx::WORK_DIR
             || exclude.contains(&path)
         {
             continue;

@@ -192,12 +192,16 @@ impl Beskar {
                 self.display(path)
             )));
         }
+        if path.parent().is_none() {
+            return Err(Error::invalid(
+                "the root of the filesystem cannot be a workspace",
+            ));
+        }
         for (inside, what) in [
             (&self.config.library, "the library"),
             (&self.config.home, "Beskar's home directory"),
         ] {
-            let inside = fs::canonicalize(inside).unwrap_or_else(|_| inside.clone());
-            if path.starts_with(&inside) {
+            if fsx::resolve(path).starts_with(fsx::resolve(inside)) {
                 return Err(Error::invalid(format!(
                     "{} is inside {what}, which cannot be a workspace",
                     self.display(path)
@@ -206,11 +210,22 @@ impl Beskar {
         }
         let workspace = self.workspace(path);
         sync::check_separate(self, &workspace)?;
+        // Read the skills directory before registering, so a workspace
+        // whose skills directory is a file or unreadable is refused rather
+        // than registered and then failing.
+        let existing_skills = workspace.observe(self.ignore())?.skills.len();
         let (new, inside) = self.transact("repo add", |registry| {
-            let own_skills_dir = workspace.skills_dir().to_path_buf();
-            for other in registry.repos() {
-                let skills_dir = self.workspace(&other.path).skills_dir().to_path_buf();
-                let skills_dir = fs::canonicalize(&skills_dir).unwrap_or(skills_dir);
+            let own_skills_dir = fsx::resolve(workspace.skills_dir());
+            for other in registry.repos().filter(|other| other.path != path) {
+                let skills_dir = fsx::resolve(self.workspace(&other.path).skills_dir());
+                if skills_dir == own_skills_dir {
+                    return Err(Error::invalid(format!(
+                        "{} is the skills directory of the registered workspace {} too",
+                        self.display(workspace.skills_dir()),
+                        self.display(&other.path)
+                    ))
+                    .hint("two workspaces cannot share one skills directory; give each a directory of its own"));
+                }
                 if path.starts_with(&skills_dir) {
                     return Err(Error::invalid(format!(
                         "{} is inside the skills directory of the workspace {}, which Beskar rewrites",
@@ -236,7 +251,6 @@ impl Beskar {
                 .filter(|outer| outer != path);
             Ok((registry.add(path.to_path_buf())?, inside))
         })?;
-        let existing_skills = workspace.observe(self.ignore())?.skills.len();
         Ok(RepoAdded {
             path: path.to_path_buf(),
             new,
@@ -589,8 +603,14 @@ impl Beskar {
         let id = existing_skill(self, &workspace, entry, name)?;
         let present = workspace.fingerprint(&id, self.ignore())?;
         let library = self.library.fingerprint(&id)?;
+        // A copy that is still its recorded base has no changes of its own:
+        // only the library moved, and restoring loses nothing.
+        let base = entry.installed.get(&id).and_then(|i| i.base);
         Ok(RestorePreview {
-            discards_changes: present.is_some() && library.is_some() && present != library,
+            discards_changes: present.is_some()
+                && library.is_some()
+                && present != library
+                && present != base,
             repo: path,
             skill: id,
             present,
@@ -856,6 +876,7 @@ mod tests {
         );
         assert!(skills.join("git/SKILL.md").is_file());
         assert!(fsx::leftovers(&skills).is_empty());
+        assert!(!skills.join(".beskar").exists());
     }
 
     #[test]

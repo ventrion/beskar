@@ -132,13 +132,13 @@ fn check_library(beskar: &Beskar, report: &mut Report) -> bool {
     section.add(
         Level::Ok,
         format!(
-            "library {}: {} skills",
+            "library {}: {}",
             beskar.display(library.root()),
-            skills.len()
+            crate::count(skills.len(), "skill")
         ),
         None,
     );
-    if let Err(error) = check_library_location(library.root()) {
+    if let Err(error) = check_library_location(library.root(), &beskar.config.skills_dir) {
         section.error(Level::Error, error);
     }
     if !library.profiles_dir().is_dir() {
@@ -149,10 +149,15 @@ fn check_library(beskar: &Beskar, report: &mut Report) -> bool {
         );
     }
     for stray in library.stray_entries().unwrap_or_default() {
+        let is_dir = library.skills_dir().join(&stray).is_dir();
         section.add(
             Level::Warning,
             format!("skills/{stray} is not a skill, so Beskar ignores it"),
-            Some("skill directories use lowercase letters, digits and hyphens".to_string()),
+            Some(if is_dir {
+                "skill directories use lowercase letters, digits and hyphens; rename it".to_string()
+            } else {
+                "skills/ holds one directory per skill; move this file into a skill or out of the library".to_string()
+            }),
         );
     }
     for skill in &skills {
@@ -164,15 +169,24 @@ fn check_library(beskar: &Beskar, report: &mut Report) -> bool {
             );
         }
     }
-    for leftover in fsx::leftovers(&library.skills_dir()) {
-        section.add(
-            Level::Warning,
-            format!("leftover temporary directory {}", beskar.display(&leftover)),
-            Some(
-                "an interrupted run left it behind; check what it holds, then delete it"
-                    .to_string(),
-            ),
-        );
+    for dir in [
+        beskar.config.home.clone(),
+        library.skills_dir(),
+        library.profiles_dir(),
+    ] {
+        for leftover in fsx::leftovers(&dir) {
+            section.add(
+                Level::Warning,
+                format!(
+                    "leftover of an interrupted run: {}",
+                    beskar.display(&leftover)
+                ),
+                Some(
+                    "the next command that changes the library or the registry cleans it up"
+                        .to_string(),
+                ),
+            );
+        }
     }
     report.sections.push(section);
     true
@@ -188,6 +202,15 @@ fn check_profiles(beskar: &Beskar, report: &mut Report) {
             Err(error) => section.error(Level::Error, error),
             Ok(profile) => {
                 loaded += 1;
+                if profile.skills.is_empty() {
+                    section.add(
+                        Level::Note,
+                        format!("profile `{name}` has no skills yet"),
+                        Some(format!(
+                            "add some with `beskar profile add {name} <skill>...`"
+                        )),
+                    );
+                }
                 for skill in profile
                     .skills
                     .iter()
@@ -217,7 +240,7 @@ fn check_profiles(beskar: &Beskar, report: &mut Report) {
             level: Level::Ok,
             message: match names.len() {
                 0 => "no profiles yet".to_string(),
-                n if n == loaded => format!("{n} profiles"),
+                n if n == loaded => crate::count(n, "profile"),
                 n => format!("{loaded} of {n} profiles load"),
             },
             hints: Vec::new(),
@@ -240,9 +263,9 @@ fn check_registry(beskar: &Beskar, library_ok: bool, report: &mut Report) {
     section.add(
         Level::Ok,
         format!(
-            "registry {}: {} workspaces",
+            "registry {}: {}",
             beskar.display(registry.path()),
-            registry.len()
+            crate::count(registry.len(), "workspace")
         ),
         None,
     );
@@ -258,7 +281,7 @@ fn check_registry(beskar: &Beskar, library_ok: bool, report: &mut Report) {
     let mut section = Section::new("Workspaces");
     for repo in registry.repos() {
         let place = beskar.display(&repo.path);
-        if !repo.path.is_dir() {
+        if fsx::is_gone(&repo.path) {
             section.add(
                 Level::Warning,
                 format!("{place}: directory not found"),
@@ -266,17 +289,21 @@ fn check_registry(beskar: &Beskar, library_ok: bool, report: &mut Report) {
             );
             continue;
         }
+        if repo.profiles.is_empty() {
+            section.add(
+                Level::Note,
+                format!("{place}: no profiles enabled"),
+                Some("enable one with `beskar repo enable <profile>` there".to_string()),
+            );
+        }
         for leftover in beskar.workspace(&repo.path).leftovers() {
             section.add(
                 Level::Warning,
                 format!(
-                    "{place}: leftover temporary directory {}",
+                    "{place}: leftover of an interrupted run: {}",
                     beskar.display(&leftover)
                 ),
-                Some(
-                    "an interrupted run left it behind; check what it holds, then delete it"
-                        .to_string(),
-                ),
+                Some("`beskar repo update` there cleans it up".to_string()),
             );
         }
         if !library_ok {
@@ -340,10 +367,7 @@ fn check_registry(beskar: &Beskar, library_ok: bool, report: &mut Report) {
         if pending > 0 {
             section.add(
                 Level::Note,
-                format!(
-                    "{place}: {pending} change{} pending",
-                    if pending == 1 { "" } else { "s" }
-                ),
+                format!("{place}: {} pending", crate::count(pending, "change")),
                 Some("run `beskar update --all`".to_string()),
             );
         }

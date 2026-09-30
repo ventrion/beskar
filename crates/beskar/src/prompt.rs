@@ -50,7 +50,7 @@ fn ask(app: &App, beskar: &Beskar, plan: &RepoPlan, step: &Step) -> Option<Resol
             "save it to the library, then delete it here",
         ),
         Action::Conflict(Conflict::Untracked) => (
-            "This directory was not installed by Beskar and differs from the library version.",
+            "This directory differs from the library version, and Beskar does not manage it.",
             "keep it",
             "replace it with the library version",
             "make it the library version, replacing the one there",

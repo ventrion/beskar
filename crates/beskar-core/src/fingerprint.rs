@@ -20,9 +20,10 @@ use crate::tree::{self, EntryKind};
 pub struct Fingerprint([u8; 32]);
 
 impl Fingerprint {
-    /// Fingerprint whatever is at `path`: a directory tree, a single file or
-    /// a symlink. A symlink at `path` itself is not followed, so a
-    /// symlinked skill never matches a copied one.
+    /// Fingerprint whatever is at `path`: a directory tree, a single file,
+    /// a symlink or anything else (which is never opened). A symlink at
+    /// `path` itself is not followed, so a symlinked skill never matches a
+    /// copied one.
     pub fn of(path: &Path, ignore: &Ignore) -> io::Result<Fingerprint> {
         let metadata = fs::symlink_metadata(path)?;
         let mut hasher = Sha256::new();
@@ -42,9 +43,14 @@ impl Fingerprint {
         } else if metadata.file_type().is_symlink() {
             hasher.update(b"beskar-link-1\0");
             hasher.update(&hash_link(path)?);
-        } else {
+        } else if metadata.is_file() {
             hasher.update(b"beskar-file-1\0");
             hasher.update(&hash_file(path)?);
+        } else {
+            // A named pipe, socket or device where a skill should be. It is
+            // something in the way, never something to open: reading a
+            // pipe would wait forever.
+            hasher.update(b"beskar-special-1\0");
         }
         Ok(Fingerprint(hasher.finish()))
     }
@@ -187,5 +193,21 @@ mod tests {
         assert_eq!(f.short().len(), 12);
         assert_eq!(Fingerprint::parse("abc"), None);
         assert_eq!(Fingerprint::parse(&"G".repeat(64)), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_named_pipe_is_fingerprinted_without_being_opened() {
+        let tmp = crate::testutil::TempDir::new();
+        let pipe = tmp.path().join("pipe");
+        let made = std::process::Command::new("mkfifo").arg(&pipe).status();
+        if !made.is_ok_and(|status| status.success()) {
+            return;
+        }
+        let fingerprint = Fingerprint::of(&pipe, &Ignore::default()).unwrap();
+        assert_ne!(
+            fingerprint,
+            Fingerprint::of(&tmp.write("file", ""), &Ignore::default()).unwrap()
+        );
     }
 }

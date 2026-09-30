@@ -10,7 +10,7 @@ use crate::ignore::VCS_PATTERNS;
 use crate::library::{Imported, Library};
 use crate::names::{ProfileName, SkillId};
 use crate::reconcile::{self, Action, Conflict, Resolution, Step, Wanted};
-use crate::registry::RepoEntry;
+use crate::registry::{Installation, RepoEntry};
 use crate::timestamp::Timestamp;
 use crate::workspace::Workspace;
 use crate::{Beskar, Error, ErrorKind, Result, fsx};
@@ -21,9 +21,12 @@ pub struct RepoPlan {
     pub repo: PathBuf,
     /// One step per wanted, recorded or present skill, sorted by name.
     pub steps: Vec<Step>,
-    /// Steps that cannot go ahead because the workspace copy holds things
-    /// Beskar must not delete, such as its own `.git`.
+    /// Steps that cannot go ahead because the workspace copy is its own
+    /// checkout (it has a `.git`), which Beskar never replaces.
     pub blocked: BTreeMap<SkillId, Blocker>,
+    /// Why each [`Action::Release`] step leaves its copy in place: the
+    /// files in it that are not part of the skill.
+    pub stays: BTreeMap<SkillId, String>,
     /// Directories in the skills directory that are not named like skills.
     pub others: Vec<String>,
 }
@@ -98,16 +101,27 @@ pub fn wanted(library: &Library, profiles: &[ProfileName]) -> Result<BTreeMap<Sk
 
 /// Compare a workspace with the library and its enabled profiles.
 pub fn plan_repo(beskar: &Beskar, entry: &RepoEntry) -> Result<RepoPlan> {
-    if !entry.path.is_dir() {
+    if fsx::is_gone(&entry.path) {
         return Err(Error::not_found(format!(
             "workspace {} no longer exists",
             beskar.display(&entry.path)
         ))
         .hint("run `beskar registry prune` to forget workspaces that are gone"));
     }
-    beskar.library.check()?;
+    if let Err(err) = fs::read_dir(&entry.path) {
+        return Err(Error::io(
+            &err,
+            format_args!("read workspace {}", beskar.display(&entry.path)),
+        ));
+    }
+    // A workspace with no profiles (one being purged, say) needs nothing
+    // from the library, so a missing library does not stop it.
+    if !entry.profiles.is_empty() {
+        beskar.library.check()?;
+    }
     let workspace = beskar.workspace(&entry.path);
     check_separate(beskar, &workspace)?;
+    check_skills_dir(beskar, entry)?;
     let wanted = wanted(&beskar.library, &entry.profiles)?;
     let observed = workspace.observe(beskar.ignore())?;
     if let Ok(skills_dir) = fs::canonicalize(workspace.skills_dir()) {
@@ -129,44 +143,82 @@ pub fn plan_repo(beskar: &Beskar, entry: &RepoEntry) -> Result<RepoPlan> {
             }
         }
     }
-    let steps = reconcile::plan(&wanted, &entry.installed, &observed.skills);
+    let mut steps = reconcile::plan(&wanted, &entry.installed, &observed.skills);
     let mut blocked = BTreeMap::new();
-    for step in &steps {
-        let blocker = match step.action {
-            Action::Update => checkout_blocker(beskar, &workspace, &step.skill),
-            Action::Remove => removal_blocker(beskar, &workspace, &step.skill)?,
-            _ => None,
-        };
-        if let Some(blocker) = blocker {
-            blocked.insert(step.skill.clone(), blocker);
+    let mut stays = BTreeMap::new();
+    for step in &mut steps {
+        match step.action {
+            Action::Update => {
+                if let Some(blocker) = checkout_blocker(beskar, &workspace, &step.skill) {
+                    blocked.insert(step.skill.clone(), blocker);
+                }
+            }
+            Action::Remove => {
+                if let Some(blocker) = removal_blocker(beskar, &workspace, &step.skill)? {
+                    step.action = Action::Release;
+                    stays.insert(step.skill.clone(), blocker.reason);
+                }
+            }
+            _ => {}
         }
     }
     Ok(RepoPlan {
         repo: entry.path.clone(),
         steps,
         blocked,
+        stays,
         others: observed.others,
     })
 }
 
-/// Fail if the workspace's skills directory leads into the library (or
-/// the other way round), for example through a symlink: Beskar would then
-/// treat library skills as workspace copies and could delete them.
+/// Fail if the skills directory setting changed since Beskar installed
+/// skills here: the copies are in the old directory, where agents still
+/// see them, and planning against the new one would install everything a
+/// second time.
+fn check_skills_dir(beskar: &Beskar, entry: &RepoEntry) -> Result<()> {
+    let configured = &beskar.config.skills_dir;
+    match &entry.skills_dir {
+        Some(recorded) if recorded != configured && !entry.installed.is_empty() => {
+            Err(Error::invalid(format!(
+                "Beskar installed skills in {} here, but the config now says `skills-dir: {}`",
+                beskar.display(&entry.path.join(recorded)),
+                configured.display()
+            ))
+            .hint(format!(
+                "set `skills-dir: {}` in the config again to keep managing them",
+                recorded.display()
+            ))
+            .hint(format!(
+                "or, with the old setting, run `beskar repo remove --purge {}` to delete them, then register the workspace again",
+                crate::shell_quote(&beskar.display(&entry.path))
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Fail if the workspace's skills directory leads into the library or
+/// Beskar's home (or the other way round), for example through a symlink:
+/// Beskar would then treat library skills as workspace copies and could
+/// delete them. Symlinks are resolved even where the skills directory does
+/// not exist yet, since the first update would create it there.
 pub fn check_separate(beskar: &Beskar, workspace: &Workspace) -> Result<()> {
-    let Ok(skills_dir) = fs::canonicalize(workspace.skills_dir()) else {
-        return Ok(());
-    };
-    let root = beskar.library.root();
-    let library = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    if skills_dir.starts_with(&library) || library.starts_with(&skills_dir) {
-        return Err(Error::invalid(format!(
-            "{} leads into the library at {}, so Beskar would be managing the library's own files",
-            beskar.display(workspace.skills_dir()),
-            beskar.display(&library)
-        ))
-        .hint(
-            "make the workspace's skills directory a real directory, not a link into the library",
-        ));
+    let skills_dir = fsx::resolve(workspace.skills_dir());
+    for (root, what) in [
+        (beskar.library.root(), "the library"),
+        (beskar.config.home.as_path(), "Beskar's home directory"),
+    ] {
+        let root = fsx::resolve(root);
+        if skills_dir.starts_with(&root) || root.starts_with(&skills_dir) {
+            return Err(Error::invalid(format!(
+                "{} leads into {what} at {}, so Beskar would be managing its own files",
+                beskar.display(workspace.skills_dir()),
+                beskar.display(&root)
+            ))
+            .hint(
+                "make the workspace's skills directory a real directory, not a link into the library",
+            ));
+        }
     }
     Ok(())
 }
@@ -242,6 +294,7 @@ pub fn apply(
     {
         entry.synced = Some(Timestamp::now());
     }
+    entry.skills_dir = (!entry.installed.is_empty()).then(|| beskar.config.skills_dir.clone());
     outcomes
 }
 
@@ -277,12 +330,18 @@ fn apply_step(
             entry.installed.remove(id);
             Done::Forgotten
         }
+        Action::Release => {
+            entry.installed.remove(id);
+            Done::Released
+        }
         Action::Record => {
             let fingerprint = step
                 .library
                 .or(step.present)
                 .expect("a recorded skill has a fingerprint");
-            entry.installed.insert(id.clone(), fingerprint);
+            entry
+                .installed
+                .insert(id.clone(), Installation::of(fingerprint));
             Done::Recorded
         }
         Action::Conflict(kind) => {
@@ -316,7 +375,7 @@ fn resolve(
         (Conflict::Orphaned, Resolution::Promote) => {
             check_removable(beskar, workspace, step)?;
             let library = beskar.library.fingerprint(id)?;
-            if library.is_some() && library != step.recorded && library != step.present {
+            if library.is_some() && library != step.base() && library != step.present {
                 return Err(Error::conflict(format!(
                     "the library's `{id}` changed since this copy was installed; promoting would discard those changes"
                 ))
@@ -331,7 +390,15 @@ fn resolve(
             let library = step
                 .library
                 .expect("a wanted skill in conflict has a library version");
-            entry.installed.insert(id.clone(), library);
+            // The base stays what it was: the copy is still based on it,
+            // and a later promote must know the library moved on.
+            entry.installed.insert(
+                id.clone(),
+                Installation {
+                    base: step.base(),
+                    kept: Some(library),
+                },
+            );
             Ok(Done::KeptLocal)
         }
         (_, Resolution::Replace) => {
@@ -351,7 +418,9 @@ fn resolve(
                 .library
                 .fingerprint(id)?
                 .expect("the skill was just imported");
-            entry.installed.insert(id.clone(), fingerprint);
+            entry
+                .installed
+                .insert(id.clone(), Installation::of(fingerprint));
             Ok(Done::Promoted)
         }
     }
@@ -368,11 +437,13 @@ fn install(
 ) -> Result<()> {
     let id = &step.skill;
     let source = beskar.library.skill_source(id);
-    let fingerprint = workspace.install(id, &source, beskar.ignore(), || {
+    let fingerprint = workspace.install(id, &source, beskar.ignore(), step.present, || {
         verify_unchanged(beskar, workspace, step)?;
         refuse_checkout(beskar, workspace, id)
     })?;
-    entry.installed.insert(id.clone(), fingerprint);
+    entry
+        .installed
+        .insert(id.clone(), Installation::of(fingerprint));
     Ok(())
 }
 
@@ -384,7 +455,10 @@ fn remove(
     step: &Step,
 ) -> Result<()> {
     check_removable(beskar, workspace, step)?;
-    workspace.remove(&step.skill)?;
+    let present = step
+        .present
+        .expect("a step that removes a copy has seen the copy");
+    workspace.remove(&step.skill, beskar.ignore(), present)?;
     entry.installed.remove(&step.skill);
     Ok(())
 }
@@ -533,20 +607,28 @@ pub fn promote(
         .expect("the skill directory exists");
     let library = beskar.library.fingerprint(id)?;
     let wanted = is_wanted(&beskar.library, entry, id);
-    let tracked = entry.installed.contains_key(id);
+    let recorded = entry.installed.get(id).copied();
+    let tracked = recorded.is_some();
     if library == Some(present) {
         if tracked || wanted {
-            entry.installed.insert(id.clone(), present);
+            entry
+                .installed
+                .insert(id.clone(), Installation::of(present));
         }
         return Ok(Promotion {
             imported: Imported::Unchanged,
             wanted,
         });
     }
-    if library.is_some() && entry.installed.get(id).copied() != library && !force {
-        let message = if tracked {
+    let base = recorded.and_then(|recorded| recorded.base);
+    if library.is_some() && base != library && !force {
+        let message = if base.is_some() {
             format!(
                 "the library's `{id}` changed since this copy was installed; promoting would discard those changes"
+            )
+        } else if tracked {
+            format!(
+                "the library's `{id}` is a version this copy was never based on; promoting would discard it"
             )
         } else {
             format!(
@@ -563,7 +645,9 @@ pub fn promote(
             .library
             .fingerprint(id)?
             .expect("the skill was just imported");
-        entry.installed.insert(id.clone(), fingerprint);
+        entry
+            .installed
+            .insert(id.clone(), Installation::of(fingerprint));
     }
     Ok(Promotion { imported, wanted })
 }
@@ -584,13 +668,17 @@ pub fn restore(beskar: &Beskar, entry: &mut RepoEntry, id: &SkillId) -> Result<D
     let workspace = beskar.workspace(&entry.path);
     let present = workspace.fingerprint(id, beskar.ignore())?;
     if present == Some(library) {
-        entry.installed.insert(id.clone(), library);
+        entry
+            .installed
+            .insert(id.clone(), Installation::of(library));
         return Ok(Done::Recorded);
     }
+    let tracked = entry.installed.contains_key(id);
     let fingerprint = workspace.install(
         id,
         &beskar.library.skill_source(id),
         beskar.ignore(),
+        present,
         || {
             if workspace.fingerprint(id, beskar.ignore())? != present {
                 return Err(Error::conflict(format!(
@@ -601,11 +689,14 @@ pub fn restore(beskar: &Beskar, entry: &mut RepoEntry, id: &SkillId) -> Result<D
             refuse_checkout(beskar, &workspace, id)
         },
     )?;
-    entry.installed.insert(id.clone(), fingerprint);
-    Ok(if present.is_some() {
-        Done::Replaced
-    } else {
-        Done::Installed
+    entry
+        .installed
+        .insert(id.clone(), Installation::of(fingerprint));
+    entry.skills_dir = Some(beskar.config.skills_dir.clone());
+    Ok(match (present, tracked) {
+        (Some(_), _) => Done::Replaced,
+        (None, true) => Done::Restored,
+        (None, false) => Done::Installed,
     })
 }
 
@@ -716,6 +807,78 @@ mod tests {
 
     fn pairs<T: Copy>(items: &[(&str, T)]) -> Vec<(String, T)> {
         items.iter().map(|(s, t)| (s.to_string(), *t)).collect()
+    }
+
+    #[test]
+    fn keeping_a_local_copy_does_not_let_a_promote_discard_library_changes() {
+        let mut f = Fixture::new();
+        f.update(&[]);
+        f.workspace_write("git", "SKILL.md", "local");
+        f.library_write("git", "SKILL.md", "library v2");
+        assert_eq!(
+            f.update(&[("git", Resolution::Keep)]),
+            pairs(&[("git", Done::KeptLocal)])
+        );
+        assert_eq!(f.actions()[0], ("git".to_string(), Action::KeepLocal));
+        // The copy is still based on the first library version, so pushing
+        // it over the second one needs --force.
+        let error = promote(&f.beskar, &mut f.entry, &id("git"), false).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Conflict);
+        assert!(
+            error
+                .message
+                .contains("changed since this copy was installed")
+        );
+        // A new library version asks again.
+        f.library_write("git", "SKILL.md", "library v3");
+        assert_eq!(
+            f.actions()[0],
+            ("git".to_string(), Action::Conflict(Conflict::Diverged))
+        );
+        // Undoing the local change lets the update through.
+        f.workspace_write("git", "SKILL.md", "---\nname: git\ndescription: v1\n---\n");
+        assert_eq!(f.update(&[]), pairs(&[("git", Done::Updated)]));
+        assert_eq!(f.workspace_read("git", "SKILL.md"), "library v3");
+        assert_eq!(
+            f.entry.installed[&id("git")],
+            Installation::of(f.beskar.library.fingerprint(&id("git")).unwrap().unwrap())
+        );
+    }
+
+    #[test]
+    fn keeping_an_untracked_copy_asks_again_when_the_library_moves() {
+        let mut f = Fixture::new();
+        f.workspace_write("git", "SKILL.md", "my own git skill");
+        assert_eq!(
+            f.actions()[0],
+            ("git".to_string(), Action::Conflict(Conflict::Untracked))
+        );
+        f.update(&[("git", Resolution::Keep)]);
+        assert_eq!(f.actions()[0], ("git".to_string(), Action::KeepLocal));
+        assert!(promote(&f.beskar, &mut f.entry, &id("git"), false).is_err());
+        f.library_write("git", "SKILL.md", "library v2");
+        assert_eq!(
+            f.actions()[0],
+            ("git".to_string(), Action::Conflict(Conflict::Untracked))
+        );
+        assert_eq!(f.workspace_read("git", "SKILL.md"), "my own git skill");
+    }
+
+    #[test]
+    fn a_changed_skills_directory_setting_is_refused_while_skills_are_installed() {
+        let mut f = Fixture::new();
+        f.update(&[]);
+        assert_eq!(
+            f.entry.skills_dir.as_deref(),
+            Some(Path::new(".agents/skills"))
+        );
+        f.beskar.config.skills_dir = PathBuf::from(".claude/skills");
+        let error = plan_repo(&f.beskar, &f.entry).unwrap_err();
+        assert!(
+            error.message.contains("config now says"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]
@@ -940,15 +1103,21 @@ mod tests {
         );
         assert_eq!(f.workspace_read("git", ".git/HEAD"), "ref: refs/heads/main");
 
+        // No longer wanted: the checkout stays where it is, and Beskar
+        // stops managing it rather than failing every update from now on.
         f.profile("coding", &["review"]);
         let plan = f.plan();
+        assert_eq!(plan.steps[0].action, Action::Release);
+        assert!(plan.stays[&id("git")].contains(".git"), "{:?}", plan.stays);
         let outcomes = apply(&f.beskar, &mut f.entry, &plan, &BTreeMap::new());
         assert!(
             outcomes
                 .iter()
-                .any(|o| o.skill.as_str() == "git" && o.result.is_err())
+                .any(|o| o.skill.as_str() == "git" && matches!(o.result, Ok(Done::Released)))
         );
         assert!(f.workspace_has("git"));
+        assert!(!f.entry.installed.contains_key(&id("git")));
+        assert_eq!(f.actions()[0].1, Action::Unmanaged);
         assert_eq!(
             restore(&f.beskar, &mut f.entry, &id("review")).unwrap(),
             Done::Recorded
@@ -1054,7 +1223,7 @@ mod tests {
     }
 
     #[test]
-    fn ignored_files_survive_updates_and_block_removal() {
+    fn ignored_files_survive_updates_and_keep_a_copy_in_place() {
         let mut f = Fixture::new();
         with_ignore(&mut f, &[".env"]);
         f.update(&[]);
@@ -1072,15 +1241,10 @@ mod tests {
         let plan = f.plan();
         let outcomes = apply(&f.beskar, &mut f.entry, &plan, &BTreeMap::new());
         let git = outcomes.iter().find(|o| o.skill.as_str() == "git").unwrap();
-        let error = git.result.as_ref().unwrap_err();
-        assert!(
-            error
-                .message
-                .contains("holds files that are not part of the skill (.env)"),
-            "{}",
-            error.message
-        );
+        assert!(matches!(git.result, Ok(Done::Released)), "{:?}", git.result);
+        assert!(plan.stays[&id("git")].contains(".env"), "{:?}", plan.stays);
         assert_eq!(f.workspace_read("git", ".env"), "TOKEN=secret");
+        assert_eq!(f.workspace_read("git", "SKILL.md"), "library v2");
         let review = outcomes
             .iter()
             .find(|o| o.skill.as_str() == "review")

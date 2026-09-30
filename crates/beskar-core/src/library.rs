@@ -228,10 +228,11 @@ impl Library {
             )));
         }
         let existed = fsx::exists(&target);
+        let before = self.fingerprint(id)?;
         if existed {
             let incoming = Fingerprint::of(&source, &self.ignore)
                 .map_err(|err| Error::io(&err, format_args!("read {}", source.display())))?;
-            if self.fingerprint(id)? == Some(incoming) {
+            if before == Some(incoming) {
                 return Ok(Imported::Unchanged);
             }
             if !replace {
@@ -243,7 +244,21 @@ impl Library {
         }
         fsx::create_dir_all(&self.skills_dir())?;
         let staged = fsx::install_tree(&source, &target, &self.ignore)?;
-        if let Err(error) = fsx::swap_in_carrying(&staged, &target, &self.ignore) {
+        // The library copy being replaced must still be the one compared
+        // above; an edit made meanwhile is not overwritten.
+        let unchanged = |old: &Path| {
+            let now = Fingerprint::of(old, &self.ignore)
+                .map_err(|err| Error::io(&err, format_args!("read {}", old.display())))?;
+            if Some(now) == before {
+                Ok(())
+            } else {
+                Err(Error::conflict(format!(
+                    "the library's `{id}` changed while beskar was replacing it, so it was left as it is"
+                ))
+                .hint("run the command again to see the new state"))
+            }
+        };
+        if let Err(error) = fsx::swap_in_carrying(&staged, &target, &self.ignore, &unchanged) {
             fsx::discard_staged(&staged, &self.ignore);
             return Err(error);
         }
@@ -270,7 +285,7 @@ impl Library {
                 .err()
                 .unwrap_or_else(|| Error::not_found(format!("no skill `{id}`"))));
         }
-        fsx::remove_dir(&self.skill_dir(id))
+        fsx::remove_dir(&self.skill_dir(id), &|_| Ok(()))
     }
 
     // ----- Profiles -----

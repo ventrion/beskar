@@ -2,8 +2,9 @@
 //! out of disk space).
 //!
 //! Every change Beskar makes to a skills directory or to its own files
-//! goes through a temporary entry named `.beskar-<purpose>-<name>-<pid>-<n>`
-//! (see [`fsx`]). A finished run leaves none behind. Recovery runs while
+//! goes through a temporary entry named `<purpose>-<name>-<pid>-<n>` in the
+//! directory's `.beskar` work directory, or `.beskar-write-<file>-<pid>-<n>`
+//! for a file (see [`fsx`]). A finished run leaves none behind. Recovery runs while
 //! holding the lock, so no other Beskar process can be working on these
 //! entries, and it puts each one back the way the interrupted step would
 //! have been undone:
@@ -64,7 +65,7 @@ pub fn sweep(dir: &Path, ignore: &Ignore) -> Vec<Recovered> {
     // goes back first, then the entries carried into the staging copy
     // return to it.
     leftovers.sort();
-    leftovers
+    let found = leftovers
         .into_iter()
         .map(|(purpose, name, leftover)| {
             let target = dir.join(&name);
@@ -79,7 +80,9 @@ pub fn sweep(dir: &Path, ignore: &Ignore) -> Vec<Recovered> {
                 action,
             }
         })
-        .collect()
+        .collect();
+    fsx::tidy(dir);
+    found
 }
 
 fn recover_old(old: &Path, target: &Path, ignore: &Ignore) -> Recovery {
@@ -188,7 +191,11 @@ mod tests {
     const GONE: u32 = 4_194_305;
 
     fn leftover(purpose: &str, name: &str) -> String {
-        format!("skills/.beskar-{purpose}-{name}-{GONE}-0")
+        if purpose == "write" {
+            format!("skills/.beskar-{purpose}-{name}-{GONE}-0")
+        } else {
+            format!("skills/.beskar/{purpose}-{name}-{GONE}-0")
+        }
     }
 
     fn actions(found: &[Recovered]) -> Vec<(String, Recovery)> {
@@ -220,13 +227,14 @@ mod tests {
         assert_eq!(
             actions(&found),
             [
-                (format!(".beskar-old-pdf-{GONE}-0"), Recovery::PutBack),
-                (format!(".beskar-staging-pdf-{GONE}-0"), Recovery::Deleted),
+                (format!("old-pdf-{GONE}-0"), Recovery::PutBack),
+                (format!("staging-pdf-{GONE}-0"), Recovery::Deleted),
             ]
         );
         assert_eq!(tmp.read("skills/pdf/SKILL.md"), "old");
         assert_eq!(tmp.read("skills/pdf/.env"), "SECRET=1");
         assert!(fsx::leftovers(&tmp.path().join("skills")).is_empty());
+        assert!(!tmp.path().join("skills/.beskar").exists());
     }
 
     #[test]
@@ -279,7 +287,7 @@ mod tests {
     #[test]
     fn entries_of_running_processes_and_unknown_names_stay() {
         let tmp = TempDir::new();
-        let mine = format!("skills/.beskar-trash-pdf-{}-0/SKILL.md", std::process::id());
+        let mine = format!("skills/.beskar/trash-pdf-{}-0/SKILL.md", std::process::id());
         tmp.write(&mine, "x");
         tmp.write("skills/.beskar-notes/readme", "x");
         assert!(sweep(&tmp.path().join("skills"), &Ignore::default()).is_empty());

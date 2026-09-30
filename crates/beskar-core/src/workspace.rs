@@ -103,12 +103,15 @@ impl Workspace {
     /// Copy `source` into the workspace as `id`, replacing whatever is
     /// there, and return the copy's fingerprint. `check` runs once the copy
     /// is staged, right before it moves into place; if it fails, nothing
-    /// changes. Ignored entries of the old copy move into the new one.
+    /// changes. `expected` is what the replaced entry must still be once
+    /// it is moved out of the way, the last moment an edit could slip in.
+    /// Ignored entries of the old copy move into the new one.
     pub fn install(
         &self,
         id: &SkillId,
         source: &Path,
         ignore: &Ignore,
+        expected: Option<Fingerprint>,
         check: impl FnOnce() -> Result<()>,
     ) -> Result<Fingerprint> {
         let target = self.skill_path(id);
@@ -117,7 +120,9 @@ impl Workspace {
             .map_err(|err| Error::io(&err, format_args!("read {}", staged.display())))
             .and_then(|fingerprint| {
                 check()?;
-                fsx::swap_in_carrying(&staged, &target, ignore)?;
+                fsx::swap_in_carrying(&staged, &target, ignore, &|old| {
+                    still(old, expected, ignore)
+                })?;
                 Ok(fingerprint)
             });
         if result.is_err() {
@@ -142,15 +147,32 @@ impl Workspace {
             .collect())
     }
 
-    /// Delete a skill's directory in one step (see [`fsx::remove_dir`]).
-    pub fn remove(&self, id: &SkillId) -> Result<()> {
-        fsx::remove_dir(&self.skill_path(id))
+    /// Delete a skill's directory in one step (see [`fsx::remove_dir`]),
+    /// provided it is still `expected` once moved out of the way.
+    pub fn remove(&self, id: &SkillId, ignore: &Ignore, expected: Fingerprint) -> Result<()> {
+        fsx::remove_dir(&self.skill_path(id), &|moved| {
+            still(moved, Some(expected), ignore)
+        })
     }
 
     /// Temporary entries left by an interrupted run.
     pub fn leftovers(&self) -> Vec<PathBuf> {
         fsx::leftovers(&self.skills)
     }
+}
+
+/// Fail unless the entry at `path` (moved out of the way) has fingerprint
+/// `expected`.
+fn still(path: &Path, expected: Option<Fingerprint>, ignore: &Ignore) -> Result<()> {
+    let now = Fingerprint::of(path, ignore)
+        .map_err(|err| Error::io(&err, format_args!("read {}", path.display())))?;
+    if Some(now) == expected {
+        return Ok(());
+    }
+    Err(Error::conflict(
+        "the workspace copy changed while beskar was working on it, so it was left as it is",
+    )
+    .hint("run the command again to see the new state"))
 }
 
 #[cfg(test)]
@@ -171,7 +193,7 @@ mod tests {
         tmp.write("repo/.agents/skills/.beskar-staging-x/SKILL.md", "junk");
         let pdf = SkillId::new("pdf").unwrap();
         let fingerprint = workspace
-            .install(&pdf, &tmp.path().join("lib/pdf"), &ignore, || Ok(()))
+            .install(&pdf, &tmp.path().join("lib/pdf"), &ignore, None, || Ok(()))
             .unwrap();
         assert_eq!(tmp.read("repo/.agents/skills/pdf/SKILL.md"), "pdf");
 
@@ -180,7 +202,7 @@ mod tests {
         assert_eq!(observed.skills.len(), 1);
         assert_eq!(observed.others, ["My Notes"]);
 
-        workspace.remove(&pdf).unwrap();
+        workspace.remove(&pdf, &ignore, fingerprint).unwrap();
         assert_eq!(workspace.fingerprint(&pdf, &ignore).unwrap(), None);
     }
 
@@ -192,11 +214,13 @@ mod tests {
         tmp.write("repo/skills/pdf/old.md", "old");
         tmp.write("lib/pdf/SKILL.md", "new");
         let pdf = SkillId::new("pdf").unwrap();
+        let old = workspace.fingerprint(&pdf, &ignore).unwrap();
         workspace
-            .install(&pdf, &tmp.path().join("lib/pdf"), &ignore, || Ok(()))
+            .install(&pdf, &tmp.path().join("lib/pdf"), &ignore, old, || Ok(()))
             .unwrap();
         assert!(!tmp.path().join("repo/skills/pdf/old.md").exists());
         assert_eq!(tmp.read("repo/skills/pdf/SKILL.md"), "new");
         assert!(workspace.leftovers().is_empty());
+        assert!(!tmp.path().join("repo/skills/.beskar").exists());
     }
 }

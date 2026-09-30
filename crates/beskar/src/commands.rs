@@ -472,7 +472,30 @@ pub const GLOBAL_FLAGS: &[Flag] = &[
     },
 ];
 
-pub fn run(app: &mut App, argv: &[String]) -> u8 {
+/// Run the command line in `argv`. Arguments must be UTF-8: turning one
+/// that is not into text would change it, and a changed path can name a
+/// different directory.
+pub fn run_os(app: &mut App, argv: impl Iterator<Item = std::ffi::OsString>) -> u8 {
+    let mut args = Vec::new();
+    let mut bad = None;
+    for arg in argv {
+        match arg.into_string() {
+            Ok(arg) => args.push(arg),
+            Err(arg) => {
+                bad.get_or_insert_with(|| {
+                    Failure::usage(format!(
+                        "`{}` is not valid UTF-8, and Beskar takes its arguments as text",
+                        crate::output::clean(&arg.to_string_lossy())
+                    ))
+                    .hint("rename the file or directory, or `cd` into it and pass `.`")
+                });
+            }
+        }
+    }
+    run(app, &args, bad)
+}
+
+pub fn run(app: &mut App, argv: &[String], failure: Option<Failure>) -> u8 {
     let mut rest: Vec<String> = Vec::with_capacity(argv.len());
     let mut literal = false;
     for arg in argv {
@@ -486,7 +509,10 @@ pub fn run(app: &mut App, argv: &[String]) -> u8 {
             _ => rest.push(arg.clone()),
         }
     }
-    let result = dispatch(app, &rest);
+    let result = match failure {
+        Some(failure) => Err(failure),
+        None => dispatch(app, &rest),
+    };
     if !app.json {
         return match result {
             Ok(code) => code,

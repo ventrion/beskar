@@ -127,6 +127,7 @@ pub fn action_name(action: Action) -> &'static str {
         Action::Conflict(_) => "conflict",
         Action::MissingSource => "missing_source",
         Action::Unmanaged => "unmanaged",
+        Action::Release => "release",
     }
 }
 
@@ -174,9 +175,14 @@ pub fn step_json(plan: &RepoPlan, step: &Step) -> Json {
         ("conflict", conflict),
         ("profiles", Json::strings(&step.profiles)),
         ("library", fingerprint(step.library)),
-        ("recorded", fingerprint(step.recorded)),
+        ("recorded", fingerprint(step.base())),
+        ("kept", fingerprint(step.recorded.and_then(|r| r.kept))),
         ("present", fingerprint(step.present)),
         ("blocked", blocked),
+        (
+            "stays",
+            Json::from(plan.stays.get(&step.skill).map(String::as_str)),
+        ),
     ])
 }
 
@@ -205,11 +211,16 @@ pub fn entry_json(entry: &RepoEntry) -> Json {
         ("exists", Json::Bool(entry.path.is_dir())),
         ("profiles", Json::strings(&entry.profiles)),
         (
+            "skills_dir",
+            entry.skills_dir.as_deref().map_or(Json::Null, Json::path),
+        ),
+        (
             "installed",
-            Json::arr(entry.installed.iter().map(|(skill, fp)| {
+            Json::arr(entry.installed.iter().map(|(skill, installation)| {
                 Json::obj([
                     ("skill", Json::from(skill.as_str())),
-                    ("fingerprint", Json::from(fp.to_string())),
+                    ("base", fingerprint(installation.base)),
+                    ("kept", fingerprint(installation.kept)),
                 ])
             })),
         ),

@@ -49,6 +49,9 @@ pub struct Counts {
     pub to_install: usize,
     pub to_update: usize,
     pub to_remove: usize,
+    /// Unwanted copies that stay in place because they hold files that
+    /// are not part of the skill.
+    pub to_release: usize,
     pub conflicts: usize,
     pub missing: usize,
     pub changed_here: usize,
@@ -67,6 +70,7 @@ impl Counts {
             to_install: n(&|a| matches!(a, Action::Install | Action::Restore)),
             to_update: n(&|a| a == Action::Update),
             to_remove: n(&|a| a == Action::Remove),
+            to_release: n(&|a| a == Action::Release),
             conflicts: n(&|a| matches!(a, Action::Conflict(_))),
             missing: n(&|a| a == Action::MissingSource),
             changed_here: n(&|a| a == Action::KeepLocal),
@@ -82,7 +86,7 @@ impl Counts {
 
     /// Whether an update would change something by itself.
     pub fn pending(&self) -> bool {
-        self.to_install + self.to_update + self.to_remove > 0
+        self.to_install + self.to_update + self.to_remove + self.to_release > 0
     }
 }
 
@@ -122,7 +126,7 @@ impl Beskar {
             .registry()?
             .repos()
             .map(|entry| RepoHealth {
-                state: if !entry.path.is_dir() {
+                state: if crate::fsx::is_gone(&entry.path) {
                     Health::Gone
                 } else {
                     match sync::plan_repo(self, entry) {
@@ -144,12 +148,13 @@ impl Beskar {
         usage::stats(&self.library, &self.registry()?)
     }
 
-    /// Forget workspaces whose directories are gone. Returns them.
+    /// Forget workspaces whose directories are gone. Returns them. A
+    /// directory that exists but cannot be read is not gone.
     pub fn prune(&self, dry_run: bool) -> Result<Vec<PathBuf>> {
         let gone = |registry: &crate::Registry| -> Vec<PathBuf> {
             registry
                 .repos()
-                .filter(|r| !r.path.is_dir())
+                .filter(|r| crate::fsx::is_gone(&r.path))
                 .map(|r| r.path.clone())
                 .collect()
         };

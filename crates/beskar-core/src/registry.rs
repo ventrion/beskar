@@ -9,9 +9,15 @@
 //! [repo /home/me/code/api]
 //! profile: coding
 //! profile: backend
+//! skills-dir: .agents/skills
 //! synced: 2026-09-29T10:15:03Z
 //! installed: code-review 3f9a2c41d0b7…
+//! installed: git 8d1e0c77a2f4…
+//! kept: git 51b7f3e9c0a2…
 //! ```
+//!
+//! `kept` records a library version the person chose not to take, keeping
+//! their local copy of the skill instead (see [`Installation`]).
 //!
 //! It lives outside the library because it holds absolute paths that only
 //! make sense on this machine.
@@ -29,6 +35,32 @@ use crate::{Error, Result};
 
 pub const REGISTRY_VERSION: &str = "1";
 
+/// What the registry records about one skill Beskar manages in a
+/// workspace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Installation {
+    /// The recorded base: the library version the workspace copy is based
+    /// on. Comparing it with the library and with the workspace copy tells
+    /// who changed what. `None` for a directory Beskar did not install that
+    /// the person chose to keep.
+    pub base: Option<Fingerprint>,
+    /// A library version the person chose not to take, keeping their local
+    /// copy. Beskar does not ask again until the library changes past it,
+    /// and the base stays, so promoting the copy later still knows that the
+    /// library changed.
+    pub kept: Option<Fingerprint>,
+}
+
+impl Installation {
+    /// A copy installed from, or matching, library version `base`.
+    pub fn of(base: Fingerprint) -> Self {
+        Installation {
+            base: Some(base),
+            kept: None,
+        }
+    }
+}
+
 /// One managed workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RepoEntry {
@@ -36,10 +68,12 @@ pub struct RepoEntry {
     pub path: PathBuf,
     /// Enabled profiles, in the order they were enabled.
     pub profiles: Vec<ProfileName>,
-    /// Skills Beskar installed, each with the fingerprint of the library
-    /// version the workspace copy is based on. Comparing that fingerprint
-    /// with the library and with the workspace copy tells who changed what.
-    pub installed: BTreeMap<SkillId, Fingerprint>,
+    /// The skills directory Beskar installed into, relative to the root,
+    /// once it has installed anything. A changed `skills-dir` setting
+    /// would otherwise strand the copies in the old directory.
+    pub skills_dir: Option<PathBuf>,
+    /// Skills Beskar manages here.
+    pub installed: BTreeMap<SkillId, Installation>,
     /// When Beskar last finished reconciling this workspace.
     pub synced: Option<Timestamp>,
 }
@@ -49,6 +83,7 @@ impl RepoEntry {
         RepoEntry {
             path,
             profiles: Vec::new(),
+            skills_dir: None,
             installed: BTreeMap::new(),
             synced: None,
         }
@@ -124,6 +159,14 @@ impl Registry {
                     section.label_error("workspace paths in the registry are absolute"),
                 ));
             }
+            let normal = crate::config::normalize(&repo_path);
+            if normal != repo_path {
+                return Err(fail(
+                    section
+                        .label_error("workspace paths in the registry have no `.` or `..` parts")
+                        .with_help(format!("write `[repo {}]`", normal.display())),
+                ));
+            }
             if repos.contains_key(&repo_path) {
                 return Err(fail(
                     section
@@ -132,7 +175,7 @@ impl Registry {
                 ));
             }
             section
-                .check_keys(&["profile", "installed", "synced"])
+                .check_keys(&["profile", "skills-dir", "installed", "kept", "synced"])
                 .map_err(fail)?;
 
             let mut profiles = Vec::new();
@@ -147,20 +190,41 @@ impl Registry {
                 profiles.push(name);
             }
 
-            let mut installed = BTreeMap::new();
-            for entry in section.all("installed") {
-                let parts: Vec<&str> = entry.value().split_whitespace().collect();
-                let [skill, fingerprint] = parts.as_slice() else {
-                    return Err(fail(entry.error("expected `<skill> <fingerprint>`")));
-                };
-                let skill = SkillId::new(skill).map_err(|e| fail(entry.error(e.message)))?;
-                let fingerprint = Fingerprint::parse(fingerprint).ok_or_else(|| {
-                    fail(entry.error("the fingerprint is not 64 lowercase hexadecimal digits"))
-                })?;
-                if installed.insert(skill.clone(), fingerprint).is_some() {
-                    return Err(fail(entry.error(format!("`{skill}` is listed twice"))));
+            let mut installed: BTreeMap<SkillId, Installation> = BTreeMap::new();
+            for (key, is_kept) in [("installed", false), ("kept", true)] {
+                for entry in section.all(key) {
+                    let parts: Vec<&str> = entry.value().split_whitespace().collect();
+                    let [skill, fingerprint] = parts.as_slice() else {
+                        return Err(fail(entry.error("expected `<skill> <fingerprint>`")));
+                    };
+                    let skill = SkillId::new(skill).map_err(|e| fail(entry.error(e.message)))?;
+                    let fingerprint = Fingerprint::parse(fingerprint).ok_or_else(|| {
+                        fail(entry.error("the fingerprint is not 64 lowercase hexadecimal digits"))
+                    })?;
+                    let record = installed.entry(skill.clone()).or_insert(Installation {
+                        base: None,
+                        kept: None,
+                    });
+                    let slot = if is_kept {
+                        &mut record.kept
+                    } else {
+                        &mut record.base
+                    };
+                    if slot.replace(fingerprint).is_some() {
+                        return Err(fail(
+                            entry.error(format!("`{skill}` has two `{key}` lines")),
+                        ));
+                    }
                 }
             }
+
+            let skills_dir = match section.get("skills-dir").map_err(fail)? {
+                None => None,
+                Some(entry) => Some(
+                    crate::config::check_skills_dir(entry.value())
+                        .map_err(|message| fail(entry.error(message)))?,
+                ),
+            };
 
             let synced = match section.get("synced").map_err(fail)? {
                 None => None,
@@ -174,6 +238,7 @@ impl Registry {
                 RepoEntry {
                     path: repo_path,
                     profiles,
+                    skills_dir,
                     installed,
                     synced,
                 },
@@ -206,11 +271,19 @@ impl Registry {
             for profile in &repo.profiles {
                 push(&mut doc, "profile", profile.as_str());
             }
+            if let Some(skills_dir) = &repo.skills_dir {
+                push(&mut doc, "skills-dir", &skills_dir.to_string_lossy());
+            }
             if let Some(synced) = repo.synced {
                 push(&mut doc, "synced", &synced.to_string());
             }
-            for (skill, fingerprint) in &repo.installed {
-                push(&mut doc, "installed", &format!("{skill} {fingerprint}"));
+            for (skill, installation) in &repo.installed {
+                if let Some(base) = installation.base {
+                    push(&mut doc, "installed", &format!("{skill} {base}"));
+                }
+                if let Some(kept) = installation.kept {
+                    push(&mut doc, "kept", &format!("{skill} {kept}"));
+                }
             }
         }
         doc.to_string()
@@ -308,11 +381,46 @@ mod tests {
             ProfileName::new("coding").unwrap(),
             ProfileName::new("backend").unwrap(),
         ];
-        api.installed.insert(SkillId::new("git").unwrap(), fp(1));
         api.installed
-            .insert(SkillId::new("code-review").unwrap(), fp(2));
+            .insert(SkillId::new("git").unwrap(), Installation::of(fp(1)));
+        api.installed.insert(
+            SkillId::new("code-review").unwrap(),
+            Installation::of(fp(2)),
+        );
         api.synced = Timestamp::parse("2026-09-29T10:15:03Z");
         registry
+    }
+
+    #[test]
+    fn kept_versions_and_the_skills_directory_round_trip() {
+        let mut registry = sample();
+        let api = registry.get_mut(Path::new("/code/api")).unwrap();
+        api.skills_dir = Some(PathBuf::from(".agents/skills"));
+        api.installed.insert(
+            SkillId::new("git").unwrap(),
+            Installation {
+                base: Some(fp(1)),
+                kept: Some(fp(3)),
+            },
+        );
+        api.installed.insert(
+            SkillId::new("mine").unwrap(),
+            Installation {
+                base: None,
+                kept: Some(fp(4)),
+            },
+        );
+        let text = registry.render();
+        assert!(text.contains("skills-dir: .agents/skills\n"), "{text}");
+        assert!(text.contains("installed: git 0101"), "{text}");
+        assert!(text.contains("kept: git 0303"), "{text}");
+        assert!(text.contains("kept: mine 0404"), "{text}");
+        assert!(!text.contains("installed: mine"), "{text}");
+        let back = Registry::parse(&text, registry.path()).unwrap();
+        assert_eq!(
+            back.repos().collect::<Vec<_>>(),
+            registry.repos().collect::<Vec<_>>()
+        );
     }
 
     #[test]
