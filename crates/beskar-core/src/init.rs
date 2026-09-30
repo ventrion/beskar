@@ -114,18 +114,22 @@ pub fn init(home: &Path, user_home: Option<&Path>, library: Option<&Path>) -> Re
         check_registry_location(&config.registry, library)?;
     }
 
-    let mut switched_from = None;
-    if let Some(library) = library
-        && library != config.library
-    {
-        switched_from = Some(config.library.clone());
-        config.set_library(library, user_home)?;
-    }
-    let created = Library::new(config.library.clone(), config.ignore_rules()).create()?;
-    let library = match switched_from {
-        Some(from) => LibraryState::Switched { from, created },
-        None if created => LibraryState::Created,
-        None => LibraryState::Existing,
+    let library = match library.filter(|library| *library != config.library) {
+        // Create the new library before the config points at it, so a
+        // library that cannot be created leaves the config as it was.
+        Some(library) => {
+            let created = Library::new(library.to_path_buf(), config.ignore_rules()).create()?;
+            let from = config.library.clone();
+            config.set_library(library, user_home)?;
+            LibraryState::Switched { from, created }
+        }
+        None => {
+            if Library::new(config.library.clone(), config.ignore_rules()).create()? {
+                LibraryState::Created
+            } else {
+                LibraryState::Existing
+            }
+        }
     };
 
     let registry_created = !fsx::exists(&config.registry);
@@ -191,6 +195,21 @@ mod tests {
         assert_eq!(
             Config::load(&home, Some(tmp.path())).unwrap().library,
             other
+        );
+    }
+
+    #[test]
+    fn a_library_that_cannot_be_created_leaves_the_config_alone() {
+        let tmp = TempDir::new();
+        let home = tmp.path().join(".beskar");
+        init(&home, Some(tmp.path()), None).unwrap();
+        let before = tmp.read(".beskar/config.bsk");
+        let file = tmp.write("not-a-directory", "just a file");
+        assert!(init(&home, Some(tmp.path()), Some(&file)).is_err());
+        assert_eq!(tmp.read(".beskar/config.bsk"), before);
+        assert_eq!(
+            Config::load(&home, Some(tmp.path())).unwrap().library,
+            home.join("library")
         );
     }
 
