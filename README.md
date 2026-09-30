@@ -161,7 +161,7 @@ After an interrupted operation, run:
 beskar doctor --recover
 ```
 
-Recovery restores originals from a partial transaction or finishes cleanup when all new targets are already in place. It checks fingerprints first. If a target or backup was edited after interruption, both are preserved for manual recovery; the journal records their locations. New empty deployment directories are removed during rollback, while directories containing unrelated files survive.
+Recovery removes temporary copies from interrupted staging, restores originals from a partial apply, or finishes cleanup when all new targets are already in place. Before recovering an apply, it checks fingerprints. If a target or backup was edited after interruption, both are preserved for manual recovery; the journal records their locations. New empty deployment directories are removed during rollback, while directories containing unrelated files survive.
 
 Kernel locks coordinate the home, library, registry, and each registered repository, including across different Beskar homes. Locks release when the process exits or is killed. Their empty files remain: `.lock` in the home, `.beskar.lock` in library and repository roots, and `<registry-file>.lock`. Do not delete these files while Beskar runs. Exclude them from Git when applicable.
 

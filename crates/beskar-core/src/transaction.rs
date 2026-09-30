@@ -21,11 +21,18 @@ impl Entry {
     }
 }
 
+#[derive(PartialEq)]
+enum Phase {
+    Planning,
+    Staging,
+    Applying,
+}
+
 pub struct Transaction {
     home: PathBuf,
     entries: Vec<Entry>,
     directories: Vec<PathBuf>,
-    journaled: bool,
+    phase: Phase,
     observations: Vec<(PathBuf, Option<String>)>,
 }
 
@@ -35,7 +42,7 @@ impl Transaction {
             home: home.into(),
             entries: Vec::new(),
             directories: Vec::new(),
-            journaled: false,
+            phase: Phase::Planning,
             observations: Vec::new(),
         }
     }
@@ -86,14 +93,33 @@ impl Transaction {
         if self.entries.iter().any(|e| e.target == target) {
             return Err("duplicate transaction target".into());
         }
+        let journal = self.home.join("transaction.bsk");
+        if self.phase == Phase::Planning && tree::exists(&journal)? {
+            return Err("unfinished transaction; run beskar doctor --recover".into());
+        }
         let root = parent.join(format!(".beskar-txn-{}", tree::unique()));
-        io(root.display(), fs::create_dir(&root))?;
+        if tree::exists(&root)? {
+            return Err(format!("{}: staging root already exists", root.display()));
+        }
         self.entries.push(Entry {
             target: target.into(),
             root: root.clone(),
             old,
             new: None,
         });
+        let mut data = String::from("beskar 1\n");
+        for e in &self.entries {
+            data.push_str(&format!(
+                "stage {} {}\n",
+                format::quote(format::path_text(&e.target)?),
+                format::quote(format::path_text(&e.root)?)
+            ));
+        }
+        // Own the journal even if its rename succeeds but the directory sync fails.
+        self.phase = Phase::Staging;
+        tree::atomic_write(&journal, &data)?;
+        // Persist every root before creating it. A killed copy need not have a fingerprint.
+        io(root.display(), fs::create_dir(&root))?;
         Ok(root.join("new"))
     }
 
@@ -150,9 +176,6 @@ impl Transaction {
             tree::sync_dir(e.root.parent().ok_or("transaction root needs a parent")?)?;
         }
         let journal = self.home.join("transaction.bsk");
-        if tree::exists(&journal)? {
-            return Err("unfinished transaction; run beskar doctor --recover".into());
-        }
         let mut data = String::from("beskar 1\n");
         for directory in &self.directories {
             tree::safe_path(directory)?;
@@ -177,7 +200,7 @@ impl Transaction {
             ));
         }
         tree::atomic_write(&journal, &data)?;
-        self.journaled = true;
+        self.phase = Phase::Applying;
         let result = (|| {
             for directory in &self.directories {
                 tree::safe_path(directory)?;
@@ -237,10 +260,9 @@ impl Transaction {
 
 impl Drop for Transaction {
     fn drop(&mut self) {
-        if !self.journaled {
-            for e in &self.entries {
-                let _ = tree::remove(&e.root);
-            }
+        if self.phase == Phase::Staging {
+            // Keep the journal if cleanup fails so doctor can retry it.
+            let _ = cleanup(&self.home, &self.entries);
         }
     }
 }
@@ -270,7 +292,7 @@ fn rollback_directories(directories: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-/// Finish a fully applied transaction, otherwise restore all originals.
+/// Discard interrupted staging, finish a fully applied transaction, or restore originals.
 /// Refuse recovery if a user edited a target or backup after interruption.
 pub fn recover(home: &Path) -> Result<()> {
     let journal = home.join("transaction.bsk");
@@ -279,8 +301,10 @@ pub fn recover(home: &Path) -> Result<()> {
     }
     let mut entries = Vec::new();
     let mut directories = Vec::new();
-    for r in format::read(&journal)? {
-        if r.is("mkdir", 2) {
+    let records = format::read(&journal)?;
+    let staging = records.first().is_some_and(|r| r.is("stage", 3));
+    for r in records {
+        if !staging && r.is("mkdir", 2) {
             let directory = PathBuf::from(&r.fields[1]);
             if !directory.is_absolute() || directories.contains(&directory) {
                 return Err(r.error("invalid or duplicate transaction directory"));
@@ -289,7 +313,12 @@ pub fn recover(home: &Path) -> Result<()> {
             directories.push(directory);
             continue;
         }
-        if !r.is("change", 5) {
+        let valid_record = if staging {
+            r.is("stage", 3)
+        } else {
+            r.is("change", 5)
+        };
+        if !valid_record {
             return Err(r.error("invalid transaction record"));
         }
         let target = PathBuf::from(&r.fields[1]);
@@ -322,9 +351,21 @@ pub fn recover(home: &Path) -> Result<()> {
         entries.push(Entry {
             target,
             root,
-            old: hash(&r.fields[3])?,
-            new: hash(&r.fields[4])?,
+            old: if staging { None } else { hash(&r.fields[3])? },
+            new: if staging { None } else { hash(&r.fields[4])? },
         });
+    }
+    if staging {
+        for e in &entries {
+            tree::safe_path(&e.root)?;
+            if tree::exists(&e.backup())? {
+                return Err(format!(
+                    "{}: unexpected backup during staging; preserved for manual recovery",
+                    e.backup().display()
+                ));
+            }
+        }
+        return cleanup(home, &entries);
     }
     directories.sort_by_key(|path| path.components().count());
     // Validate every entry before touching any target.
@@ -386,7 +427,7 @@ pub(crate) fn recovery_paths(home: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>)
         if record.is("mkdir", 2) {
             continue;
         }
-        if !record.is("change", 5) {
+        if !record.is("change", 5) && !record.is("stage", 3) {
             return Err(record.error("invalid transaction record"));
         }
         let target = PathBuf::from(&record.fields[1]);
@@ -396,7 +437,8 @@ pub(crate) fn recovery_paths(home: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>)
         }
         tree::safe_path(&target)?;
         tree::safe_path(&root)?;
-        if target == home.join("config.bsk") {
+        // A staging copy can be incomplete. Only the live config is authoritative then.
+        if record.is("change", 5) && target == home.join("config.bsk") {
             configs.extend([root.join("old"), root.join("new")]);
         }
         targets.push(target);

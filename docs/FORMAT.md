@@ -115,7 +115,9 @@ An invalid configuration, registry, or selected profile blocks the operation. Be
 
 ## Transaction journal
 
-`BESKAR_HOME/transaction.bsk` is temporary internal state, rather than configuration to edit. It records one `change TARGET STAGING_ROOT OLD_HASH NEW_HASH` per replacement. A `-` hash means absence. `STAGING_ROOT/old` holds the original; `STAGING_ROOT/new` holds a staged replacement until it is installed.
+`BESKAR_HOME/transaction.bsk` is temporary internal state. Before creating a staging root, Beskar writes a `stage TARGET STAGING_ROOT` record for it. This phase contains only `stage` records. Recovery removes these roots without inspecting incomplete copies or changing targets. Missing roots are valid if interruption happened before their creation or during cleanup.
+
+After staging and validation, Beskar atomically replaces the journal with one `change TARGET STAGING_ROOT OLD_HASH NEW_HASH` per replacement. A `-` hash means absence. `STAGING_ROOT/old` holds the original; `STAGING_ROOT/new` holds a staged replacement until it is installed. No targets change until this apply journal is durable. The two phases cannot mix records.
 
 `mkdir PATH` records a missing destination parent directory before Beskar creates it. Rollback removes these directories from deepest to shallowest if they are still empty. Nonempty directories are preserved; completed transactions retain their destination directories.
 

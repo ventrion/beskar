@@ -26,7 +26,7 @@ The CLI can resolve individual conflicts before calling `apply`. It collects eve
 
 ## Filesystem changes and recovery
 
-One transaction includes every selected repository and the registry. Replacements are staged on the destination filesystem and fingerprinted before a journal is written. Directory creation is journaled too. Originals move to backups, are checked again after moving, and remain available until all targets have been installed.
+One transaction includes every selected repository and the registry. The journal records each staging root before Beskar creates it on the destination filesystem. Recovery of this phase only removes recorded roots, including incomplete copies. Once replacements have been staged and fingerprinted, Beskar atomically replaces the staging journal with the apply journal. The apply journal records missing destination directories and every replacement before targets change. Originals move to backups, are checked again after moving, and remain available until all targets have been installed.
 
 Ordinary failures roll back partial work. `doctor --recover` rolls back an interrupted partial transaction or completes cleanup when every target already has its expected new content. It refuses to discard targets or backups changed after interruption. Configuration changes use the same transaction mechanism; recovery can locate a config file in its backup and acquire the old and new state locks before restoring it.
 

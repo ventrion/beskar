@@ -44,6 +44,175 @@ fn snapshot(path: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 }
 
 #[test]
+fn interrupted_staging_recovers_missing_partial_and_complete_roots() {
+    use crate::{Beskar, format, transaction::Transaction};
+    for progress in ["missing", "partial", "complete"] {
+        let s = Sandbox::new();
+        s.init();
+        let source = s.root.join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("SKILL.md"), "new skill").unwrap();
+        let skills = s.home.join("library/skills");
+        let existing = skills.join("existing");
+        fs::create_dir(&existing).unwrap();
+        fs::write(existing.join("SKILL.md"), "original").unwrap();
+        let mut transaction = Transaction::new(&s.home);
+        for target in [skills.join("imported"), existing.clone()] {
+            transaction
+                .copy(
+                    &target,
+                    &source,
+                    &skills,
+                    tree::optional_hash(&target).unwrap(),
+                    &tree::fingerprint(&source).unwrap(),
+                )
+                .unwrap();
+        }
+        let journal = s.home.join("transaction.bsk");
+        assert!(journal.exists(), "staging must already be recoverable");
+        let records = format::read(&journal).unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|r| r.is("stage", 3)));
+        let root = PathBuf::from(&records[1].fields[2]);
+        match progress {
+            "missing" => fs::remove_dir_all(&root).unwrap(),
+            "partial" => fs::write(root.join("new/SKILL.md"), "partial").unwrap(),
+            _ => (),
+        }
+        // A killed process skips Drop. Targets may have changed since staging began.
+        std::mem::forget(transaction);
+        fs::write(existing.join("SKILL.md"), "user edit").unwrap();
+        assert!(
+            Beskar::open(&s.home, false)
+                .err()
+                .unwrap()
+                .contains("unfinished transaction")
+        );
+        let recovered = Beskar::open(&s.home, true).unwrap();
+        assert_eq!(recovered.skills().unwrap(), ["existing"]);
+        assert_eq!(
+            fs::read_to_string(existing.join("SKILL.md")).unwrap(),
+            "user edit"
+        );
+        assert!(!journal.exists());
+        assert_eq!(tree::children(&skills).unwrap(), [existing]);
+    }
+}
+
+#[test]
+fn staging_recovery_ignores_an_incomplete_config_copy() {
+    use crate::{Beskar, format, transaction::Transaction};
+    let s = Sandbox::new();
+    s.init();
+    let config = s.home.join("config.bsk");
+    let original = fs::read_to_string(&config).unwrap();
+    let mut transaction = Transaction::new(&s.home);
+    transaction
+        .text(&config, &original, tree::optional_hash(&config).unwrap())
+        .unwrap();
+    let records = format::read(&s.home.join("transaction.bsk")).unwrap();
+    let root = PathBuf::from(&records[0].fields[2]);
+    fs::write(root.join("new"), "beskar 1\nlibrary \"").unwrap();
+    std::mem::forget(transaction);
+    Beskar::open(&s.home, true).unwrap();
+    assert_eq!(fs::read_to_string(config).unwrap(), original);
+    assert!(!root.exists());
+    assert!(!s.home.join("transaction.bsk").exists());
+}
+
+#[test]
+fn failed_staging_cleans_its_journal_and_roots() {
+    use crate::transaction::Transaction;
+    let s = Sandbox::new();
+    s.init();
+    let source = s.root.join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("SKILL.md"), "changed source").unwrap();
+    let before = snapshot(&s.root);
+    let mut transaction = Transaction::new(&s.home);
+    let error = transaction
+        .copy(
+            &s.repo.join("skill"),
+            &source,
+            &s.repo,
+            None,
+            &"0".repeat(64),
+        )
+        .unwrap_err();
+    assert!(error.contains("changed while staging"), "{error}");
+    drop(transaction);
+    assert_eq!(snapshot(&s.root), before);
+}
+
+#[test]
+fn staging_never_replaces_an_unfinished_transaction() {
+    use crate::transaction::Transaction;
+    let s = Sandbox::new();
+    s.init();
+    let journal = s.home.join("transaction.bsk");
+    fs::write(&journal, "beskar 1\n# pending recovery\n").unwrap();
+    let before = snapshot(&s.root);
+    let mut transaction = Transaction::new(&s.home);
+    let error = transaction
+        .text(&s.repo.join("new file"), "contents", None)
+        .unwrap_err();
+    assert!(error.contains("unfinished transaction"), "{error}");
+    drop(transaction);
+    assert_eq!(snapshot(&s.root), before);
+}
+
+#[test]
+fn recovery_rejects_mixed_staging_and_applying_records_before_cleanup() {
+    use crate::{format, transaction};
+    let s = Sandbox::new();
+    s.init();
+    let target = s.repo.join("skill");
+    let root = s.repo.join(".beskar-txn-interrupted");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("new"), "keep staged contents").unwrap();
+    let journal = s.home.join("transaction.bsk");
+    fs::write(
+        &journal,
+        format!(
+            "beskar 1\nstage {} {}\nmkdir {}\n",
+            format::quote(target.to_str().unwrap()),
+            format::quote(root.to_str().unwrap()),
+            format::quote(s.repo.join("missing").to_str().unwrap())
+        ),
+    )
+    .unwrap();
+    let before = snapshot(&s.root);
+    assert!(transaction::recover(&s.home).is_err());
+    assert_eq!(snapshot(&s.root), before);
+}
+
+#[test]
+fn staging_recovery_preserves_unexpected_backups() {
+    use crate::{format, transaction};
+    let s = Sandbox::new();
+    s.init();
+    let root = s.repo.join(".beskar-txn-interrupted");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("old"), "preserve this original").unwrap();
+    fs::write(
+        s.home.join("transaction.bsk"),
+        format!(
+            "beskar 1\nstage {} {}\n",
+            format::quote(s.repo.join("skill").to_str().unwrap()),
+            format::quote(root.to_str().unwrap())
+        ),
+    )
+    .unwrap();
+    let before = snapshot(&s.root);
+    assert!(
+        transaction::recover(&s.home)
+            .unwrap_err()
+            .contains("unexpected backup")
+    );
+    assert_eq!(snapshot(&s.root), before);
+}
+
+#[test]
 fn filesystem_failure_rolls_back_applied_changes_and_registry() {
     use crate::transaction::Transaction;
     let s = Sandbox::new();
