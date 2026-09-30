@@ -621,6 +621,7 @@ pub fn promote(
             entry
                 .installed
                 .insert(id.clone(), Installation::of(present));
+            entry.skills_dir = Some(beskar.config.skills_dir.clone());
         }
         return Ok(Promotion {
             imported: Imported::Unchanged,
@@ -655,6 +656,7 @@ pub fn promote(
         entry
             .installed
             .insert(id.clone(), Installation::of(fingerprint));
+        entry.skills_dir = Some(beskar.config.skills_dir.clone());
     }
     Ok(Promotion { imported, wanted })
 }
