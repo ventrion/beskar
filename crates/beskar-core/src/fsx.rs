@@ -455,8 +455,9 @@ fn carry_target(staged: &Path, rel: &Path) -> io::Result<PathBuf> {
 }
 
 /// Copy `src` into a staging directory for `target`, ready to be swapped
-/// in with [`swap_in_carrying`]. Files are flushed to disk, so the copy
-/// that moves in is complete even after a power cut.
+/// in with [`swap_in_carrying`]. Files are not synced one by one, which
+/// would make large updates slow; a copy cut short by a power failure shows
+/// up as changed here, never as the library version.
 pub fn install_tree(src: &Path, target: &Path, ignore: &Ignore) -> Result<PathBuf> {
     let (dir, name) = split(target);
     create_dir_all(dir)?;

@@ -502,8 +502,11 @@ impl Beskar {
                 } else {
                     let mut entry = entry;
                     let outcomes = sync::apply(self, &mut entry, &plan, &decisions);
+                    // Profiles stay as the registry has them: a purge plans
+                    // with none, and they may have changed meanwhile.
                     if let Some(stored) = registry.get_mut(&repo) {
                         stored.installed = entry.installed;
+                        stored.skills_dir = entry.skills_dir;
                         stored.synced = entry.synced;
                     }
                     UpdateResult::Applied(outcomes)
@@ -851,6 +854,10 @@ mod tests {
         let entry = registry.get(&world.repo()).unwrap();
         assert_eq!(entry.installed.len(), 2);
         assert!(entry.synced.is_some());
+        assert_eq!(
+            entry.skills_dir.as_deref(),
+            Some(Path::new(".agents/skills"))
+        );
     }
 
     #[test]

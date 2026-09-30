@@ -215,31 +215,33 @@ pub fn json(style: Style) -> String {
         "{title}
 
 With --json every command prints exactly one JSON document on standard
-output and never asks a question (conflicts follow --on-conflict, `ask`
-stops like `abort`; confirmations need --yes). Text that would explain or
-advise goes nowhere; notices still reach standard error.
+output and never asks a question. Conflicts follow --on-conflict, where
+`ask` stops like `abort`, and confirmations need --yes. Notices also reach
+standard error, for a person watching.
 
   {{
-    \"ok\": true,                 exit == 0
-    \"command\": \"repo update\",  what ran; null if the command line was not understood
-    \"exit\": 0,                  the process exit status (0, 1, 2 or 3)
-    \"data\": {{ ... }},            the result, whenever the command produced one
-    \"error\": {{ ... }},           why it failed, when it did
-    \"notices\": [ ... ]          waits for the lock, leftovers of interrupted runs
+    \"ok\": true,                  exit == 0
+    \"command\": \"repo update\",    what ran; null if the command line was not understood
+    \"exit\": 0,                   the exit status: 0, 1, 2 or 3
+    \"data\": {{ ... }},             the result, whenever the command produced one
+    \"error\": {{ ... }},            why it failed, when it did
+    \"notices\": [ ... ]           waits for the lock, leftovers of interrupted runs
   }}
 
 {errors} {{\"kind\", \"message\", \"hints\": [...]}}, plus \"file\", \"line\" and
 \"column\" for a mistake in one of Beskar's files. Kinds: usage, not_initialized,
 not_found, already_exists, invalid, conflict, locked, io.
 
-{plans} (status, update, enable/disable) list one step per skill:
-  skill, action, conflict, profiles, library, recorded, present, blocked
-Actions: install, restore, update, remove, forget, record, unchanged,
-keep_local, conflict (diverged, untracked or orphaned), missing_source,
-unmanaged. Fingerprints are 64 hexadecimal digits; paths are absolute.
+{plans} (status, update, enable, disable, toggle) list one step per skill:
+  skill, action, conflict, profiles, library, recorded, kept, present,
+  blocked, stays
+Actions: install, restore, update, remove, release, forget, record,
+unchanged, keep_local, conflict (diverged, untracked or orphaned),
+missing_source, unmanaged. Fingerprints are 64 hexadecimal digits, and
+paths are absolute.
 
 An update reports each workspace with a result (up_to_date, planned,
-stopped, applied, failed, error), its steps, and outcomes such as
+stopped, applied, failed or error), its steps, and outcomes such as
 {{\"skill\": \"git\", \"done\": \"updated\"}} or {{\"skill\": ..., \"error\": {{...}}}}.
 
 Field names are stable; new fields may be added. docs/JSON.md in the

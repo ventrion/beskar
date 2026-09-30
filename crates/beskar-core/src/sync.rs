@@ -1108,6 +1108,7 @@ mod tests {
         f.profile("coding", &["review"]);
         let plan = f.plan();
         assert_eq!(plan.steps[0].action, Action::Release);
+        assert!(!plan.is_up_to_date());
         assert!(plan.stays[&id("git")].contains(".git"), "{:?}", plan.stays);
         let outcomes = apply(&f.beskar, &mut f.entry, &plan, &BTreeMap::new());
         assert!(

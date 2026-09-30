@@ -105,6 +105,7 @@ Schemas are strict. An unknown key is an error that suggests the closest known k
 | `skills-dir` | where skills go inside each workspace, relative to its root | `.agents/skills` |
 | `on-conflict` | `ask`, `keep`, `replace` or `abort` | `ask` |
 | `ignore` | a file or directory name pattern, with `*` and `?`, that does not match `SKILL.md`; repeatable | none |
+| `lock-timeout` | whole seconds to wait for another beskar process; `0` does not wait | `60` |
 
 Paths may start with `~/` for the home directory. Relative paths start at the directory holding `config.bsk`.
 
@@ -125,16 +126,23 @@ version: 1
 [repo /home/me/code/api]
 profile: coding
 profile: backend
+skills-dir: .agents/skills
 synced: 2026-09-29T10:15:03Z
 installed: code-review 3f9a2c41d0b7e8f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70819
+installed: git 8d1e0c77a2f4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4e6f8a0b2c4d6e8f0a2b4c6
+kept: git 51b7f3e9c0a2d4f6e8b0c2a4d6f8e0b2c4a6d8f0e2b4c6a8d0f2e4b6c8a0d2f4
 ```
 
 | Key | Where | Values |
 |---|---|---|
 | `version` | root | `1` |
 | `profile` | `[repo <path>]` | an enabled profile; repeatable |
+| `skills-dir` | `[repo <path>]` | the skills directory Beskar installed into; a changed `skills-dir` setting is refused while skills are installed |
 | `synced` | `[repo <path>]` | UTC time of the last completed update |
-| `installed` | `[repo <path>]` | a skill name and the fingerprint of the library version its copy is based on; repeatable |
+| `installed` | `[repo <path>]` | a skill name and the fingerprint of the library version its copy is based on (the recorded base); repeatable |
+| `kept` | `[repo <path>]` | a skill name and the fingerprint of a library version the person chose not to take, keeping their local copy; a `kept` line without an `installed` line is a directory Beskar never installed that the person keeps; repeatable |
+
+Workspace paths are absolute and written without `.` or `..` parts.
 
 ## How Beskar writes BSK
 

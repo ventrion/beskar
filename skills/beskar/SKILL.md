@@ -27,5 +27,8 @@ Done when `beskar status` shows each touched skill in the state the task asked f
 
 ## Reference
 
+- Add `--json` to any command for one machine-readable JSON document on standard output (`beskar help json`); it never prompts, so pass `--on-conflict` and `--yes` where a decision is needed.
+- Keeping a local copy (`--on-conflict keep`) is remembered until the library changes again. Promoting a copy you kept over a newer library version needs `--force`, because it overwrites that version: show the user the diff first.
+- If another beskar process is busy, commands wait up to 60 seconds (`BESKAR_LOCK_TIMEOUT` changes that) and say who they wait for.
 - Profiles are files in the library's `profiles/` directory, one `skill: <name>` line per skill. `beskar help format` describes the syntax.
 - Every command takes `--help`, and `--dry-run` previews `update`, `repo remove` and `library scan`.

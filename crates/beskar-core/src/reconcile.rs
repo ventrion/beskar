@@ -144,7 +144,11 @@ impl Step {
 
     /// Whether the step changes anything, files or registry.
     pub fn changes_anything(&self) -> bool {
-        self.changes_files() || matches!(self.action, Action::Forget | Action::Record)
+        self.changes_files()
+            || matches!(
+                self.action,
+                Action::Forget | Action::Record | Action::Release
+            )
     }
 }
 

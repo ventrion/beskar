@@ -67,6 +67,7 @@ For every installed skill the registry keeps a fingerprint (SHA-256 over paths, 
 | the library changed, the copy did not | replaces the copy |
 | the copy changed, the library did not | keeps the copy: the change is local to this workspace |
 | both changed | conflict |
+| both changed, and you kept your copy over this library version before | keeps the copy |
 | no enabled profile includes the skill any more, copy untouched | deletes the copy |
 | no enabled profile includes the skill any more, copy changed | conflict |
 
@@ -74,10 +75,12 @@ A skill directory Beskar did not install is left alone, unless a profile wants a
 
 Conflicts are settled by `--on-conflict` (or `on-conflict:` in the config):
 
-- `ask`: ask for each one, offering keep, replace, promote and a diff. Without a terminal this behaves like `abort`.
-- `keep`: keep the local copy. Beskar asks again only when the library changes again.
+- `ask`: ask for each one, offering keep, replace, promote and a diff. Without a terminal this behaves like `abort`, unless you pass `--on-conflict ask` explicitly, which reads the answers from standard input.
+- `keep`: keep the local copy. Beskar remembers the library version you declined and asks again only when the library changes again. The copy's recorded base stays, so promoting it later over the newer library version needs `--force`, and undoing your change lets the next update bring the library version in.
 - `replace`: take the library version and discard the local change.
 - `abort`: change nothing in that workspace and exit with status 3.
+
+Questions are asked before Beskar takes its lock, so a person thinking about a conflict does not hold up other processes. Once the answers are in, Beskar plans the workspace again and applies an answer only if the skill is still in exactly the state it was asked about.
 
 Three commands deal with local changes by hand:
 
@@ -87,9 +90,19 @@ beskar repo promote code-review    # make this copy the library version, then `b
 beskar repo restore code-review    # discard local changes
 ```
 
-Before replacing or deleting a copy, Beskar checks its fingerprint again, so an edit made while an update runs is not lost. Copies are staged next to their destination and moved into place, so agents never see a half-written skill. A workspace copy with its own `.git` (a clone of a skill's repository, say) is never replaced or deleted; `beskar status` shows it as blocked and says how to unblock it. A library skill with its own `.git` keeps it when a promotion or `--replace` import overwrites the skill, so the change shows up there as a Git diff, and a skill symlinked into the library is updated where the link points.
+Before replacing or deleting a copy, Beskar checks its fingerprint again, and once more after moving it out of the way, so an edit made while an update runs is not lost. New copies are assembled in a `.beskar` work directory inside the skills directory, one level below where agents look for skills, and moved into place in one rename, so agents never see a half-written skill; a deleted skill is renamed away before it is deleted, so it is never half there either. A workspace copy with its own `.git` (a clone of a skill's repository, say) is never replaced or deleted; `beskar status` shows it as blocked and says how to unblock it. A library skill with its own `.git` keeps it when a promotion or `--replace` import overwrites the skill, so the change shows up there as a Git diff, and a skill symlinked into the library is updated where the link points.
 
-Some files are not part of a skill: version control (`.git`, `.hg`, `.svn`), caches (`__pycache__`, `*.pyc`, `node_modules`, `.venv`) and litter (`.DS_Store`, `Thumbs.db`), plus whatever your `ignore:` lines in the config name. They never count as changes and are never copied, but Beskar leaves them where they are. An update moves them into the new copy, and a copy is deleted only when all it holds besides the skill is caches and litter.
+Some files are not part of a skill: version control (`.git`, `.hg`, `.svn`), caches (`__pycache__`, `*.pyc`, `node_modules`, `.venv`) and litter (`.DS_Store`, `Thumbs.db`), plus whatever your `ignore:` lines in the config name. They never count as changes and are never copied, but Beskar leaves them where they are. An update moves them into the new copy, and a copy is deleted only when all it holds besides the skill is caches and litter. An unwanted copy that holds more than that stays where it is, and Beskar stops managing it.
+
+If Beskar dies halfway through a change, whether from a crash, `kill -9` or a full disk, the next command that changes that workspace or the library undoes or finishes the interrupted step. A copy that was moved aside goes back, a leftover copy is deleted, and files carried into an unfinished copy return. `beskar doctor` lists anything it could not clean up.
+
+Beskar refuses setups that would let it damage its own files:
+
+- a skills directory that leads into the library or into Beskar's home, for example through a symlinked `.agents`;
+- a library inside a directory agents load skills from, such as `~/.claude/skills` or a workspace's `.agents/skills`;
+- a registry inside the library;
+- two workspaces sharing one skills directory;
+- a changed `skills-dir` setting while skills are still installed in the old directory.
 
 ## Commands
 
@@ -122,7 +135,7 @@ beskar status [--all]                   same as repo status
 beskar update [--all]                   same as repo update
 ```
 
-Repo commands act on the registered workspace around the current directory; `--repo PATH` picks another. `beskar help <command>` shows details and examples.
+Repo commands act on the registered workspace around the current directory; `--repo PATH` picks another. Every command takes `--json` and `--no-color`. `beskar help <command>` shows details and examples.
 
 ## Files
 
@@ -138,27 +151,33 @@ skill: testing
 
 When Beskar edits a profile or the config it changes only the affected lines and keeps your comments. Mistakes are reported with file, line, column and a suggested fix. [docs/FORMAT.md](docs/FORMAT.md) is the full specification, and `beskar help format` prints a summary.
 
-## Using Beskar from agents
+## Using Beskar from agents and scripts
+
+- `--json` on any command prints one JSON document on standard output and never asks a question. The document has `ok`, `command`, `exit`, `data`, `error` and `notices`. [docs/JSON.md](docs/JSON.md) describes every command's data, and `beskar help json` summarizes it.
+
+  ```sh
+  beskar update --all --on-conflict keep --json | jq '.data.repos[] | {repo, result}'
+  ```
 
 - Beskar asks questions only on a terminal. Without one, confirmations need `--yes` and conflicts need `--on-conflict`, and Beskar never waits for input.
 - Exit status: 0 success, 1 error, 2 usage error, 3 a decision is needed: a conflict (`--on-conflict`) or a confirmation (`--yes`).
-- Errors name the file, line and column and end with `help:` lines stating the next command to run.
-- Output is plain text without color when it does not go to a terminal (or when `NO_COLOR` is set), and lists come in a stable, sorted order.
-- Several agents can run Beskar at once: changes to the library and registry take an operating-system file lock in `~/.beskar`, which the kernel releases even if a process crashes.
+- Errors name the file, line and column and end with `help:` lines stating the next command to run. In JSON these are `error.hints`.
+- Output is plain text without color when it does not go to a terminal, or with `NO_COLOR` or `--no-color`. Lists come in a stable, sorted order.
+- Several agents can run Beskar at once. Every change takes an operating-system file lock in `~/.beskar`, which the kernel releases even if a process crashes, and reads the registry fresh under it, so no change is lost. `update --all` locks one workspace at a time. A command that finds the lock taken says who holds it and waits up to `lock-timeout` seconds, 60 unless the config or `BESKAR_LOCK_TIMEOUT` says otherwise.
 - [skills/beskar](skills/beskar/SKILL.md) is a skill that teaches coding agents how to work in a Beskar-managed workspace. Add it with `beskar library add skills/beskar` and put it in your profiles.
 
 ## Development
 
 ```sh
-cargo test                        # unit tests and end-to-end tests of the binary
-cargo clippy --all-targets
+cargo test                        # unit tests, randomized safety scenarios, end-to-end tests of the binary
+cargo clippy --all-targets -- -D warnings
 cargo fmt
 ```
 
 The workspace has three crates, one per bounded context (see [CONTEXT-MAP.md](CONTEXT-MAP.md)):
 
 - `crates/bsk`: the BSK parser, lossless editor and diagnostics.
-- `crates/beskar-core`: library, profiles, registry, fingerprints and reconciliation. It never prints or prompts; conflicts come back to the caller, which passes decisions in, so another front end can reuse it.
-- `crates/beskar`: the command line.
+- `crates/beskar-core`: library, profiles, registry, fingerprints and reconciliation, and in `ops` one operation per command that owns its checks, locking and registry changes and returns a report. It never prints or prompts. Conflicts go through a `Resolver` the caller provides, and confirmations are previews the caller shows first, so a TUI or an editor integration can reuse every rule.
+- `crates/beskar`: the command line. It parses, asks and renders each report as text or JSON.
 
 Decisions with lasting consequences are recorded in [docs/adr](docs/adr) and [crates/beskar-core/docs/adr](crates/beskar-core/docs/adr).

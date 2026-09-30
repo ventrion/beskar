@@ -52,6 +52,10 @@ _Avoid_: deployment, link
 A skill directory in a skills directory that Beskar did not install and no enabled profile wants; Beskar leaves it alone.
 _Avoid_: foreign skill, local skill
 
+**Release**:
+To stop managing a skill and leave its directory where it is: an unwanted copy that holds files that are not part of the skill, or an orphaned copy the person keeps.
+_Avoid_: forget (which drops the record of a copy that is already gone), abandon
+
 ### Drift
 
 **Fingerprint**:
@@ -69,6 +73,10 @@ _Avoid_: drift (on its own), modification, dirty copy
 **Library change**:
 A difference between the library version of a skill and an installation's recorded base.
 _Avoid_: upstream change
+
+**Kept version**:
+A library version the person chose not to take for one workspace, keeping the local copy; Beskar asks again only when the library moves past it. The recorded base stays.
+_Avoid_: skipped version, ignored version
 
 **Conflict**:
 A skill whose update would lose a local change: changed in both places (diverged), a directory Beskar did not install in the way (untracked), or changed and no longer wanted (orphaned).
@@ -107,3 +115,25 @@ _Avoid_: diff, changeset
 **Update**:
 Carrying out a plan, settling its conflicts by resolution.
 _Avoid_: apply, sync
+
+### Operations
+
+**Operation**:
+One thing a person can ask Beskar to do, a method of the core that returns a report of what it found or did. Front ends parse, ask and render; the rules live here.
+_Avoid_: use case (in code), command (the command line's word for it)
+
+**Transaction**:
+One change to the library, the registry or a workspace, made while holding the lock, on a registry read fresh, and saved only if it changed.
+_Avoid_: session, batch
+
+**Preview**:
+What an operation would discard (local changes, a skill, a profile), shown to the person before the operation acts; the operation refuses if things changed since.
+_Avoid_: confirmation (that is the person's answer)
+
+**Leftover**:
+A temporary entry a run left behind because it was interrupted halfway; the next transaction recovers it.
+_Avoid_: junk, orphan
+
+**Work directory**:
+The `.beskar` directory inside a skills directory where copies are assembled, moved aside and deleted, one level below where agents look for skills.
+_Avoid_: temp dir, staging area

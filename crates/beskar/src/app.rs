@@ -388,6 +388,14 @@ fn read_answer() -> Option<String> {
     let mut line = String::new();
     match io::stdin().read_line(&mut line) {
         Ok(0) | Err(_) => None,
-        Ok(_) => Some(line.trim().to_lowercase()),
+        Ok(_) => {
+            let answer = line.trim().to_lowercase();
+            // Answers piped in are not echoed by a terminal; echo them so
+            // the conversation reads the same in a log.
+            if !io::stdin().is_terminal() {
+                eprintln!("{answer}");
+            }
+            Some(answer)
+        }
     }
 }

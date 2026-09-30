@@ -92,6 +92,13 @@ fn look_step(plan: &RepoPlan, step: &Step) -> (&'static str, Tone, String) {
             format!("{state}, but it {}", blocker.reason),
         );
     }
+    if step.action == Action::KeepLocal && step.library != step.base() {
+        return (
+            symbol,
+            tone,
+            "changed here; you kept it over a newer library version".to_string(),
+        );
+    }
     match plan.stays.get(&step.skill) {
         Some(reason) => (
             symbol,
@@ -510,7 +517,23 @@ fn status_advice(app: &App, status: &RepoStatus) -> Vec<String> {
             if conflicts.len() == 1 { "needs" } else { "need" }
         ));
     }
-    let local = names(&|a| a == Action::KeepLocal);
+    let kept: Vec<String> = plan
+        .steps
+        .iter()
+        .filter(|s| s.action == Action::KeepLocal && s.library != s.base())
+        .map(|s| s.skill.to_string())
+        .collect();
+    let local: Vec<String> = names(&|a| a == Action::KeepLocal)
+        .into_iter()
+        .filter(|name| !kept.contains(name))
+        .collect();
+    if !kept.is_empty() {
+        lines.push(format!(
+            "{} {} kept over a newer library version: `beskar repo diff` shows the difference; `beskar repo promote <skill> --force` makes the local copy the library version, `beskar repo restore <skill>` takes the library's.",
+            join_and(&kept),
+            if kept.len() == 1 { "is" } else { "are" }
+        ));
+    }
     if let [only] = local.as_slice() {
         lines.push(format!(
             "{only} has local changes: review them with `beskar repo diff {only}`, share them with `beskar repo promote {only}` or discard them with `beskar repo restore {only}`."
@@ -544,7 +567,7 @@ fn status_advice(app: &App, status: &RepoStatus) -> Vec<String> {
     if !status.leftovers.is_empty() {
         lines.push(format!(
             "An interrupted run left {} here; the next `beskar repo update` cleans {} up.",
-            count(status.leftovers.len(), "temporary entry"),
+            count(status.leftovers.len(), "temporary item"),
             if status.leftovers.len() == 1 {
                 "it"
             } else {
