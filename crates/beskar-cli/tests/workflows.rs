@@ -428,7 +428,10 @@ fn nested_cwd_and_malformed_configuration() {
     s.fail(&["update"], "line 3: duplicate skill");
     assert_eq!(before, snapshot(&s.root));
     s.fail(&["init", "--library", "/tmp/new"], "already initialized");
-    assert!(s.ok(&["--version"]).starts_with("beskar 0.1.0"));
+    assert!(
+        s.ok(&["--version"])
+            .starts_with(concat!("beskar ", env!("CARGO_PKG_VERSION")))
+    );
 }
 
 #[test]
