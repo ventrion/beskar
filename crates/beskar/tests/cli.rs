@@ -697,7 +697,7 @@ fn a_checkout_inside_the_skills_directory_is_blocked_with_a_way_out() {
     world
         .run(".", &["registry", "status"])
         .ok()
-        .out_has("need attention");
+        .out_has("1 workspace: 1 needs attention");
 }
 
 #[test]

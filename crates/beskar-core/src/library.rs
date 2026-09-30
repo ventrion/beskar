@@ -270,7 +270,7 @@ impl Library {
                 .err()
                 .unwrap_or_else(|| Error::not_found(format!("no skill `{id}`"))));
         }
-        fsx::remove_all(&self.skill_dir(id))
+        fsx::remove_dir(&self.skill_dir(id))
     }
 
     // ----- Profiles -----

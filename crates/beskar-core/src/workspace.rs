@@ -142,8 +142,9 @@ impl Workspace {
             .collect())
     }
 
+    /// Delete a skill's directory in one step (see [`fsx::remove_dir`]).
     pub fn remove(&self, id: &SkillId) -> Result<()> {
-        fsx::remove_all(&self.skill_path(id))
+        fsx::remove_dir(&self.skill_path(id))
     }
 
     /// Temporary entries left by an interrupted run.

@@ -1,23 +1,28 @@
 //! `beskar repo ...`: workspaces that receive skills, and the update
 //! engine's terminal front end (also used by `registry update`).
 
-use std::collections::BTreeMap;
-use std::fs;
 use std::path::PathBuf;
 
-use beskar_core::diff::{self, DiffLine, FileChange, FileDiff};
+use beskar_core::diff::{DiffLine, FileChange, FileDiff};
 use beskar_core::library::Imported;
-use beskar_core::reconcile::{Action, Conflict, Resolution, Step};
+use beskar_core::ops::repos::{
+    Comparison, ProfileChange, ProfilesChanged, RepoAdded, RepoRemoved, RepoStatus, RepoUpdate,
+    SkillComparison, UpdateResult,
+};
+use beskar_core::reconcile::{Action, Conflict, Step};
 use beskar_core::sync::{self, Done, RepoPlan};
 use beskar_core::timestamp::Timestamp;
-use beskar_core::{
-    Beskar, ConflictPolicy, Error, ProfileName, Registry, RepoEntry, SkillId, Workspace,
-};
+use beskar_core::{Beskar, ConflictPolicy, Error, ProfileName, SkillId};
 
-use super::{conflict_policy, count, counted, join_and, print_nested_error};
+use super::{
+    conflict_policy, count, counted, done_name, entry_json, join_and, outcome_json, plan_json,
+    print_nested_error, step_json,
+};
 use crate::app::{App, EXIT_CONFLICT, EXIT_ERROR, EXIT_OK, Failure, Outcome};
 use crate::args::Matches;
+use crate::json::{self, Json};
 use crate::output::{Cell, Style, clean, table};
+use crate::prompt::Prompt;
 
 // ----- How steps look -----
 
@@ -121,6 +126,16 @@ fn policy_note(app: &App, policy: ConflictPolicy) -> Option<&'static str> {
     }
 }
 
+/// What a conflict policy would do with a conflict, for `--json` dry runs.
+fn policy_word(app: &App, policy: ConflictPolicy) -> &'static str {
+    match policy {
+        ConflictPolicy::Keep => "keep",
+        ConflictPolicy::Replace => "replace",
+        ConflictPolicy::Ask if app.env.interactive => "ask",
+        ConflictPolicy::Ask | ConflictPolicy::Abort => "stop",
+    }
+}
+
 /// Advice after conflicts stopped an update of some workspaces.
 fn conflict_advice(app: &App, policy: ConflictPolicy) -> &'static str {
     match policy {
@@ -133,86 +148,49 @@ fn conflict_advice(app: &App, policy: ConflictPolicy) -> &'static str {
     }
 }
 
+/// The conflict policy for a command, and whether it may ask: an explicit
+/// `--on-conflict ask` also asks on standard input that is not a terminal
+/// (answers piped in by a script), while the configured `ask` needs one.
+fn policy_for(app: &mut App, m: &Matches, beskar: &Beskar) -> Result<ConflictPolicy, Failure> {
+    let policy = conflict_policy(m, beskar)?;
+    if policy == ConflictPolicy::Ask && m.value("on-conflict").is_some() && !app.json {
+        app.env.interactive = true;
+    }
+    Ok(policy)
+}
+
 // ----- add, remove, list -----
 
 pub fn add(app: &mut App, m: &Matches) -> Outcome {
     let beskar = app.load()?;
     let path = app.path_arg(m.arg(0).unwrap_or("."));
-    if !path.is_dir() {
-        return Err(Error::not_found(format!("{} is not a directory", app.display(&path))).into());
-    }
-    for (inside, what) in [
-        (&beskar.config.library, "the library"),
-        (&beskar.config.home, "Beskar's home directory"),
-    ] {
-        if path.starts_with(inside) {
-            return Err(Error::invalid(format!(
-                "{} is inside {what}, which cannot be a workspace",
-                app.display(&path)
-            ))
-            .into());
-        }
-    }
-    sync::check_separate(&beskar, &beskar.workspace(&path))?;
-    let _lock = beskar.lock("repo add")?;
-    let mut registry = beskar.registry()?;
-    let own_skills_dir = beskar.workspace(&path).skills_dir().to_path_buf();
-    for other in registry.repos() {
-        let skills_dir = beskar.workspace(&other.path).skills_dir().to_path_buf();
-        let skills_dir = fs::canonicalize(&skills_dir).unwrap_or(skills_dir);
-        if path.starts_with(&skills_dir) {
-            return Err(Error::invalid(format!(
-                "{} is inside the skills directory of the workspace {}, which Beskar rewrites",
-                app.display(&path),
-                app.display(&other.path)
-            ))
-            .into());
-        }
-        if other.path.starts_with(&own_skills_dir) {
-            return Err(Error::invalid(format!(
-                "the registered workspace {} is inside {}, which Beskar would rewrite",
-                app.display(&other.path),
-                app.display(&own_skills_dir)
-            ))
-            .hint(format!(
-                "unregister it first with `beskar repo remove {}`",
-                app.arg(&other.path)
-            ))
-            .into());
-        }
-    }
-    let outer = registry
-        .containing(&path)
-        .map(|entry| entry.path.clone())
-        .filter(|outer| *outer != path);
+    let added = beskar.add_repo(&path)?;
+    app.data(|| added_json(&added));
     let style = app.out.style();
-    let place = app.display(&path);
-    if !registry.add(path.clone())? {
+    let place = app.display(&added.path);
+    if !added.new {
         app.out
             .line(format!("{} is already registered.", style.bold(&place)));
         return Ok(EXIT_OK);
     }
-    registry.save()?;
     app.out.line(format!("Registered {}.", style.bold(&place)));
-    if let Some(outer) = outer {
+    if let Some(outer) = &added.inside {
         app.out.line(format!(
             "It is inside the registered workspace {}; commands run under {place} now use {place}.",
-            app.display(&outer)
+            app.display(outer)
         ));
     }
-    let observed = beskar.workspace(&path).observe(beskar.ignore())?;
-    if !observed.skills.is_empty() {
+    if added.existing_skills > 0 {
         app.out.line(format!(
             "Its {} already holds {}; `beskar repo status` compares them with the library.",
             beskar.config.skills_dir.display(),
-            count(observed.skills.len(), "skill")
+            count(added.existing_skills, "skill")
         ));
     }
-    let profiles = beskar.library.profile_names().unwrap_or_default();
-    if profiles.is_empty() {
+    if added.profiles.is_empty() {
         app.out.line("Next: create a profile with `beskar profile create <name> <skill>...`, then enable it here.");
     } else {
-        let names: Vec<&str> = profiles.iter().map(ProfileName::as_str).collect();
+        let names: Vec<&str> = added.profiles.iter().map(ProfileName::as_str).collect();
         app.out.line(format!(
             "Next: `beskar repo enable <profile>` (you have {}).",
             join_and(&names)
@@ -221,83 +199,78 @@ pub fn add(app: &mut App, m: &Matches) -> Outcome {
     Ok(EXIT_OK)
 }
 
+fn added_json(added: &RepoAdded) -> Json {
+    Json::obj([
+        ("path", Json::path(&added.path)),
+        ("new", Json::Bool(added.new)),
+        (
+            "inside",
+            added.inside.as_deref().map_or(Json::Null, Json::path),
+        ),
+        ("existing_skills", Json::count(added.existing_skills)),
+        ("profiles", Json::strings(&added.profiles)),
+    ])
+}
+
 pub fn remove(app: &mut App, m: &Matches) -> Outcome {
     let beskar = app.load()?;
     let dry_run = m.has("dry-run");
-    let _lock = if dry_run {
-        None
-    } else {
-        Some(beskar.lock("repo remove")?)
-    };
-    let mut registry = beskar.registry()?;
-    // The path names a workspace root exactly, so a typo or a subdirectory
-    // cannot select the workspace around it.
     let path = app.path_arg(m.arg(0).unwrap_or("."));
-    let Some(entry) = registry.get(&path).cloned() else {
-        let error = Error::not_found(format!(
-            "{} is not a registered workspace",
-            app.display(&path)
-        ));
-        return Err(match registry.containing(&path) {
-            Some(outer) => error.hint(format!(
-                "it is inside the registered workspace {}; to remove that one, run `beskar repo remove {}`",
-                app.display(&outer.path),
-                app.arg(&outer.path)
-            )),
-            None => error.hint("`beskar repo list` shows the registered workspaces"),
-        }
-        .into());
+    let purge = m.has("purge");
+    let policy = policy_for(app, m, &beskar)?;
+    let removed = {
+        let mut prompt = Prompt::new(app, policy);
+        let resolver: Option<&mut dyn beskar_core::ops::Resolver> =
+            purge.then_some(&mut prompt as _);
+        beskar.remove_repo(&path, resolver, dry_run)?
     };
+    if app.json {
+        let json = removed_json(app, &removed, policy);
+        app.data(|| json);
+    }
     let style = app.out.style();
-    let place = app.display(&entry.path);
-    let exists = entry.path.is_dir();
-
-    if m.has("purge") && exists {
-        let mut emptied = RepoEntry {
-            profiles: Vec::new(),
-            ..entry.clone()
-        };
-        let plan = sync::plan_repo(&beskar, &emptied)?;
-        let policy = conflict_policy(m, &beskar)?;
+    let place = app.display(&removed.path);
+    if let Some(update) = &removed.purge {
         app.out.line(style.bold(&place));
-        if dry_run {
-            print_plan(app, &plan, Some(policy));
-            let stops = plan.conflicts().next().is_some() && policy_note(app, policy).is_none();
-            if stops || !plan.blocked.is_empty() {
-                app.out.line(format!(
-                    "Dry run: {place} would stay registered, because some skills could not be deleted."
-                ));
-                if stops {
-                    app.out.line(conflict_advice(app, policy));
+        match &update.result {
+            UpdateResult::Planned | UpdateResult::UpToDate if dry_run => {
+                print_plan(app, &update.plan, Some(policy));
+                let stops =
+                    update.plan.conflicts().next().is_some() && policy_note(app, policy).is_none();
+                if stops || !update.plan.blocked.is_empty() {
+                    app.out.line(format!(
+                        "Dry run: {place} would stay registered, because some skills could not be deleted."
+                    ));
+                    if stops {
+                        app.out.line(conflict_advice(app, policy));
+                    }
+                    return Ok(if update.plan.blocked.is_empty() {
+                        EXIT_CONFLICT
+                    } else {
+                        EXIT_ERROR
+                    });
                 }
-                return Ok(if plan.blocked.is_empty() {
-                    EXIT_CONFLICT
-                } else {
-                    EXIT_ERROR
-                });
+                app.out.line(format!(
+                    "Dry run: would delete those skills and unregister {place}."
+                ));
+                return Ok(EXIT_OK);
             }
-            app.out.line(format!(
-                "Dry run: would delete those skills and unregister {place}."
-            ));
-            return Ok(EXIT_OK);
+            UpdateResult::Stopped => {
+                print_plan(app, &update.plan, None);
+                app.out
+                    .line(format!("Nothing changed; {place} is still registered."));
+                app.out.line(conflict_advice(app, policy));
+                return Ok(EXIT_CONFLICT);
+            }
+            UpdateResult::Applied(outcomes) => {
+                print_outcomes(app, &update.plan, outcomes);
+            }
+            _ => {}
         }
-        let Some(decisions) = decide(app, &beskar, &plan, policy)? else {
-            print_plan(app, &plan, None);
-            app.out
-                .line(format!("Nothing changed; {place} is still registered."));
-            app.out.line(conflict_advice(app, policy));
-            return Ok(EXIT_CONFLICT);
-        };
-        let outcomes = sync::apply(&beskar, &mut emptied, &plan, &decisions);
-        let failed = print_outcomes(app, &plan, &outcomes);
-        if failed > 0 {
-            if let Some(stored) = registry.get_mut(&entry.path) {
-                stored.installed = emptied.installed;
-            }
-            registry.save()?;
+        if !removed.unregistered {
             app.out.line(format!(
                 "{place} stays registered until every skill can be removed. To stop managing it and leave its files as they are, run `beskar repo remove {}` without --purge.",
-                app.arg(&entry.path)
+                app.arg(&removed.path)
             ));
             return Ok(EXIT_ERROR);
         }
@@ -305,31 +278,46 @@ pub fn remove(app: &mut App, m: &Matches) -> Outcome {
         app.out.line(format!("Dry run: would unregister {place}."));
         return Ok(EXIT_OK);
     }
-    registry.remove(&entry.path);
-    registry.save()?;
     app.out
         .line(format!("Unregistered {}.", style.bold(&place)));
-    if !m.has("purge") && exists && !entry.installed.is_empty() {
+    if removed.left_in_place > 0 {
         app.out.line(format!(
             "Its {} stay in {} and are no longer managed.",
-            count(entry.installed.len(), "installed skill"),
+            count(removed.left_in_place, "installed skill"),
             beskar.config.skills_dir.display()
         ));
     }
     Ok(EXIT_OK)
 }
 
+fn removed_json(app: &App, removed: &RepoRemoved, policy: ConflictPolicy) -> Json {
+    Json::obj([
+        ("path", Json::path(&removed.path)),
+        ("exists", Json::Bool(removed.exists)),
+        ("unregistered", Json::Bool(removed.unregistered)),
+        ("left_in_place", Json::count(removed.left_in_place)),
+        (
+            "purge",
+            removed
+                .purge
+                .as_ref()
+                .map_or(Json::Null, |update| update_json(app, update, policy)),
+        ),
+    ])
+}
+
 pub fn list(app: &mut App, _m: &Matches) -> Outcome {
     let beskar = app.load()?;
-    let registry = beskar.registry()?;
-    if registry.is_empty() {
+    let repos = beskar.repos()?;
+    app.data(|| Json::arr(repos.iter().map(entry_json)));
+    if repos.is_empty() {
         app.out
             .line("No workspaces registered. Register one with `beskar repo add <path>`.");
         return Ok(EXIT_OK);
     }
     let style = app.out.style();
-    let rows = registry
-        .repos()
+    let rows = repos
+        .iter()
         .map(|entry| {
             let profiles = entry
                 .profiles
@@ -361,11 +349,10 @@ pub fn list(app: &mut App, _m: &Matches) -> Outcome {
 }
 
 /// The workspaces a status or update command acts on.
-fn targets(app: &App, m: &Matches, registry: &Registry) -> Result<Vec<PathBuf>, Failure> {
+fn targets(app: &App, m: &Matches, beskar: &Beskar) -> Result<Vec<PathBuf>, Failure> {
     match (m.has("all"), m.value("repo")) {
         (true, Some(_)) => Err(Failure::usage("pass either --all or --repo, not both")),
-        (true, None) => Ok(registry.repos().map(|entry| entry.path.clone()).collect()),
-        (false, flag) => Ok(vec![app.repo(registry, flag)?]),
+        (all, flag) => Ok(beskar.targets(all, &app.repo_ref(flag)?)?),
     }
 }
 
@@ -373,34 +360,49 @@ fn targets(app: &App, m: &Matches, registry: &Registry) -> Result<Vec<PathBuf>, 
 
 pub fn status(app: &mut App, m: &Matches) -> Outcome {
     let beskar = app.load()?;
-    let registry = beskar.registry()?;
-    let targets = targets(app, m, &registry)?;
+    let targets = targets(app, m, &beskar)?;
     if targets.is_empty() {
+        app.data(|| Json::obj([("repos", Json::arr([]))]));
         app.out
             .line("No workspaces registered. Register one with `beskar repo add <path>`.");
         return Ok(EXIT_OK);
     }
     let mut code = EXIT_OK;
+    let mut found = Vec::new();
     for (i, path) in targets.iter().enumerate() {
         if i > 0 {
             app.out.blank();
         }
-        let entry = registry.get(path).expect("targets come from the registry");
-        if let Err(failure) = print_status(app, &beskar, entry) {
-            match failure {
-                Failure::Error(error) if targets.len() > 1 => {
-                    print_nested_error(app, &error);
-                    code = EXIT_ERROR;
-                }
-                other => return Err(other),
+        match beskar.repo_status(path) {
+            Ok(status) => {
+                print_status(app, &beskar, &status);
+                found.push(status_json(&status));
             }
+            Err(error) if targets.len() > 1 => {
+                app.out.line(app.out.style().bold(&app.display(path)));
+                print_nested_error(app, &error);
+                found.push(Json::obj([
+                    ("path", Json::path(path)),
+                    ("error", json::error(&error)),
+                ]));
+                code = EXIT_ERROR;
+            }
+            Err(error) => return Err(error.into()),
         }
     }
+    app.data(|| Json::obj([("repos", Json::Arr(found))]));
     Ok(code)
 }
 
-fn print_status(app: &mut App, beskar: &Beskar, entry: &RepoEntry) -> Result<(), Failure> {
+fn status_json(status: &RepoStatus) -> Json {
+    entry_json(&status.entry)
+        .with("plan", plan_json(&status.plan))
+        .with("leftovers", Json::paths(&status.leftovers))
+}
+
+fn print_status(app: &mut App, beskar: &Beskar, status: &RepoStatus) {
     let style = app.out.style();
+    let (entry, plan) = (&status.entry, &status.plan);
     app.out.line(style.bold(&app.display(&entry.path)));
     let profiles = entry
         .profiles
@@ -421,7 +423,6 @@ fn print_status(app: &mut App, beskar: &Beskar, entry: &RepoEntry) -> Result<(),
         },
         beskar.config.skills_dir.display()
     )));
-    let plan = sync::plan_repo(beskar, entry)?;
     app.out.blank();
     if plan.steps.is_empty() {
         app.out.line("  No skills here yet.");
@@ -430,7 +431,7 @@ fn print_status(app: &mut App, beskar: &Beskar, entry: &RepoEntry) -> Result<(),
         .steps
         .iter()
         .map(|step| {
-            let (symbol, tone, state) = look_step(&plan, step);
+            let (symbol, tone, state) = look_step(plan, step);
             vec![
                 Cell::styled(symbol, |t| paint(style, tone, t)),
                 Cell::plain(step.skill.to_string()),
@@ -451,13 +452,13 @@ fn print_status(app: &mut App, beskar: &Beskar, entry: &RepoEntry) -> Result<(),
         ));
     }
     app.out.blank();
-    for line in status_advice(app, &plan, entry) {
+    for line in status_advice(app, status) {
         app.out.line(line);
     }
-    Ok(())
 }
 
-fn status_advice(app: &App, plan: &RepoPlan, entry: &RepoEntry) -> Vec<String> {
+fn status_advice(app: &App, status: &RepoStatus) -> Vec<String> {
+    let (plan, entry) = (&status.plan, &status.entry);
     let mut lines = Vec::new();
     let names = |f: &dyn Fn(Action) -> bool| -> Vec<String> {
         plan.steps
@@ -513,6 +514,17 @@ fn status_advice(app: &App, plan: &RepoPlan, entry: &RepoEntry) -> Vec<String> {
             ));
         }
     }
+    if !status.leftovers.is_empty() {
+        lines.push(format!(
+            "An interrupted run left {} here; the next `beskar repo update` cleans {} up.",
+            count(status.leftovers.len(), "temporary entry"),
+            if status.leftovers.len() == 1 {
+                "it"
+            } else {
+                "them"
+            }
+        ));
+    }
     if lines.is_empty() {
         lines.push("Everything is up to date.".to_string());
     }
@@ -521,87 +533,45 @@ fn status_advice(app: &App, plan: &RepoPlan, entry: &RepoEntry) -> Vec<String> {
 
 // ----- enable, disable, toggle -----
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Change {
-    Enable,
-    Disable,
-    Toggle,
-}
-
 pub fn enable(app: &mut App, m: &Matches) -> Outcome {
-    change_profiles(app, m, Change::Enable)
+    change_profiles(app, m, ProfileChange::Enable)
 }
 
 pub fn disable(app: &mut App, m: &Matches) -> Outcome {
-    change_profiles(app, m, Change::Disable)
+    change_profiles(app, m, ProfileChange::Disable)
 }
 
 pub fn toggle(app: &mut App, m: &Matches) -> Outcome {
-    change_profiles(app, m, Change::Toggle)
+    change_profiles(app, m, ProfileChange::Toggle)
 }
 
-fn change_profiles(app: &mut App, m: &Matches, change: Change) -> Outcome {
+fn change_profiles(app: &mut App, m: &Matches, change: ProfileChange) -> Outcome {
     let beskar = app.load()?;
-    let _lock = beskar.lock("repo profiles")?;
-    let mut registry = beskar.registry()?;
-    let path = app.repo(&registry, m.value("repo"))?;
-    let mut entry = registry
-        .get(&path)
-        .cloned()
-        .expect("resolved from the registry");
-    let (mut enabled, mut disabled, mut notes) = (Vec::new(), Vec::new(), Vec::new());
-    for arg in &m.args {
-        let name = match ProfileName::new(arg) {
-            Ok(name) => name,
-            Err(_) => beskar.library.find_profile(arg)?,
-        };
-        let is_enabled = entry.profiles.contains(&name);
-        let enable = match change {
-            Change::Enable => true,
-            Change::Disable => false,
-            Change::Toggle => !is_enabled,
-        };
-        if enable {
-            let name = beskar.library.find_profile(arg)?;
-            if is_enabled {
-                notes.push(format!("{name} was already enabled."));
-            } else if !enabled.contains(&name) {
-                entry.profiles.push(name.clone());
-                enabled.push(name);
-            }
-        } else if is_enabled {
-            entry.profiles.retain(|p| *p != name);
-            disabled.push(name);
-        } else if !disabled.contains(&name) {
-            if !beskar.library.has_profile(&name) {
-                beskar.library.find_profile(arg)?;
-            }
-            notes.push(format!("{name} was not enabled."));
-        }
-    }
-    if !enabled.is_empty() || !disabled.is_empty() {
-        *registry.get_mut(&path).expect("registered") = entry.clone();
-        registry.save()?;
-    }
+    let at = app.repo_ref(m.value("repo"))?;
+    let report = beskar.change_profiles(&at, change, &m.args)?;
+    app.data(|| profiles_changed_json(&report));
     let style = app.out.style();
-    let place = style.bold(&app.display(&path));
+    let place = style.bold(&app.display(&report.repo));
     let names =
         |list: &[ProfileName]| join_and(&list.iter().map(ProfileName::as_str).collect::<Vec<_>>());
-    if !enabled.is_empty() {
+    if !report.enabled.is_empty() {
         app.out
-            .line(format!("Enabled {} in {place}.", names(&enabled)));
+            .line(format!("Enabled {} in {place}.", names(&report.enabled)));
     }
-    if !disabled.is_empty() {
+    if !report.disabled.is_empty() {
         app.out
-            .line(format!("Disabled {} in {place}.", names(&disabled)));
+            .line(format!("Disabled {} in {place}.", names(&report.disabled)));
     }
-    for note in notes {
-        app.out.line(note);
+    for name in &report.already_enabled {
+        app.out.line(format!("{name} was already enabled."));
     }
-    if enabled.is_empty() && disabled.is_empty() {
+    for name in &report.not_enabled {
+        app.out.line(format!("{name} was not enabled."));
+    }
+    if !report.changed() {
         return Ok(EXIT_OK);
     }
-    match sync::plan_repo(&beskar, &entry) {
+    match &report.pending {
         Ok(plan) => {
             let pending: Vec<String> = plan
                 .steps
@@ -611,7 +581,7 @@ fn change_profiles(app: &mut App, m: &Matches, change: Change) -> Outcome {
                         || matches!(s.action, Action::Conflict(_) | Action::MissingSource)
                 })
                 .map(|s| {
-                    let (symbol, tone, _) = look_step(&plan, s);
+                    let (symbol, tone, _) = look_step(plan, s);
                     format!("{} {}", paint(style, tone, symbol), s.skill)
                 })
                 .collect();
@@ -622,18 +592,32 @@ fn change_profiles(app: &mut App, m: &Matches, change: Change) -> Outcome {
                 app.out.line("Run `beskar repo update` to apply.");
             }
         }
-        Err(error) => print_nested_error(app, &error),
+        Err(error) => print_nested_error(app, error),
     }
     Ok(EXIT_OK)
+}
+
+fn profiles_changed_json(report: &ProfilesChanged) -> Json {
+    let pending = match &report.pending {
+        Ok(plan) => plan_json(plan),
+        Err(error) => Json::obj([("error", json::error(error))]),
+    };
+    Json::obj([
+        ("repo", Json::path(&report.repo)),
+        ("enabled", Json::strings(&report.enabled)),
+        ("disabled", Json::strings(&report.disabled)),
+        ("already_enabled", Json::strings(&report.already_enabled)),
+        ("not_enabled", Json::strings(&report.not_enabled)),
+        ("pending", pending),
+    ])
 }
 
 // ----- update -----
 
 pub fn update(app: &mut App, m: &Matches) -> Outcome {
     let beskar = app.load()?;
-    let registry = beskar.registry()?;
-    let targets = targets(app, m, &registry)?;
-    let policy = conflict_policy(m, &beskar)?;
+    let targets = targets(app, m, &beskar)?;
+    let policy = policy_for(app, m, &beskar)?;
     update_many(app, &beskar, &targets, m.has("dry-run"), policy)
 }
 
@@ -647,81 +631,96 @@ pub fn update_many(
     policy: ConflictPolicy,
 ) -> Outcome {
     if targets.is_empty() {
+        app.data(|| Json::obj([("dry_run", Json::Bool(dry_run)), ("repos", Json::arr([]))]));
         app.out
             .line("No workspaces registered. Register one with `beskar repo add <path>`.");
         return Ok(EXIT_OK);
     }
-    let _lock = if dry_run {
-        None
-    } else {
-        Some(beskar.lock("update")?)
-    };
-    let mut registry = beskar.registry()?;
     let style = app.out.style();
     let (mut changed, mut unchanged, mut stopped, mut failed) = (0, 0, 0, 0);
+    let mut found = Vec::new();
     for (i, path) in targets.iter().enumerate() {
         if i > 0 && targets.len() > 1 {
             app.out.blank();
         }
         app.out.line(style.bold(&app.display(path)));
-        let Some(entry) = registry.get(path).cloned() else {
-            app.out.line(format!("  {} not registered", style.red("✗")));
-            failed += 1;
-            continue;
+        let result = {
+            let mut prompt = Prompt::new(app, policy);
+            beskar.update_repo(path, dry_run, &mut prompt)
         };
-        let plan = match sync::plan_repo(beskar, &entry) {
-            Ok(plan) => plan,
+        let update = match result {
+            Ok(update) => update,
             Err(error) => {
                 print_nested_error(app, &error);
+                if app.json {
+                    found.push(Json::obj([
+                        ("repo", Json::path(path)),
+                        ("result", Json::from("error")),
+                        ("error", json::error(&error)),
+                    ]));
+                }
                 failed += 1;
                 continue;
             }
         };
-        if plan.is_up_to_date() {
-            print_plan(app, &plan, None);
-            unchanged += 1;
-            if !dry_run {
-                save_entry(
-                    &mut registry,
-                    RepoEntry {
-                        synced: Some(Timestamp::now()),
-                        ..entry
-                    },
-                )?;
-            }
-            continue;
+        if app.json {
+            found.push(update_json(app, &update, policy));
         }
-        if dry_run {
-            print_plan(app, &plan, Some(policy));
-            print_blockers(app, &plan);
-            if !plan.blocked.is_empty() || plan.missing_sources().next().is_some() {
-                failed += 1;
-            } else if plan.conflicts().next().is_some() && policy_note(app, policy).is_none() {
+        match &update.result {
+            UpdateResult::UpToDate => {
+                print_plan(app, &update.plan, None);
+                unchanged += 1;
+            }
+            UpdateResult::Planned => {
+                print_plan(app, &update.plan, Some(policy));
+                print_blockers(app, &update.plan);
+                if update.has_errors() {
+                    failed += 1;
+                } else if update.plan.conflicts().next().is_some()
+                    && policy_note(app, policy).is_none()
+                {
+                    stopped += 1;
+                } else {
+                    changed += 1;
+                }
+            }
+            UpdateResult::Stopped => {
+                print_plan(app, &update.plan, None);
+                app.out.line(format!(
+                    "  {}",
+                    style.yellow("nothing changed here: conflicts need a decision")
+                ));
                 stopped += 1;
-            } else {
-                changed += 1;
             }
-            continue;
-        }
-        let Some(decisions) = decide(app, beskar, &plan, policy)? else {
-            print_plan(app, &plan, None);
-            app.out.line(format!(
-                "  {}",
-                style.yellow("nothing changed here: conflicts need a decision")
-            ));
-            stopped += 1;
-            continue;
-        };
-        let mut entry = entry;
-        let outcomes = sync::apply(beskar, &mut entry, &plan, &decisions);
-        let failures = print_outcomes(app, &plan, &outcomes);
-        save_entry(&mut registry, entry)?;
-        if failures > 0 || plan.missing_sources().next().is_some() {
-            failed += 1;
-        } else {
-            changed += 1;
+            UpdateResult::Applied(outcomes) => {
+                print_outcomes(app, &update.plan, outcomes);
+                if update.has_errors() {
+                    failed += 1;
+                } else {
+                    changed += 1;
+                }
+            }
         }
     }
+    app.data(|| {
+        Json::obj([
+            ("dry_run", Json::Bool(dry_run)),
+            ("policy", Json::from(policy.as_str())),
+            ("repos", Json::Arr(found)),
+            (
+                "summary",
+                Json::obj([
+                    (
+                        if dry_run { "to_update" } else { "updated" },
+                        Json::count(changed),
+                    ),
+                    ("up_to_date", Json::count(unchanged)),
+                    ("stopped", Json::count(stopped)),
+                    ("failed", Json::count(failed)),
+                ]),
+            ),
+        ])
+    });
 
     if targets.len() > 1 || dry_run {
         app.out.blank();
@@ -760,12 +759,38 @@ pub fn update_many(
     })
 }
 
-fn save_entry(registry: &mut Registry, entry: RepoEntry) -> Result<(), Failure> {
-    if let Some(stored) = registry.get_mut(&entry.path) {
-        *stored = entry;
-    }
-    registry.save()?;
-    Ok(())
+/// One workspace's update for `--json`: every planned step, what happened
+/// to each skill that changed, and for a dry run what the conflict policy
+/// would do.
+pub fn update_json(app: &App, update: &RepoUpdate, policy: ConflictPolicy) -> Json {
+    let result = match &update.result {
+        UpdateResult::UpToDate => "up_to_date",
+        UpdateResult::Planned => "planned",
+        UpdateResult::Stopped => "stopped",
+        UpdateResult::Applied(_) if update.has_errors() => "failed",
+        UpdateResult::Applied(_) => "applied",
+    };
+    let outcomes = match &update.result {
+        UpdateResult::Applied(outcomes) => Json::arr(outcomes.iter().map(outcome_json)),
+        _ => Json::arr([]),
+    };
+    let steps = update.plan.steps.iter().map(|step| {
+        let json = step_json(&update.plan, step);
+        if matches!(update.result, UpdateResult::Planned)
+            && matches!(step.action, Action::Conflict(_))
+        {
+            json.with("would", Json::from(policy_word(app, policy)))
+        } else {
+            json
+        }
+    });
+    Json::obj([
+        ("repo", Json::path(&update.repo)),
+        ("result", Json::from(result)),
+        ("steps", Json::arr(steps)),
+        ("outcomes", outcomes),
+        ("ignored_dirs", Json::strings(&update.plan.others)),
+    ])
 }
 
 /// Print what a plan would do: changes, conflicts and problems, not the
@@ -900,253 +925,22 @@ fn print_outcomes(app: &mut App, plan: &RepoPlan, outcomes: &[sync::Outcome]) ->
     failures
 }
 
-/// Settle the plan's conflicts according to `policy`. `None` means leave
-/// this workspace unchanged.
-fn decide(
-    app: &mut App,
-    beskar: &Beskar,
-    plan: &RepoPlan,
-    policy: ConflictPolicy,
-) -> Result<Option<BTreeMap<SkillId, Resolution>>, Failure> {
-    let conflicts: Vec<&Step> = plan.conflicts().collect();
-    let all = |resolution| {
-        conflicts
-            .iter()
-            .map(|s| (s.skill.clone(), resolution))
-            .collect()
-    };
-    Ok(match policy {
-        _ if conflicts.is_empty() => Some(BTreeMap::new()),
-        ConflictPolicy::Keep => Some(all(Resolution::Keep)),
-        ConflictPolicy::Replace => Some(all(Resolution::Replace)),
-        ConflictPolicy::Abort => None,
-        ConflictPolicy::Ask if !app.env.interactive => None,
-        ConflictPolicy::Ask => {
-            let mut decisions = BTreeMap::new();
-            for step in conflicts {
-                match ask(app, beskar, plan, step) {
-                    Some(resolution) => {
-                        decisions.insert(step.skill.clone(), resolution);
-                    }
-                    None => return Ok(None),
-                }
-            }
-            Some(decisions)
-        }
-    })
-}
-
-fn ask(app: &mut App, beskar: &Beskar, plan: &RepoPlan, step: &Step) -> Option<Resolution> {
-    let style = app.out.err_style();
-    let (explanation, keep, replace, promote) = match step.action {
-        Action::Conflict(Conflict::Orphaned) => (
-            "The workspace copy has local changes, and no enabled profile includes it any more.",
-            "keep it here, no longer managed",
-            "delete it",
-            "save it to the library, then delete it here",
-        ),
-        Action::Conflict(Conflict::Untracked) => (
-            "This directory was not installed by Beskar and differs from the library version.",
-            "keep it",
-            "replace it with the library version",
-            "make it the library version, replacing the one there",
-        ),
-        _ => (
-            "The workspace copy has local changes, and the library has a newer version.",
-            "keep local",
-            "replace with library",
-            "promote to library, overwriting its newer version",
-        ),
-    };
-    app.out.err_line("");
-    app.out.err_line(format!(
-        "{} {} in {}",
-        style.bold_red("Conflict:"),
-        style.bold(step.skill.as_str()),
-        app.display(&plan.repo)
-    ));
-    app.out.err_line(explanation);
-    app.out.err_line("");
-    for (key, text) in [
-        ("k", keep),
-        ("l", replace),
-        ("p", promote),
-        ("d", "show diff"),
-        ("a", "abort: change nothing here"),
-    ] {
-        app.out.err_line(format!("  [{}] {text}", style.bold(key)));
-    }
-    loop {
-        match app.choose("Choice: ", &['k', 'l', 'p', 'd', 'a'])? {
-            'k' => return Some(Resolution::Keep),
-            'l' => return Some(Resolution::Replace),
-            'p' if step.action == Action::Conflict(Conflict::Orphaned) => {
-                return Some(Resolution::Promote);
-            }
-            'p' => {
-                let question = format!(
-                    "Overwrite the library's version of {} with this copy?",
-                    step.skill
-                );
-                if app.confirm(&question, false)? {
-                    return Some(Resolution::Promote);
-                }
-            }
-            'd' => {
-                let library = beskar.library.skill_source(&step.skill);
-                let workspace = beskar.workspace(&plan.repo).skill_path(&step.skill);
-                match diff::compare(&library, &workspace, beskar.ignore()) {
-                    Ok(diffs) => {
-                        for line in render_diff(&step.skill, &diffs, style) {
-                            app.out.err_line(line);
-                        }
-                    }
-                    Err(err) => app.out.err_line(format!("cannot compare: {err}")),
-                }
-            }
-            _ => return None,
-        }
-    }
-}
-
 // ----- diff, promote, restore -----
-
-/// A skill named on the command line that exists here: in the library, in
-/// the workspace, or in the registry's record of it. A typo fails with a
-/// suggestion drawn from those names only.
-fn existing_skill(
-    beskar: &Beskar,
-    workspace: &Workspace,
-    entry: &RepoEntry,
-    name: &str,
-) -> Result<SkillId, Failure> {
-    let observed = workspace.observe(beskar.ignore())?;
-    let mut known: Vec<SkillId> = beskar.library.skill_ids().unwrap_or_default();
-    known.extend(observed.skills.keys().cloned());
-    known.extend(entry.installed.keys().cloned());
-    known.sort();
-    known.dedup();
-    if let Ok(id) = SkillId::new(name)
-        && known.contains(&id)
-    {
-        return Ok(id);
-    }
-    let error = Error::not_found(format!(
-        "no skill `{}` in this workspace or the library",
-        clean(name)
-    ));
-    let lowered = name.to_lowercase();
-    Err(
-        match bsk::closest(&lowered, known.iter().map(SkillId::as_str)) {
-            Some(close) => error.hint(format!("did you mean `{close}`?")),
-            None => error.hint("`beskar repo status` lists the skills here"),
-        }
-        .into(),
-    )
-}
-
-/// What comparing one skill with the library produced.
-enum Comparison {
-    Diff(Vec<String>),
-    Same,
-    Note(String),
-}
-
-fn compare(
-    app: &App,
-    beskar: &Beskar,
-    workspace: &Workspace,
-    id: &SkillId,
-    wanted: bool,
-) -> Result<Comparison, Failure> {
-    let copy = workspace.skill_path(id);
-    let in_library = beskar.library.contains(id);
-    if let Ok(target) = fs::read_link(&copy) {
-        return Ok(Comparison::Note(format!(
-            "{id} here is a symbolic link to {}; Beskar manages copies, so it counts as changed here",
-            clean(&target.display().to_string())
-        )));
-    }
-    if !beskar_core::fsx::exists(&copy) {
-        return Ok(Comparison::Note(match (in_library, wanted) {
-            (true, true) => {
-                format!("{id} is not installed here yet; `beskar repo update` installs it")
-            }
-            (true, false) => format!("{id} is not installed here"),
-            (false, _) => format!("{id} is neither here nor in the library"),
-        }));
-    }
-    if !in_library {
-        return Ok(Comparison::Note(format!(
-            "{id} is not in the library, so there is nothing to compare {} with",
-            app.display(&copy)
-        )));
-    }
-    let library = beskar.library.skill_source(id);
-    let diffs = diff::compare(&library, &copy, beskar.ignore()).map_err(|err| {
-        Error::io(
-            &err,
-            format_args!("compare {} with {}", library.display(), copy.display()),
-        )
-    })?;
-    Ok(if diffs.is_empty() {
-        Comparison::Same
-    } else {
-        Comparison::Diff(render_diff(id, &diffs, app.out.style()))
-    })
-}
 
 pub fn diff(app: &mut App, m: &Matches) -> Outcome {
     let beskar = app.load()?;
-    let registry = beskar.registry()?;
-    let path = app.repo(&registry, m.value("repo"))?;
-    let entry = registry.get(&path).expect("resolved from the registry");
-    let workspace = beskar.workspace(&path);
-    let plan = sync::plan_repo(&beskar, entry)?;
-    let wanted = |id: &SkillId| {
-        plan.steps
-            .iter()
-            .any(|s| &s.skill == id && !s.profiles.is_empty())
-    };
-    let mut blocks: Vec<Vec<String>> = Vec::new();
-    match m.arg(0) {
-        Some(name) => {
-            let id = existing_skill(&beskar, &workspace, entry, name)?;
-            match compare(app, &beskar, &workspace, &id, wanted(&id))? {
-                Comparison::Diff(lines) => blocks.push(lines),
-                Comparison::Same => blocks.push(vec![format!(
-                    "{id}: the workspace copy matches the library."
-                )]),
-                Comparison::Note(note) => blocks.push(vec![note]),
-            }
-        }
-        None => {
-            for step in &plan.steps {
-                let relevant = !matches!(
-                    step.action,
-                    Action::Unchanged | Action::Record | Action::Unmanaged | Action::Forget
-                );
-                if !relevant {
-                    continue;
-                }
-                match compare(
-                    app,
-                    &beskar,
-                    &workspace,
-                    &step.skill,
-                    !step.profiles.is_empty(),
-                )? {
-                    Comparison::Diff(lines) => blocks.push(lines),
-                    Comparison::Note(note) => blocks.push(vec![note]),
-                    Comparison::Same => {}
-                }
-            }
-            if blocks.is_empty() {
-                blocks.push(vec![
-                    "No differences: every workspace copy matches the library.".to_string(),
-                ]);
-            }
-        }
+    let at = app.repo_ref(m.value("repo"))?;
+    let comparisons = beskar.compare(&at, m.arg(0))?;
+    app.data(|| Json::arr(comparisons.iter().map(comparison_json)));
+    let style = app.out.style();
+    let mut blocks: Vec<Vec<String>> = comparisons
+        .iter()
+        .map(|c| comparison_lines(app, c, style))
+        .collect();
+    if blocks.is_empty() {
+        blocks.push(vec![
+            "No differences: every workspace copy matches the library.".to_string(),
+        ]);
     }
     for (i, block) in blocks.into_iter().enumerate() {
         if i > 0 {
@@ -1159,9 +953,92 @@ pub fn diff(app: &mut App, m: &Matches) -> Outcome {
     Ok(EXIT_OK)
 }
 
+fn comparison_lines(app: &App, found: &SkillComparison, style: Style) -> Vec<String> {
+    let id = &found.skill;
+    match &found.comparison {
+        Comparison::Differs(diffs) => render_diff(id, diffs, style),
+        Comparison::Same => vec![format!("{id}: the workspace copy matches the library.")],
+        Comparison::Link { target } => vec![format!(
+            "{id} here is a symbolic link to {}; Beskar manages copies, so it counts as changed here",
+            clean(&target.display().to_string())
+        )],
+        Comparison::NotInstalled { in_library, wanted } => vec![match (in_library, wanted) {
+            (true, true) => {
+                format!("{id} is not installed here yet; `beskar repo update` installs it")
+            }
+            (true, false) => format!("{id} is not installed here"),
+            (false, _) => format!("{id} is neither here nor in the library"),
+        }],
+        Comparison::NotInLibrary { copy } => vec![format!(
+            "{id} is not in the library, so there is nothing to compare {} with",
+            app.display(copy)
+        )],
+    }
+}
+
+fn comparison_json(found: &SkillComparison) -> Json {
+    let skill = ("skill", Json::from(found.skill.as_str()));
+    match &found.comparison {
+        Comparison::Differs(diffs) => Json::obj([
+            skill,
+            ("comparison", Json::from("differs")),
+            ("files", Json::arr(diffs.iter().map(file_diff_json))),
+        ]),
+        Comparison::Same => Json::obj([skill, ("comparison", Json::from("same"))]),
+        Comparison::Link { target } => Json::obj([
+            skill,
+            ("comparison", Json::from("link")),
+            ("target", Json::path(target)),
+        ]),
+        Comparison::NotInstalled { in_library, wanted } => Json::obj([
+            skill,
+            ("comparison", Json::from("not_installed")),
+            ("in_library", Json::Bool(*in_library)),
+            ("wanted", Json::Bool(*wanted)),
+        ]),
+        Comparison::NotInLibrary { copy } => Json::obj([
+            skill,
+            ("comparison", Json::from("not_in_library")),
+            ("copy", Json::path(copy)),
+        ]),
+    }
+}
+
+fn file_diff_json(file: &FileDiff) -> Json {
+    let change = match file.change {
+        FileChange::Added => "added",
+        FileChange::Removed => "removed",
+        FileChange::Modified => "modified",
+        FileChange::ModeChanged => "mode_changed",
+        FileChange::TypeChanged => "type_changed",
+    };
+    let hunks = file.hunks.as_ref().map_or(Json::Null, |hunks| {
+        Json::arr(hunks.iter().map(|hunk| {
+            let lines = hunk.lines.iter().map(|line| match line {
+                DiffLine::Context(text) => format!(" {text}"),
+                DiffLine::Removed(text) => format!("-{text}"),
+                DiffLine::Added(text) => format!("+{text}"),
+                DiffLine::NoNewline => "\\ No newline at end of file".to_string(),
+            });
+            Json::obj([
+                ("old_start", Json::count(hunk.old_start)),
+                ("old_len", Json::count(hunk.old_len)),
+                ("new_start", Json::count(hunk.new_start)),
+                ("new_len", Json::count(hunk.new_len)),
+                ("lines", Json::strings(lines)),
+            ])
+        }))
+    });
+    Json::obj([
+        ("path", Json::from(file.path.as_str())),
+        ("change", Json::from(change)),
+        ("hunks", hunks),
+    ])
+}
+
 /// A unified diff from the library version to the workspace copy. File
 /// contents are untrusted, so control characters are made visible.
-fn render_diff(skill: &SkillId, diffs: &[FileDiff], style: Style) -> Vec<String> {
+pub fn render_diff(skill: &SkillId, diffs: &[FileDiff], style: Style) -> Vec<String> {
     let mut lines = vec![style.bold(&format!("diff {skill}: library → workspace"))];
     for file in diffs {
         let path = clean(&file.path);
@@ -1212,42 +1089,40 @@ fn render_diff(skill: &SkillId, diffs: &[FileDiff], style: Style) -> Vec<String>
 
 pub fn promote(app: &mut App, m: &Matches) -> Outcome {
     let beskar = app.load()?;
-    let _lock = beskar.lock("repo promote")?;
-    let mut registry = beskar.registry()?;
-    let path = app.repo(&registry, m.value("repo"))?;
-    let mut entry = registry
-        .get(&path)
-        .cloned()
-        .expect("resolved from the registry");
-    let id = existing_skill(
-        &beskar,
-        &beskar.workspace(&path),
-        &entry,
-        m.arg(0).expect("arity checked"),
-    )?;
-    let promotion = sync::promote(&beskar, &mut entry, &id, m.has("force"))?;
-    save_entry(&mut registry, entry)?;
+    let at = app.repo_ref(m.value("repo"))?;
+    let promoted = beskar.promote(&at, m.arg(0).expect("arity checked"), m.has("force"))?;
+    let imported = match promoted.promotion.imported {
+        Imported::Unchanged => "unchanged",
+        Imported::Added => "added",
+        Imported::Replaced => "replaced",
+    };
+    app.data(|| {
+        Json::obj([
+            ("repo", Json::path(&promoted.repo)),
+            ("skill", Json::from(promoted.skill.as_str())),
+            ("imported", Json::from(imported)),
+            ("wanted", Json::Bool(promoted.promotion.wanted)),
+            ("other_workspaces", Json::count(promoted.others)),
+        ])
+    });
     let style = app.out.style();
-    let (name, place) = (style.bold(id.as_str()), app.display(&path));
-    app.out.line(match promotion.imported {
+    let id = &promoted.skill;
+    let (name, place) = (style.bold(id.as_str()), app.display(&promoted.repo));
+    app.out.line(match promoted.promotion.imported {
         Imported::Unchanged => format!("The library already has this version of {name}."),
         Imported::Added => format!("Added {name} from {place} to the library."),
         Imported::Replaced => format!("Promoted {name} from {place} to the library."),
     });
-    if !promotion.wanted {
+    if !promoted.promotion.wanted {
         app.out.line(format!(
             "No profile enabled here includes {id}; add it with `beskar profile add <profile> {id}`."
         ));
     }
-    let others = registry
-        .repos()
-        .filter(|r| r.path != path && r.installed.contains_key(&id))
-        .count();
-    if others > 0 && promotion.imported != Imported::Unchanged {
+    if promoted.others > 0 {
         app.out.line(format!(
             "{} it; `beskar update --all` brings {} this version.",
-            counted(others, "other workspace", "has", "have"),
-            if others == 1 { "it" } else { "them" }
+            counted(promoted.others, "other workspace", "has", "have"),
+            if promoted.others == 1 { "it" } else { "them" }
         ));
     }
     Ok(EXIT_OK)
@@ -1255,36 +1130,31 @@ pub fn promote(app: &mut App, m: &Matches) -> Outcome {
 
 pub fn restore(app: &mut App, m: &Matches) -> Outcome {
     let beskar = app.load()?;
-    let _lock = beskar.lock("repo restore")?;
-    let mut registry = beskar.registry()?;
-    let path = app.repo(&registry, m.value("repo"))?;
-    let mut entry = registry
-        .get(&path)
-        .cloned()
-        .expect("resolved from the registry");
-    let id = existing_skill(
-        &beskar,
-        &beskar.workspace(&path),
-        &entry,
-        m.arg(0).expect("arity checked"),
-    )?;
-    let present = beskar.workspace(&path).fingerprint(&id, beskar.ignore())?;
-    let library = beskar.library.fingerprint(&id)?;
-    if present.is_some() && library.is_some() && present != library && !m.has("yes") {
+    let at = app.repo_ref(m.value("repo"))?;
+    let preview = beskar.restore_preview(&at, m.arg(0).expect("arity checked"))?;
+    let id = preview.skill.clone();
+    if preview.discards_changes && !m.has("yes") {
         let question = format!(
             "Discard the local changes to {id} in {}?",
-            app.display(&path)
+            app.display(&preview.repo)
         );
         match app.confirm(&question, false) {
             Some(true) => {}
             Some(false) => {
+                app.data(|| {
+                    Json::obj([
+                        ("repo", Json::path(&preview.repo)),
+                        ("skill", Json::from(id.as_str())),
+                        ("done", Json::Null),
+                    ])
+                });
                 app.out.line("Nothing changed.");
                 return Ok(EXIT_OK);
             }
             None => {
                 return Err(Error::conflict(format!(
                     "restoring {id} discards the local changes in {}",
-                    app.display(&path)
+                    app.display(&preview.repo)
                 ))
                 .hint(format!("review them with `beskar repo diff {id}`"))
                 .hint("pass --yes to discard them")
@@ -1292,13 +1162,47 @@ pub fn restore(app: &mut App, m: &Matches) -> Outcome {
             }
         }
     }
-    let done = sync::restore(&beskar, &mut entry, &id)?;
-    save_entry(&mut registry, entry)?;
+    let restored = beskar.restore(&preview)?;
+    app.data(|| {
+        Json::obj([
+            ("repo", Json::path(&restored.repo)),
+            ("skill", Json::from(id.as_str())),
+            ("done", Json::from(done_name(restored.done))),
+        ])
+    });
     let name = app.out.style().bold(id.as_str());
-    app.out.line(match done {
+    app.out.line(match restored.done {
         Done::Recorded => format!("{name} already matches the library."),
         Done::Installed => format!("Installed {name} from the library."),
         _ => format!("Restored {name} from the library."),
     });
     Ok(EXIT_OK)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_action_has_a_look_and_a_name() {
+        use Action::*;
+        for action in [
+            Unchanged,
+            Install,
+            Restore,
+            Update,
+            Remove,
+            Forget,
+            Record,
+            KeepLocal,
+            Conflict(super::Conflict::Diverged),
+            Conflict(super::Conflict::Untracked),
+            Conflict(super::Conflict::Orphaned),
+            MissingSource,
+            Unmanaged,
+        ] {
+            assert!(!look(action).2.is_empty());
+            assert!(!super::super::action_name(action).is_empty());
+        }
+    }
 }

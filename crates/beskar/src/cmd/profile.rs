@@ -1,26 +1,30 @@
 //! `beskar profile ...`: named sets of skills.
 
-use beskar_core::{Error, ProfileName, Result, SkillId, usage};
+use beskar_core::ops::profiles::{ProfileEdit, ProfileSummary};
+use beskar_core::profile::Profile;
+use beskar_core::{Error, SkillId};
 
 use super::{count, counted, join_and};
 use crate::app::{App, EXIT_OK, Outcome};
 use crate::args::Matches;
-use crate::output::{Cell, table, truncate};
+use crate::json::{self, Json};
+use crate::output::{Cell, clean, table, truncate};
 
-fn skill_ids(names: &[String]) -> Result<Vec<SkillId>> {
-    names.iter().map(|name| SkillId::new(name)).collect()
+fn profile_json(profile: &Profile) -> Json {
+    Json::obj([
+        ("profile", Json::from(profile.name.as_str())),
+        ("path", Json::path(&profile.path)),
+        ("description", Json::from(profile.description.clone())),
+        ("skills", Json::strings(&profile.skills)),
+    ])
 }
 
 pub fn create(app: &mut App, m: &Matches) -> Outcome {
     let beskar = app.load()?;
-    beskar.library.check()?;
-    let name = ProfileName::new(&m.args[0])?;
-    let skills = skill_ids(&m.args[1..])?;
-    let _lock = beskar.lock("profile create")?;
-    let profile = beskar
-        .library
-        .create_profile(&name, m.value("description"), &skills)?;
+    let profile = beskar.create_profile(&m.args[0], &m.args[1..], m.value("description"))?;
+    app.data(|| profile_json(&profile));
     let style = app.out.style();
+    let name = &profile.name;
     app.out.line(format!(
         "Created profile {} with {} ({}).",
         style.bold(name.as_str()),
@@ -41,36 +45,19 @@ pub fn create(app: &mut App, m: &Matches) -> Outcome {
 
 pub fn delete(app: &mut App, m: &Matches) -> Outcome {
     let beskar = app.load()?;
-    beskar.library.check()?;
-    let name = beskar.library.find_profile(&m.args[0])?;
-    let users = usage::profile_users(&beskar.registry()?, &name);
-    if !users.is_empty() && !m.has("force") {
-        let places: Vec<String> = users.iter().map(|path| app.display(path)).collect();
-        let mut error = Error::invalid(format!(
-            "profile `{name}` is enabled in {}: {}",
-            count(users.len(), "workspace"),
-            join_and(&places)
-        ));
-        for path in users.iter().take(3) {
-            error = error.hint(format!(
-                "`beskar repo disable {name} --repo {}` disables it there",
-                app.arg(path)
-            ));
-        }
-        return Err(error
-            .hint(format!(
-                "or `beskar profile delete {name} --force --yes` deletes it and disables it everywhere"
-            ))
-            .into());
-    }
+    let deletion = beskar.profile_deletion(&m.args[0], m.has("force"))?;
+    let name = deletion.name.clone();
     if !m.has("yes") {
-        let question = format!(
-            "Delete profile `{name}` ({})?",
-            app.display(&beskar.library.profile_path(&name))
-        );
+        let question = format!("Delete profile `{name}` ({})?", app.display(&deletion.path));
         match app.confirm(&question, false) {
             Some(true) => {}
             Some(false) => {
+                app.data(|| {
+                    Json::obj([
+                        ("profile", Json::from(name.as_str())),
+                        ("deleted", Json::Bool(false)),
+                    ])
+                });
                 app.out.line("Nothing deleted.");
                 return Ok(EXIT_OK);
             }
@@ -83,25 +70,21 @@ pub fn delete(app: &mut App, m: &Matches) -> Outcome {
             }
         }
     }
-    let _lock = beskar.lock("profile delete")?;
-    let mut registry = beskar.registry()?;
-    let users = usage::profile_users(&registry, &name);
-    for path in &users {
-        if let Some(entry) = registry.get_mut(path) {
-            entry.profiles.retain(|profile| *profile != name);
-        }
-    }
-    beskar.library.delete_profile(&name)?;
-    if !users.is_empty() {
-        registry.save()?;
-    }
+    let deleted = beskar.delete_profile(&deletion)?;
+    app.data(|| {
+        Json::obj([
+            ("profile", Json::from(name.as_str())),
+            ("deleted", Json::Bool(true)),
+            ("disabled_in", Json::paths(&deleted.disabled_in)),
+        ])
+    });
     let style = app.out.style();
     app.out
         .line(format!("Deleted profile {}.", style.bold(name.as_str())));
-    if !users.is_empty() {
+    if !deleted.disabled_in.is_empty() {
         app.out.line(format!(
             "Disabled it in {}; `beskar update --all` removes its skills there.",
-            count(users.len(), "workspace")
+            count(deleted.disabled_in.len(), "workspace")
         ));
     }
     Ok(EXIT_OK)
@@ -109,34 +92,33 @@ pub fn delete(app: &mut App, m: &Matches) -> Outcome {
 
 pub fn list(app: &mut App, _m: &Matches) -> Outcome {
     let beskar = app.load()?;
-    beskar.library.check()?;
-    let names = beskar.library.profile_names()?;
-    if names.is_empty() {
+    let profiles = beskar.profiles()?;
+    app.data(|| Json::arr(profiles.iter().map(summary_json)));
+    if profiles.is_empty() {
         app.out
             .line("No profiles yet. Create one with `beskar profile create <name> <skill>...`.");
         return Ok(EXIT_OK);
     }
-    let registry = beskar.registry()?;
     let style = app.out.style();
     let mut broken = 0;
-    let rows = names
+    let rows = profiles
         .iter()
-        .map(|name| {
-            let users = usage::profile_users(&registry, name).len();
-            let used = if users == 0 {
+        .map(|summary| {
+            let used = if summary.workspaces == 0 {
                 style.dim("unused")
             } else {
-                format!("used in {}", count(users, "workspace"))
+                format!("used in {}", count(summary.workspaces, "workspace"))
             };
-            match beskar.library.profile(name) {
+            let name = Cell::styled(summary.name.to_string(), |t| style.bold(t));
+            match &summary.profile {
                 Ok(profile) => {
-                    let description = profile.description.unwrap_or_default();
+                    let description = clean(profile.description.as_deref().unwrap_or_default());
                     let description = match app.width() {
                         Some(width) => truncate(&description, width.saturating_sub(50).max(20)),
                         None => description,
                     };
                     vec![
-                        Cell::styled(name.to_string(), |t| style.bold(t)),
+                        name,
                         Cell::plain(count(profile.skills.len(), "skill")),
                         Cell::plain(used),
                         Cell::plain(description),
@@ -145,10 +127,10 @@ pub fn list(app: &mut App, _m: &Matches) -> Outcome {
                 Err(error) => {
                     broken += 1;
                     vec![
-                        Cell::styled(name.to_string(), |t| style.bold(t)),
+                        name,
                         Cell::styled("unreadable", |t| style.red(t)),
                         Cell::plain(used),
-                        Cell::plain(error.message),
+                        Cell::plain(clean(&error.message)),
                     ]
                 }
             }
@@ -165,17 +147,30 @@ pub fn list(app: &mut App, _m: &Matches) -> Outcome {
     Ok(EXIT_OK)
 }
 
+fn summary_json(summary: &ProfileSummary) -> Json {
+    let base = match &summary.profile {
+        Ok(profile) => profile_json(profile),
+        Err(error) => Json::obj([
+            ("profile", Json::from(summary.name.as_str())),
+            ("error", json::error(error)),
+        ]),
+    };
+    base.with("workspaces", Json::count(summary.workspaces))
+}
+
 pub fn show(app: &mut App, m: &Matches) -> Outcome {
     let beskar = app.load()?;
-    beskar.library.check()?;
-    let name = beskar.library.find_profile(&m.args[0])?;
-    let profile = beskar.library.profile(&name)?;
-    let registry = beskar.registry()?;
-    let users = usage::profile_users(&registry, &name);
+    let details = beskar.profile_details(&m.args[0])?;
+    app.data(|| {
+        profile_json(&details.profile)
+            .with("missing", Json::strings(&details.missing))
+            .with("enabled_in", Json::paths(&details.enabled_in))
+    });
+    let (profile, name) = (&details.profile, &details.profile.name);
     let style = app.out.style();
 
     app.out.line(match &profile.description {
-        Some(description) => format!("{}: {description}", style.bold(name.as_str())),
+        Some(description) => format!("{}: {}", style.bold(name.as_str()), clean(description)),
         None => style.bold(name.as_str()),
     });
     app.out.line(style.dim(&app.display(&profile.path)));
@@ -192,10 +187,10 @@ pub fn show(app: &mut App, m: &Matches) -> Outcome {
     let rows = skills
         .iter()
         .map(|skill| {
-            let note = if beskar.library.contains(skill) {
-                String::new()
-            } else {
+            let note = if details.missing.contains(skill) {
                 style.red("✗ not in the library")
+            } else {
+                String::new()
             };
             vec![Cell::plain(skill.to_string()), Cell::plain(note)]
         })
@@ -205,51 +200,55 @@ pub fn show(app: &mut App, m: &Matches) -> Outcome {
     }
     app.out.blank();
     app.out
-        .line(style.bold(&format!("Enabled in ({})", users.len())));
-    if users.is_empty() {
+        .line(style.bold(&format!("Enabled in ({})", details.enabled_in.len())));
+    if details.enabled_in.is_empty() {
         app.out.line(format!(
             "  no workspace yet; enable it with `beskar repo enable {name}`"
         ));
     }
-    for path in &users {
+    for path in &details.enabled_in {
         app.out.line(format!("  {}", app.display(path)));
     }
     Ok(EXIT_OK)
 }
 
+fn edit_json(edit: &ProfileEdit, changed: &str, unchanged: &str) -> Json {
+    Json::obj([
+        ("profile", Json::from(edit.name.as_str())),
+        (changed, Json::strings(&edit.changed)),
+        (unchanged, Json::strings(&edit.unchanged)),
+        ("enabled_in", Json::count(edit.enabled_in)),
+    ])
+}
+
+fn names(skills: &[SkillId]) -> String {
+    join_and(&skills.iter().map(SkillId::as_str).collect::<Vec<_>>())
+}
+
 pub fn add(app: &mut App, m: &Matches) -> Outcome {
     let beskar = app.load()?;
-    beskar.library.check()?;
-    let name = beskar.library.find_profile(&m.args[0])?;
-    let skills = skill_ids(&m.args[1..])?;
-    let _lock = beskar.lock("profile add")?;
-    let added = beskar.library.add_to_profile(&name, &skills)?;
+    let edit = beskar.add_to_profile(&m.args[0], &m.args[1..])?;
+    app.data(|| edit_json(&edit, "added", "already_there"));
     let style = app.out.style();
-    let already: Vec<&str> = skills
-        .iter()
-        .filter(|s| !added.contains(s))
-        .map(SkillId::as_str)
-        .collect();
-    if !added.is_empty() {
-        let names: Vec<&str> = added.iter().map(SkillId::as_str).collect();
-        app.out.line(format!(
-            "Added {} to {}.",
-            join_and(&names),
-            style.bold(name.as_str())
-        ));
+    let name = style.bold(edit.name.as_str());
+    if !edit.changed.is_empty() {
+        app.out
+            .line(format!("Added {} to {name}.", names(&edit.changed)));
     }
-    if !already.is_empty() {
-        app.out.line(format!(
-            "{} already had {}.",
-            style.bold(name.as_str()),
-            join_and(&already)
-        ));
+    if !edit.unchanged.is_empty() {
+        app.out
+            .line(format!("{name} already had {}.", names(&edit.unchanged)));
     }
-    let users = usage::profile_users(&beskar.registry()?, &name).len();
-    if !added.is_empty() && users > 0 {
+    if !edit.changed.is_empty() && edit.enabled_in > 0 {
         app.out.line(format!(
-            "{} {name}; `beskar update --all` installs the new skills there.",
-            counted(users, "workspace", "enables", "enable")
+            "{} {}; `beskar update --all` installs {} there.",
+            counted(edit.enabled_in, "workspace", "enables", "enable"),
+            edit.name,
+            if edit.changed.len() == 1 {
+                "the new skill"
+            } else {
+                "the new skills"
+            }
         ));
     }
     Ok(EXIT_OK)
@@ -257,34 +256,26 @@ pub fn add(app: &mut App, m: &Matches) -> Outcome {
 
 pub fn remove(app: &mut App, m: &Matches) -> Outcome {
     let beskar = app.load()?;
-    beskar.library.check()?;
-    let name = beskar.library.find_profile(&m.args[0])?;
-    let skills = skill_ids(&m.args[1..])?;
-    let _lock = beskar.lock("profile remove")?;
-    let before = beskar.library.profile(&name)?;
-    let removed = beskar.library.remove_from_profile(&name, &skills)?;
+    let edit = beskar.remove_from_profile(&m.args[0], &m.args[1..])?;
+    app.data(|| edit_json(&edit, "removed", "not_there"));
     let style = app.out.style();
-    if !removed.is_empty() {
-        let names: Vec<&str> = removed.iter().map(SkillId::as_str).collect();
-        app.out.line(format!(
-            "Removed {} from {}.",
-            join_and(&names),
-            style.bold(name.as_str())
-        ));
+    let name = style.bold(edit.name.as_str());
+    if !edit.changed.is_empty() {
+        app.out
+            .line(format!("Removed {} from {name}.", names(&edit.changed)));
     }
-    for skill in skills.iter().filter(|s| !removed.contains(s)) {
-        let mut note = format!("{} has no skill `{skill}`", style.bold(name.as_str()));
-        if let Some(close) = bsk::closest(skill.as_str(), before.skills.iter().map(SkillId::as_str))
-        {
+    for skill in &edit.unchanged {
+        let mut note = format!("{name} has no skill `{skill}`");
+        if let Some((_, close)) = edit.suggestions.iter().find(|(asked, _)| asked == skill) {
             note += &format!("; did you mean `{close}`?");
         }
         app.out.line(format!("{note}."));
     }
-    let users = usage::profile_users(&beskar.registry()?, &name).len();
-    if !removed.is_empty() && users > 0 {
+    if !edit.changed.is_empty() && edit.enabled_in > 0 {
         app.out.line(format!(
-            "{} {name}; `beskar update --all` removes the skills no other enabled profile includes.",
-            counted(users, "workspace", "enables", "enable")
+            "{} {}; `beskar update --all` removes the skills no other enabled profile includes.",
+            counted(edit.enabled_in, "workspace", "enables", "enable"),
+            edit.name
         ));
     }
     Ok(EXIT_OK)

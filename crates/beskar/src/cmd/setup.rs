@@ -1,39 +1,28 @@
 //! `beskar init` and `beskar doctor`.
 
-use std::path::Path;
-
-use beskar_core::doctor::{self, Level};
-use beskar_core::init::{self, LibraryState};
-use beskar_core::skill::is_skill_dir;
-use beskar_core::{Error, LOCK_WAIT, Library, Lock, fsx};
+use beskar_core::doctor::{Check, Level, Report};
+use beskar_core::init::LibraryState;
+use beskar_core::ops::setup::{self, Setup};
 
 use super::count;
-use crate::app::{App, EXIT_ERROR, EXIT_OK, Failure, Outcome};
+use crate::app::{App, EXIT_ERROR, EXIT_OK, Outcome};
 use crate::args::Matches;
+use crate::json::{self, Json};
 use crate::output::{Cell, clean, table, tilde};
 
 pub fn init(app: &mut App, m: &Matches) -> Outcome {
-    let home = app.home()?;
     let library = m.value("library").map(|path| app.path_arg(path));
-    if let Some(library) = &library {
-        refuse_skill_folder(app, library)?;
-    }
-    fsx::create_dir_all(&home)?;
-    let _lock = Lock::acquire(&home, "init", LOCK_WAIT)?;
-    let report = init::init(&home, app.env.user_home.as_deref(), library.as_deref())?;
+    let setup = app.with_home(|home| setup::init(home, library.as_deref()))??;
+    app.data(|| init_json(&setup));
     let style = app.out.style();
+    let report = &setup.report;
     let config = &report.config;
-    let library = Library::new(config.library.clone(), config.ignore_rules());
-    let skills = library.skill_ids().map(|ids| ids.len()).unwrap_or(0);
-    let profiles = library
-        .profile_names()
-        .map(|names| names.len())
-        .unwrap_or(0);
+    let home = &config.home;
 
     app.out.line(if report.config_created {
-        format!("Initialized Beskar in {}", style.bold(&app.display(&home)))
+        format!("Initialized Beskar in {}", style.bold(&app.display(home)))
     } else {
-        format!("Beskar is set up in {}", style.bold(&app.display(&home)))
+        format!("Beskar is set up in {}", style.bold(&app.display(home)))
     });
     let created = |yes: bool| {
         if yes {
@@ -44,9 +33,11 @@ pub fn init(app: &mut App, m: &Matches) -> Outcome {
     };
     let library_note = match &report.library {
         LibraryState::Created => style.green("created"),
-        LibraryState::Existing => {
-            format!("{}, {}", count(skills, "skill"), count(profiles, "profile"))
-        }
+        LibraryState::Existing => format!(
+            "{}, {}",
+            count(setup.skills, "skill"),
+            count(setup.profiles, "profile")
+        ),
         LibraryState::Switched { from, created } => format!(
             "{}, replacing {} in the config",
             if *created { "created" } else { "existing" },
@@ -73,7 +64,7 @@ pub fn init(app: &mut App, m: &Matches) -> Outcome {
     for line in table(rows, "  ") {
         app.out.line(line);
     }
-    if skills == 0 {
+    if setup.skills == 0 {
         app.out.blank();
         app.out.line(style.bold("Next steps:"));
         let steps = vec![
@@ -97,35 +88,52 @@ pub fn init(app: &mut App, m: &Matches) -> Outcome {
     Ok(EXIT_OK)
 }
 
-/// A library keeps skills in `skills/` and profiles in `profiles/`. A
-/// directory that holds skill directories itself is a folder to import
-/// from, not a library.
-pub fn refuse_skill_folder(app: &App, dir: &Path) -> Result<(), Failure> {
-    if !dir.is_dir() || dir.join(beskar_core::library::SKILLS_DIR).is_dir() {
-        return Ok(());
+pub fn init_json(setup: &Setup) -> Json {
+    let report = &setup.report;
+    let config = &report.config;
+    let (library, switched_from) = match &report.library {
+        LibraryState::Created => ("created", Json::Null),
+        LibraryState::Existing => ("existing", Json::Null),
+        LibraryState::Switched { from, created } => (
+            if *created { "created" } else { "existing" },
+            Json::path(from),
+        ),
+    };
+    Json::obj([
+        ("home", Json::path(&config.home)),
+        ("config", Json::path(&config.path)),
+        ("config_created", Json::Bool(report.config_created)),
+        ("registry", Json::path(&config.registry)),
+        ("registry_created", Json::Bool(report.registry_created)),
+        ("library", Json::path(&config.library)),
+        ("library_state", Json::from(library)),
+        ("switched_from", switched_from),
+        ("skills", Json::count(setup.skills)),
+        ("profiles", Json::count(setup.profiles)),
+    ])
+}
+
+/// What `library init` did, in one line.
+pub fn library_state_line(app: &App, setup: &Setup) -> String {
+    let place = app.display(&setup.report.config.library);
+    match &setup.report.library {
+        LibraryState::Created => format!("Created a library at {place}."),
+        LibraryState::Existing => format!("The library at {place} is ready."),
+        LibraryState::Switched { from, created } => format!(
+            "{} {place}; the config used {} before.",
+            if *created {
+                "Created a library at"
+            } else {
+                "Now using the library at"
+            },
+            app.display(from)
+        ),
     }
-    let holds_skills = std::fs::read_dir(dir).is_ok_and(|entries| {
-        entries
-            .filter_map(|entry| entry.ok())
-            .any(|entry| entry.path().is_dir() && is_skill_dir(&entry.path()))
-    });
-    if !holds_skills {
-        return Ok(());
-    }
-    Err(Error::invalid(format!(
-        "{} holds skills directly; a library keeps them in skills/ and its profiles in profiles/",
-        app.display(dir)
-    ))
-    .hint(format!(
-        "run `beskar init` without --library, then `beskar library scan {}` to import them",
-        app.arg(dir)
-    ))
-    .into())
 }
 
 pub fn doctor(app: &mut App, _m: &Matches) -> Outcome {
-    let home = app.home()?;
-    let report = doctor::run(&home, app.env.user_home.as_deref());
+    let report = app.with_home(setup::doctor)?;
+    app.data(|| doctor_json(&report));
     let style = app.out.style();
     let user_home = app.env.user_home.clone();
     for (i, section) in report.sections.iter().enumerate() {
@@ -181,4 +189,37 @@ pub fn doctor(app: &mut App, _m: &Matches) -> Outcome {
         (e, w) => style.red(&format!("{}, {}.", count(e, "error"), count(w, "warning"))),
     });
     Ok(if errors > 0 { EXIT_ERROR } else { EXIT_OK })
+}
+
+fn doctor_json(report: &Report) -> Json {
+    let level = |level: Level| match level {
+        Level::Ok => "ok",
+        Level::Note => "note",
+        Level::Warning => "warning",
+        Level::Error => "error",
+    };
+    let check = |check: &Check| {
+        Json::obj([
+            ("level", Json::from(level(check.level))),
+            ("message", Json::from(check.message.as_str())),
+            ("hints", Json::strings(&check.hints)),
+            (
+                "error",
+                check.error.as_ref().map_or(Json::Null, json::error),
+            ),
+        ])
+    };
+    Json::obj([
+        (
+            "sections",
+            Json::arr(report.sections.iter().map(|section| {
+                Json::obj([
+                    ("title", Json::from(section.title.as_str())),
+                    ("checks", Json::arr(section.checks.iter().map(check))),
+                ])
+            })),
+        ),
+        ("errors", Json::count(report.count(Level::Error))),
+        ("warnings", Json::count(report.count(Level::Warning))),
+    ])
 }

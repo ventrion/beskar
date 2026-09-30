@@ -78,6 +78,21 @@ impl Output {
         }
     }
 
+    /// Drop text lines from now on; [`Output::raw`] still writes. `--json`
+    /// uses this so that nothing but the JSON document reaches standard
+    /// output.
+    pub fn silence(&mut self) {
+        self.closed = true;
+    }
+
+    /// Write `text` to standard output as it is, even when silenced.
+    pub fn raw(&self, text: &str) {
+        let mut stdout = io::stdout().lock();
+        let _ = stdout
+            .write_all(text.as_bytes())
+            .and_then(|()| stdout.flush());
+    }
+
     /// Style for text going to standard output.
     pub fn style(&self) -> Style {
         self.stdout_style

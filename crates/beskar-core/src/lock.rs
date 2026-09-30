@@ -18,6 +18,9 @@ use crate::{Error, ErrorKind, Result};
 
 pub const LOCK_FILE: &str = "lock";
 
+/// How long to wait quietly before telling the person why nothing happens.
+const PATIENCE: Duration = Duration::from_secs(1);
+
 /// Held until dropped.
 #[derive(Debug)]
 pub struct Lock {
@@ -26,8 +29,14 @@ pub struct Lock {
 
 impl Lock {
     /// Take the lock in `dir`, waiting up to `wait` for another process to
-    /// release it.
-    pub fn acquire(dir: &Path, command: &str, wait: Duration) -> Result<Lock> {
+    /// release it. If the wait lasts, `waiting` hears once who holds the
+    /// lock, so a front end can say why nothing happens.
+    pub fn acquire(
+        dir: &Path,
+        command: &str,
+        wait: Duration,
+        waiting: &dyn Fn(&str),
+    ) -> Result<Lock> {
         let path = dir.join(LOCK_FILE);
         let mut file = OpenOptions::new()
             .read(true)
@@ -36,20 +45,29 @@ impl Lock {
             .truncate(false)
             .open(&path)
             .map_err(|err| Error::io(&err, format_args!("open lock file {}", path.display())))?;
-        let deadline = Instant::now() + wait;
+        let start = Instant::now();
+        let mut told = false;
         loop {
             match file.try_lock() {
                 Ok(()) => break,
-                Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                Err(TryLockError::WouldBlock) if start.elapsed() < wait => {
+                    if !told && start.elapsed() >= PATIENCE {
+                        told = true;
+                        waiting(&describe(&fs::read_to_string(&path).unwrap_or_default()));
+                    }
                     thread::sleep(Duration::from_millis(50));
                 }
                 Err(TryLockError::WouldBlock) => {
                     let holder = describe(&fs::read_to_string(&path).unwrap_or_default());
                     return Err(Error::new(
                         ErrorKind::Locked,
-                        format!("another beskar process is busy ({holder})"),
+                        format!(
+                            "another beskar process is busy ({holder}); gave up after {}",
+                            seconds(wait)
+                        ),
                     )
-                    .hint("run the command again once it has finished"));
+                    .hint("run the command again once it has finished")
+                    .hint("to wait longer, set `lock-timeout: <seconds>` in the config or BESKAR_LOCK_TIMEOUT"));
                 }
                 Err(TryLockError::Error(err)) => {
                     return Err(Error::io(&err, format_args!("lock {}", path.display())));
@@ -93,6 +111,13 @@ impl Drop for Lock {
     }
 }
 
+fn seconds(wait: Duration) -> String {
+    match wait.as_secs() {
+        1 => "1 second".to_string(),
+        n => format!("{n} seconds"),
+    }
+}
+
 /// `pid: 42` lines as `pid 42, since ..., command ...`.
 fn describe(text: &str) -> String {
     let parts: Vec<String> = text
@@ -115,9 +140,14 @@ mod tests {
     #[test]
     fn a_second_acquire_waits_and_fails() {
         let tmp = TempDir::new();
-        let lock = Lock::acquire(tmp.path(), "repo update", Duration::ZERO).unwrap();
-        let error =
-            Lock::acquire(tmp.path(), "repo update", Duration::from_millis(120)).unwrap_err();
+        let lock = Lock::acquire(tmp.path(), "repo update", Duration::ZERO, &|_| {}).unwrap();
+        let error = Lock::acquire(
+            tmp.path(),
+            "repo update",
+            Duration::from_millis(120),
+            &|_| {},
+        )
+        .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Locked);
         assert!(
             error
@@ -129,7 +159,7 @@ mod tests {
         assert!(Lock::holder(tmp.path()).is_some());
         drop(lock);
         assert_eq!(Lock::holder(tmp.path()), None);
-        Lock::acquire(tmp.path(), "repo update", Duration::ZERO).unwrap();
+        Lock::acquire(tmp.path(), "repo update", Duration::ZERO, &|_| {}).unwrap();
     }
 
     #[test]
@@ -141,19 +171,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(Lock::holder(tmp.path()), None);
-        Lock::acquire(tmp.path(), "test", Duration::ZERO).unwrap();
+        Lock::acquire(tmp.path(), "test", Duration::ZERO, &|_| {}).unwrap();
     }
 
     #[test]
     fn waiting_ends_when_the_holder_lets_go() {
         let tmp = TempDir::new();
-        let lock = Lock::acquire(tmp.path(), "first", Duration::ZERO).unwrap();
+        let lock = Lock::acquire(tmp.path(), "first", Duration::ZERO, &|_| {}).unwrap();
         let dir = tmp.path().to_path_buf();
         let waiter = thread::spawn(move || {
-            Lock::acquire(&dir, "second", Duration::from_secs(5)).map(|_| ())
+            let told = std::sync::Mutex::new(Vec::new());
+            Lock::acquire(&dir, "second", Duration::from_secs(10), &|holder| {
+                told.lock().unwrap().push(holder.to_string())
+            })
+            .map(|_| told.into_inner().unwrap())
         });
-        thread::sleep(Duration::from_millis(150));
+        thread::sleep(PATIENCE + Duration::from_millis(300));
         drop(lock);
-        waiter.join().unwrap().unwrap();
+        let told = waiter.join().unwrap().unwrap();
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!(told[0].contains("command first"), "{told:?}");
     }
 }

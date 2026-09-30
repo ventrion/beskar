@@ -2,8 +2,11 @@
 //!
 //! Directory replacements go through a staging directory next to the
 //! target and a rename, so a reader (an agent, or a second Beskar process)
-//! sees either the old skill or the new one, never a half-copied tree.
-//! Staging names start with `.beskar-`, which no skill name can.
+//! sees either the old skill or the new one, never a half-copied tree, and
+//! deletions rename the directory away before deleting it, so a skill is
+//! either all there or gone. Temporary names start with `.beskar-`, which
+//! no skill name can; [`crate::recover`] cleans up after a run that was
+//! interrupted halfway.
 
 use std::fs;
 use std::io::{self, Write};
@@ -19,14 +22,55 @@ pub const TEMP_PREFIX: &str = ".beskar-";
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+/// What a temporary entry is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Temp {
+    /// The old copy of a directory being replaced, moved aside.
+    Old,
+    /// A new copy being assembled before it moves into place.
+    Staging,
+    /// A directory being deleted.
+    Trash,
+    /// A file being written.
+    Write,
+}
+
+impl Temp {
+    const ALL: [Temp; 4] = [Temp::Old, Temp::Staging, Temp::Trash, Temp::Write];
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Temp::Old => "old",
+            Temp::Staging => "staging",
+            Temp::Trash => "trash",
+            Temp::Write => "write",
+        }
+    }
+}
+
 /// A fresh temporary path inside `dir`, for example
-/// `dir/.beskar-staging-pdf-4242-0`.
-pub fn temp_path(dir: &Path, purpose: &str, name: &str) -> PathBuf {
+/// `dir/.beskar-staging-pdf-4242-0`: the purpose, the name of the entry it
+/// stands in for, the process id and a counter.
+pub fn temp_path(dir: &Path, purpose: Temp, name: &str) -> PathBuf {
     dir.join(format!(
-        "{TEMP_PREFIX}{purpose}-{name}-{}-{}",
+        "{TEMP_PREFIX}{}-{name}-{}-{}",
+        purpose.as_str(),
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ))
+}
+
+/// A temporary entry's name taken apart: what it was for, the name of the
+/// entry it stands in for, and the process that made it.
+pub fn parse_temp(file_name: &str) -> Option<(Temp, String, u32)> {
+    let rest = file_name.strip_prefix(TEMP_PREFIX)?;
+    let (purpose, rest) = rest.split_once('-')?;
+    let purpose = Temp::ALL.into_iter().find(|p| p.as_str() == purpose)?;
+    let mut parts = rest.rsplitn(3, '-');
+    let _counter: u64 = parts.next()?.parse().ok()?;
+    let pid = parts.next()?.parse().ok()?;
+    let name = parts.next().filter(|name| !name.is_empty())?;
+    Some((purpose, name.to_string(), pid))
 }
 
 pub fn read_to_string(path: &Path) -> Result<String> {
@@ -59,7 +103,7 @@ pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let temp = temp_path(dir, "write", &name);
+    let temp = temp_path(dir, Temp::Write, &name);
     let result = (|| -> io::Result<()> {
         let mut file = fs::File::create(&temp)?;
         file.write_all(contents.as_bytes())?;
@@ -152,6 +196,28 @@ fn copy_symlink(from: &Path, _to: &Path) -> io::Result<()> {
     ))
 }
 
+/// Delete the directory (or file, or symlink) at `path` as one step: it is
+/// renamed to a temporary name first, so an interrupted deletion never
+/// leaves half a skill behind under the real name. Nothing at `path` is
+/// not an error.
+pub fn remove_dir(path: &Path) -> Result<()> {
+    if !exists(path) {
+        return Ok(());
+    }
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let trash = temp_path(dir, Temp::Trash, &name);
+    fs::rename(path, &trash)
+        .map_err(|err| Error::io(&err, format_args!("move {} out of the way", path.display())))?;
+    // Gone under its real name. A failure from here on leaves a
+    // `.beskar-trash-*` entry, which the next run deletes.
+    let _ = remove_all(&trash);
+    Ok(())
+}
+
 /// Delete whatever is at `path`. A symlink is removed, never followed.
 /// Nothing at `path` is not an error.
 pub fn remove_all(path: &Path) -> Result<()> {
@@ -184,7 +250,7 @@ pub fn swap_in(staged: &Path, target: &Path) -> Result<()> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let old = temp_path(dir, "old", &name);
+    let old = temp_path(dir, Temp::Old, &name);
     rename(target, &old)?;
     if let Err(err) = rename(staged, target) {
         let _ = fs::rename(&old, target);
@@ -292,7 +358,7 @@ pub fn install_tree(src: &Path, target: &Path, ignore: &Ignore) -> Result<PathBu
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let staged = temp_path(dir, "staging", &name);
+    let staged = temp_path(dir, Temp::Staging, &name);
     if let Err(err) = copy_tree(src, &staged, ignore) {
         let _ = remove_all(&staged);
         return Err(err);
@@ -329,6 +395,35 @@ mod tests {
     use super::*;
     use crate::fingerprint::Fingerprint;
     use crate::testutil::TempDir;
+
+    #[test]
+    fn temp_names_round_trip() {
+        let path = temp_path(Path::new("/x"), Temp::Staging, "code-review");
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(
+            parse_temp(name),
+            Some((Temp::Staging, "code-review".to_string(), std::process::id()))
+        );
+        assert_eq!(
+            parse_temp(".beskar-write-registry.bsk-12-3"),
+            Some((Temp::Write, "registry.bsk".to_string(), 12))
+        );
+        assert_eq!(parse_temp(".beskar-odd-x-1-2"), None);
+        assert_eq!(parse_temp(".beskar-old--1-2"), None);
+        assert_eq!(parse_temp(".beskar-old-x-y-2"), None);
+        assert_eq!(parse_temp("pdf"), None);
+    }
+
+    #[test]
+    fn remove_dir_leaves_nothing_behind() {
+        let tmp = TempDir::new();
+        tmp.write("skills/pdf/SKILL.md", "x");
+        tmp.write("skills/pdf/scripts/run.py", "x");
+        remove_dir(&tmp.path().join("skills/pdf")).unwrap();
+        assert!(!exists(&tmp.path().join("skills/pdf")));
+        assert!(leftovers(&tmp.path().join("skills")).is_empty());
+        remove_dir(&tmp.path().join("skills/missing")).unwrap();
+    }
 
     #[test]
     fn write_atomic_replaces_contents() {

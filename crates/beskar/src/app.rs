@@ -5,11 +5,16 @@ use std::env;
 use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use beskar_core::config::normalize;
-use beskar_core::{Beskar, Error, ErrorKind, Registry};
+use beskar_core::config::{DEFAULT_LOCK_TIMEOUT, normalize, parse_seconds};
+use beskar_core::ops::RepoRef;
+use beskar_core::ops::setup::Home;
+use beskar_core::{Beskar, Error, ErrorKind, Notice, Notifier};
 
-use crate::output::Output;
+use crate::json::Json;
+use crate::output::{Output, Style};
 
 pub const EXIT_OK: u8 = 0;
 pub const EXIT_ERROR: u8 = 1;
@@ -67,6 +72,8 @@ pub struct Env {
     pub stdout_tty: bool,
     pub stdout_color: bool,
     pub stderr_color: bool,
+    /// `$BESKAR_LOCK_TIMEOUT`, overriding the config's `lock-timeout`.
+    pub lock_timeout: Option<Duration>,
 }
 
 impl Env {
@@ -99,6 +106,9 @@ impl Env {
             stdout_tty,
             stdout_color: color && stdout_tty,
             stderr_color: color && io::stderr().is_terminal(),
+            lock_timeout: env::var("BESKAR_LOCK_TIMEOUT")
+                .ok()
+                .and_then(|text| parse_seconds(text.trim())),
         }
     }
 }
@@ -106,6 +116,14 @@ impl Env {
 pub struct App {
     pub env: Env,
     pub out: Output,
+    /// Whether output is one JSON document (`--json`) instead of text.
+    pub json: bool,
+    /// The command's result for `--json`.
+    data: Option<Json>,
+    /// Notices collected for `--json`.
+    notices: Arc<Mutex<Vec<Json>>>,
+    /// The command being run, such as `repo update`, once it is known.
+    pub command: Option<String>,
     loaded: Option<Beskar>,
 }
 
@@ -115,8 +133,100 @@ impl App {
         App {
             env,
             out,
+            json: false,
+            data: None,
+            notices: Arc::default(),
+            command: None,
             loaded: None,
         }
+    }
+
+    /// Switch to JSON output: text on standard output is dropped, nothing
+    /// is asked, and the result is printed as one JSON document at the end.
+    pub fn set_json(&mut self) {
+        self.json = true;
+        self.env.interactive = false;
+        self.env.stdout_color = false;
+        self.out = Output::new(false, self.env.stderr_color);
+        self.out.silence();
+    }
+
+    /// Show text such as help: as it is, or as `{"text": ...}` for `--json`.
+    pub fn text(&mut self, text: String) {
+        if self.json {
+            self.data = Some(Json::obj([("text", Json::from(text))]));
+        } else {
+            self.out.line(text);
+        }
+    }
+
+    /// `--no-color`: plain text on both streams.
+    pub fn no_color(&mut self) {
+        self.env.stdout_color = false;
+        self.env.stderr_color = false;
+        let silenced = self.json;
+        self.out = Output::new(false, false);
+        if silenced {
+            self.out.silence();
+        }
+    }
+
+    /// Record the command's result for `--json`. Built only in JSON mode.
+    pub fn data(&mut self, json: impl FnOnce() -> Json) {
+        if self.json {
+            self.data = Some(json());
+        }
+    }
+
+    /// The result and notices recorded for `--json`.
+    pub fn take_json(&mut self) -> (Option<Json>, Vec<Json>) {
+        let notices = std::mem::take(&mut *self.notices.lock().unwrap_or_else(|e| e.into_inner()));
+        (self.data.take(), notices)
+    }
+
+    /// Where Beskar lives and how it waits, for commands that run before
+    /// the configuration exists.
+    pub fn home_setup(&self) -> Result<(PathBuf, Duration, Notifier), Failure> {
+        let dir = self.home()?;
+        Ok((
+            dir,
+            self.env.lock_timeout.unwrap_or(DEFAULT_LOCK_TIMEOUT),
+            self.notifier(),
+        ))
+    }
+
+    /// Run `f` with the [`Home`] setup commands need.
+    pub fn with_home<T>(&self, f: impl FnOnce(&Home) -> T) -> Result<T, Failure> {
+        let (dir, lock_timeout, notifier) = self.home_setup()?;
+        let home = Home {
+            dir: &dir,
+            user: self.env.user_home.as_deref(),
+            lock_timeout,
+            notifier,
+        };
+        Ok(f(&home))
+    }
+
+    /// Where core notices go: standard error for text, the JSON document's
+    /// `notices` for `--json` (a wait is announced on standard error too,
+    /// since someone may be watching).
+    fn notifier(&self) -> Notifier {
+        let style = self.out.err_style();
+        let home = self.env.user_home.clone();
+        let collect = self.json.then(|| Arc::clone(&self.notices));
+        Notifier::new(move |notice| {
+            if let Some(collected) = &collect {
+                if let Ok(mut list) = collected.lock() {
+                    list.push(crate::cmd::notice_json(notice));
+                }
+                if !matches!(notice, Notice::Waiting { .. }) {
+                    return;
+                }
+            }
+            for line in crate::cmd::notice_lines(notice, style, home.as_deref()) {
+                eprintln!("{line}");
+            }
+        })
     }
 
     /// Beskar's home directory.
@@ -136,7 +246,12 @@ impl App {
     pub fn load(&mut self) -> Result<Beskar, Failure> {
         if self.loaded.is_none() {
             let home = self.home()?;
-            self.loaded = Some(Beskar::load(&home, self.env.user_home.as_deref())?);
+            let mut beskar =
+                Beskar::load(&home, self.env.user_home.as_deref())?.with_notifier(self.notifier());
+            if let Some(timeout) = self.env.lock_timeout {
+                beskar.config.lock_timeout = timeout;
+            }
+            self.loaded = Some(beskar);
         }
         Ok(self.loaded.clone().expect("loaded above"))
     }
@@ -167,39 +282,19 @@ impl App {
         beskar_core::shell_quote(&self.display(path))
     }
 
-    /// The registered workspace that `--repo` names, or that contains the
-    /// working directory.
-    pub fn repo(&self, registry: &Registry, flag: Option<&str>) -> Result<PathBuf, Failure> {
-        let dir = match flag {
-            Some("") => return Err(Failure::usage("`--repo` needs a path")),
-            Some(path) => self.path_arg(path),
-            None => self.env.cwd.clone(),
-        };
-        if flag.is_some() && !dir.is_dir() {
-            return Err(Failure::Error(Error::not_found(format!(
-                "{} does not exist",
-                self.display(&dir)
-            ))));
+    /// The workspace a command acts on: the one `--repo` names, or the one
+    /// around the working directory.
+    pub fn repo_ref(&self, flag: Option<&str>) -> Result<RepoRef, Failure> {
+        match flag {
+            Some("") => Err(Failure::usage("`--repo` needs a path")),
+            Some(path) => Ok(RepoRef::named(self.path_arg(path))),
+            None => Ok(RepoRef::here(self.env.cwd.clone())),
         }
-        match registry.containing(&dir) {
-            Some(entry) => Ok(entry.path.clone()),
-            None => {
-                let error = Error::not_found(format!(
-                    "{} is not inside a registered workspace",
-                    self.display(&dir)
-                ));
-                Err(Failure::Error(if flag.is_some() {
-                    error.hint(format!(
-                        "register it with `beskar repo add {}`",
-                        self.arg(&dir)
-                    ))
-                } else {
-                    error
-                        .hint("register this directory with `beskar repo add .`")
-                        .hint("or point at a workspace with --repo <path>")
-                }))
-            }
-        }
+    }
+
+    /// Style for questions and other text on standard error.
+    pub fn err_style(&self) -> Style {
+        self.out.err_style()
     }
 
     /// Ask a yes/no question on the terminal. `None` when there is no

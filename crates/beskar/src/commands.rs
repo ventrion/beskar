@@ -6,6 +6,7 @@ use crate::args::{
 };
 use crate::cmd::{library, profile, registry, repo, setup};
 use crate::help;
+use crate::json::{self, Json};
 use crate::output::render_error;
 
 pub type Handler = fn(&mut App, &Matches) -> Outcome;
@@ -455,29 +456,101 @@ pub static COMMANDS: &[Command] = &[
 ];
 
 /// Run the command line and return the exit status.
+/// Flags every command takes, anywhere before `--`.
+pub const GLOBAL_FLAGS: &[Flag] = &[
+    Flag {
+        long: "json",
+        short: None,
+        value: None,
+        help: "Print one JSON document instead of text, and never ask questions",
+    },
+    Flag {
+        long: "no-color",
+        short: None,
+        value: None,
+        help: "Do not color the output (so does setting NO_COLOR)",
+    },
+];
+
 pub fn run(app: &mut App, argv: &[String]) -> u8 {
-    match dispatch(app, argv) {
-        Ok(code) => code,
-        Err(failure) => report(app, failure),
+    let mut rest: Vec<String> = Vec::with_capacity(argv.len());
+    let mut literal = false;
+    for arg in argv {
+        match arg.as_str() {
+            "--" => {
+                literal = true;
+                rest.push(arg.clone());
+            }
+            "--json" if !literal => app.set_json(),
+            "--no-color" if !literal => app.no_color(),
+            _ => rest.push(arg.clone()),
+        }
+    }
+    let result = dispatch(app, &rest);
+    if !app.json {
+        return match result {
+            Ok(code) => code,
+            Err(failure) => report(app, failure),
+        };
+    }
+    let (code, error) = match result {
+        Ok(code) => (code, None),
+        Err(Failure::Usage { message, hints }) => {
+            (EXIT_USAGE, Some(json::usage_error(&message, &hints)))
+        }
+        Err(Failure::Error(error)) => (exit_code(&error), Some(json::error(&error))),
+    };
+    let (data, notices) = app.take_json();
+    let mut document = Json::obj([
+        ("ok", Json::Bool(code == EXIT_OK)),
+        ("command", Json::from(app.command.clone())),
+        ("exit", Json::Int(i64::from(code))),
+    ]);
+    if let Some(data) = data {
+        document = document.with("data", data);
+    }
+    if let Some(error) = error {
+        document = document.with("error", error);
+    }
+    if !notices.is_empty() {
+        document = document.with("notices", Json::Arr(notices));
+    }
+    app.out.raw(&document.pretty());
+    code
+}
+
+fn exit_code(error: &beskar_core::Error) -> u8 {
+    match error.kind {
+        beskar_core::ErrorKind::Conflict => EXIT_CONFLICT,
+        _ => EXIT_ERROR,
     }
 }
 
 fn dispatch(app: &mut App, argv: &[String]) -> Outcome {
     let Some(first) = argv.first() else {
-        app.out.line(help::overview(app.out.style()));
+        app.text(help::overview(app.out.style()));
         return Ok(EXIT_OK);
     };
     match first.as_str() {
         "--help" | "-h" => {
-            app.out.line(help::overview(app.out.style()));
+            app.command = Some("help".to_string());
+            app.text(help::overview(app.out.style()));
             return Ok(EXIT_OK);
         }
         "--version" | "-V" => {
-            app.out
-                .line(format!("beskar {}", env!("CARGO_PKG_VERSION")));
+            app.command = Some("version".to_string());
+            let version = env!("CARGO_PKG_VERSION");
+            if app.json {
+                app.data(|| Json::obj([("version", Json::from(version))]));
+            } else {
+                app.out.line(format!("beskar {version}"));
+            }
             return Ok(EXIT_OK);
         }
-        "help" => return help_command(app, &argv[1..]),
+        "help" => {
+            app.command = Some("help".to_string());
+            return help_command(app, &argv[1..]);
+        }
         _ => {}
     }
     if let Some(group) = GROUPS.iter().find(|g| g.name == first)
@@ -485,21 +558,21 @@ fn dispatch(app: &mut App, argv: &[String]) -> Outcome {
             .get(1)
             .is_some_and(|arg| arg == "--help" || arg == "-h")
     {
-        app.out.line(help::group(group, app.out.style()));
+        app.command = Some(group.name.to_string());
+        app.text(help::group(group, app.out.style()));
         return Ok(EXIT_OK);
     }
     let (command, rest) = find(argv)?;
+    app.command = Some(command.path.join(" "));
     let matches = args::parse(rest, command.flags, command.arity)
         .map_err(|failure| with_usage(failure, command))?;
     if matches.help {
-        app.out.line(help::command(command, app.out.style()));
+        app.text(help::command(command, app.out.style()));
         return Ok(EXIT_OK);
     }
     (command.run)(app, &matches)
 }
 
-/// Find the command named at the start of `argv`; returns it and the
-/// remaining tokens.
 fn find(argv: &[String]) -> Result<(&'static Command, &[String]), Failure> {
     let first = argv[0].as_str();
     if let Some(group) = GROUPS.iter().find(|g| g.name == first) {
@@ -580,15 +653,16 @@ fn help_command(app: &mut App, topic: &[String]) -> Outcome {
             GROUPS.iter().find(|g| g.name == *name).expect("found"),
             style,
         ),
+        ["json"] => help::json(style),
         path => match COMMANDS.iter().find(|c| c.path == path) {
             Some(command) => help::command(command, style),
             None => {
                 return Err(Failure::usage(format!("no help for `{}`", path.join(" ")))
-                    .hint("run `beskar help` for the list of commands, or `beskar help format` for the file format"));
+                    .hint("run `beskar help` for the list of commands, `beskar help format` for the file format or `beskar help json` for JSON output"));
             }
         },
     };
-    app.out.line(text);
+    app.text(text);
     Ok(EXIT_OK)
 }
 
@@ -612,10 +686,7 @@ fn report(app: &mut App, failure: Failure) -> u8 {
             for line in render_error(&error, style, home.as_deref(), "error") {
                 app.out.err_line(line);
             }
-            match error.kind {
-                beskar_core::ErrorKind::Conflict => EXIT_CONFLICT,
-                _ => EXIT_ERROR,
-            }
+            exit_code(&error)
         }
     }
 }

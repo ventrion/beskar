@@ -1,6 +1,7 @@
 //! Beskar's configuration file, `config.bsk` in Beskar's home directory.
 
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 use bsk::{Document, Target};
 
@@ -13,7 +14,17 @@ pub const REGISTRY_FILE: &str = "registry.bsk";
 pub const LIBRARY_DIR: &str = "library";
 pub const DEFAULT_SKILLS_DIR: &str = ".agents/skills";
 
-const KEYS: [&str; 5] = ["library", "registry", "skills-dir", "on-conflict", "ignore"];
+const KEYS: [&str; 6] = [
+    "library",
+    "registry",
+    "skills-dir",
+    "on-conflict",
+    "ignore",
+    "lock-timeout",
+];
+
+/// How long a command waits for another Beskar process by default.
+pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What `update` does with a skill that changed in the workspace and can no
 /// longer be updated or removed without losing those changes.
@@ -63,6 +74,9 @@ pub struct Config {
     pub on_conflict: ConflictPolicy,
     /// Ignore patterns on top of the built-in ones in [`crate::ignore`].
     pub ignore: Vec<String>,
+    /// How long a command waits for another Beskar process to finish
+    /// before giving up.
+    pub lock_timeout: Duration,
 }
 
 impl Config {
@@ -170,6 +184,17 @@ impl Config {
             ignore.push(pattern.to_string());
         }
 
+        let lock_timeout = match root.get("lock-timeout").map_err(fail)? {
+            None => DEFAULT_LOCK_TIMEOUT,
+            Some(entry) => parse_seconds(entry.value()).ok_or_else(|| {
+                fail(
+                    entry
+                        .error(format!("`{}` is not a number of seconds", entry.value()))
+                        .with_help("for example `lock-timeout: 300`; 0 means do not wait"),
+                )
+            })?,
+        };
+
         Ok(Config {
             home: home.to_path_buf(),
             path: path.to_path_buf(),
@@ -178,6 +203,7 @@ impl Config {
             skills_dir,
             on_conflict,
             ignore,
+            lock_timeout,
         })
     }
 
@@ -223,9 +249,22 @@ on-conflict: ask
 # built-in list (.git, __pycache__, node_modules and a few more). One
 # pattern per line; `*` matches any run of characters.
 # ignore: *.log
+
+# Seconds a command waits for another beskar process to finish before it
+# gives up; 0 means do not wait. BESKAR_LOCK_TIMEOUT overrides it.
+# lock-timeout: 60
 "
         )
     }
+}
+
+/// A whole number of seconds, as `lock-timeout` and `BESKAR_LOCK_TIMEOUT`
+/// take it.
+pub fn parse_seconds(text: &str) -> Option<Duration> {
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok().map(Duration::from_secs)
 }
 
 /// Resolve a path value from a config file: `~` is the user's home
@@ -340,6 +379,7 @@ mod tests {
         assert_eq!(config.skills_dir, Path::new(".agents/skills"));
         assert_eq!(config.on_conflict, ConflictPolicy::Ask);
         assert!(config.ignore.is_empty());
+        assert_eq!(config.lock_timeout, DEFAULT_LOCK_TIMEOUT);
     }
 
     #[test]
@@ -362,12 +402,13 @@ mod tests {
     #[test]
     fn settings() {
         let config = parse(
-            "skills-dir: ./.claude/skills/\non-conflict: keep\nignore: *.log\nignore: .cache\n",
+            "skills-dir: ./.claude/skills/\non-conflict: keep\nignore: *.log\nignore: .cache\nlock-timeout: 300\n",
         )
         .unwrap();
         assert_eq!(config.skills_dir, Path::new(".claude/skills"));
         assert_eq!(config.on_conflict, ConflictPolicy::Keep);
         assert_eq!(config.ignore, ["*.log", ".cache"]);
+        assert_eq!(config.lock_timeout, Duration::from_secs(300));
     }
 
     #[test]
@@ -415,6 +456,10 @@ mod tests {
         assert_eq!(
             parse("library: ~bob/lib\n").unwrap_err().message,
             "`~user` paths are not supported"
+        );
+        assert_eq!(
+            parse("lock-timeout: 1m\n").unwrap_err().message,
+            "`1m` is not a number of seconds"
         );
     }
 

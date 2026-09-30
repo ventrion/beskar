@@ -5,7 +5,9 @@ mod args;
 mod cmd;
 mod commands;
 mod help;
+mod json;
 mod output;
+mod prompt;
 
 use std::process::ExitCode;
 

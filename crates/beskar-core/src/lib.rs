@@ -24,8 +24,10 @@ pub mod init;
 pub mod library;
 pub mod lock;
 pub mod names;
+pub mod ops;
 pub mod profile;
 pub mod reconcile;
+pub mod recover;
 pub mod registry;
 pub mod scan;
 pub mod sha256;
@@ -39,8 +41,9 @@ pub mod workspace;
 #[cfg(test)]
 mod testutil;
 
+use std::fmt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::Arc;
 
 pub use config::{Config, ConflictPolicy};
 pub use error::{Error, ErrorKind, Result};
@@ -79,20 +82,82 @@ pub fn shell_quote(arg: &str) -> String {
     quote(arg)
 }
 
+/// Join names as `a, b and c`, for messages.
+pub fn join_and<S: AsRef<str>>(items: &[S]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.as_ref().to_string(),
+        [rest @ .., last] => format!(
+            "{} and {}",
+            rest.iter()
+                .map(|s| s.as_ref())
+                .collect::<Vec<_>>()
+                .join(", "),
+            last.as_ref()
+        ),
+    }
+}
+
+/// `count(3, "skill")` is "3 skills", for messages.
+pub fn count(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
 fn quote(arg: &str) -> String {
     format!("'{}'", arg.replace('\'', "'\\''"))
 }
 
-/// How long a command waits for another Beskar process to finish.
-pub const LOCK_WAIT: Duration = Duration::from_secs(10);
+/// Something the core tells its front end while it works, because the
+/// person may want to know now rather than in the final report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Notice {
+    /// Another Beskar process holds the lock; this one waits for it.
+    Waiting { holder: String },
+    /// A leftover of an interrupted run was cleaned up, or could not be.
+    Recovered(recover::Recovered),
+}
+
+/// A function that hears [`Notice`]s.
+type Listener = dyn Fn(&Notice) + Send + Sync;
+
+/// Where [`Notice`]s go. The default drops them.
+#[derive(Clone, Default)]
+pub struct Notifier(Option<Arc<Listener>>);
+
+impl Notifier {
+    pub fn new(listen: impl Fn(&Notice) + Send + Sync + 'static) -> Self {
+        Notifier(Some(Arc::new(listen)))
+    }
+
+    pub fn send(&self, notice: Notice) {
+        if let Some(listen) = &self.0 {
+            listen(&notice);
+        }
+    }
+}
+
+impl fmt::Debug for Notifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "Notifier(..)"
+        } else {
+            "Notifier(none)"
+        })
+    }
+}
 
 /// A loaded Beskar environment: configuration plus the library it points
-/// at.
+/// at. Its methods in [`ops`] are what a person can ask Beskar to do.
 #[derive(Clone, Debug)]
 pub struct Beskar {
     pub config: Config,
     pub library: Library,
     user_home: Option<PathBuf>,
+    notifier: Notifier,
 }
 
 impl Beskar {
@@ -105,7 +170,19 @@ impl Beskar {
             config,
             library,
             user_home: user_home.map(Path::to_path_buf),
+            notifier: Notifier::default(),
         })
+    }
+
+    /// Send progress notices (waiting for the lock, recovered leftovers) to
+    /// `notifier`.
+    pub fn with_notifier(mut self, notifier: Notifier) -> Self {
+        self.notifier = notifier;
+        self
+    }
+
+    pub fn notify(&self, notice: Notice) {
+        self.notifier.send(notice);
     }
 
     pub fn user_home(&self) -> Option<&Path> {
@@ -120,9 +197,71 @@ impl Beskar {
         Registry::load(&self.config.registry)
     }
 
-    /// Take the lock that serializes changes to the library and registry.
+    /// Take the lock that serializes changes to the library and registry,
+    /// waiting up to the configured `lock-timeout` for another process.
     pub fn lock(&self, command: &str) -> Result<Lock> {
-        Lock::acquire(&self.config.home, command, LOCK_WAIT)
+        Lock::acquire(
+            &self.config.home,
+            command,
+            self.config.lock_timeout,
+            &|holder| {
+                self.notify(Notice::Waiting {
+                    holder: holder.to_string(),
+                })
+            },
+        )
+    }
+
+    /// Change the library or the registry as one step: take the lock,
+    /// clean up after interrupted runs, read the registry fresh, run
+    /// `change`, and save the registry if `change` modified it. Reading
+    /// under the lock means two processes never overwrite each other's
+    /// changes. The registry is saved even when `change` fails partway,
+    /// because what it recorded (a skill installed, then an error) has
+    /// happened on disk.
+    pub fn transact<T>(
+        &self,
+        command: &str,
+        change: impl FnOnce(&mut Registry) -> Result<T>,
+    ) -> Result<T> {
+        let _lock = self.lock(command)?;
+        self.recover_own_files();
+        let mut registry = self.registry()?;
+        let before = registry.render();
+        let result = change(&mut registry);
+        if registry.render() != before
+            && let Err(error) = registry.save()
+        {
+            return Err(match result {
+                Ok(_) => error,
+                Err(first) => first.hint(format!(
+                    "also, the registry could not be saved: {}",
+                    error.message
+                )),
+            });
+        }
+        result
+    }
+
+    /// Clean up after interrupted runs in Beskar's home, the library's
+    /// skills and its profiles. Call only while holding the lock.
+    fn recover_own_files(&self) {
+        let dirs = [
+            self.config.home.clone(),
+            self.library.skills_dir(),
+            self.library.profiles_dir(),
+        ];
+        for dir in dirs {
+            self.recover_dir(&dir);
+        }
+    }
+
+    /// Clean up after interrupted runs in `dir` (see [`recover`]). Call only
+    /// while holding the lock.
+    pub fn recover_dir(&self, dir: &Path) {
+        for recovered in recover::sweep(dir, self.ignore()) {
+            self.notify(Notice::Recovered(recovered));
+        }
     }
 
     pub fn workspace(&self, root: &Path) -> Workspace {
