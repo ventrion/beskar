@@ -1,0 +1,19 @@
+[package]
+name = "beskar-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "beskar"
+path = "src/main.rs"
+
+[dependencies]
+beskar-core = { path = "../beskar-core" }
+
+[dev-dependencies]
+bsk = { path = "../bsk" }
+
+[lints]
+workspace = true
