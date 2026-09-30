@@ -11,7 +11,10 @@ use crate::json::{self, Json};
 use crate::output::{Cell, clean, table, tilde};
 
 pub fn init(app: &mut App, m: &Matches) -> Outcome {
-    let library = m.value("library").map(|path| app.path_arg(path));
+    let library = m
+        .value("library")
+        .map(|path| app.path_arg(path))
+        .transpose()?;
     let setup = app.with_home(|home| setup::init(home, library.as_deref()))??;
     app.data(|| init_json(&setup));
     let style = app.out.style();

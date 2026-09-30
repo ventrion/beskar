@@ -62,11 +62,14 @@ impl Style {
 }
 
 /// Standard output and error. Output to a closed pipe (`beskar ... | head`)
-/// is dropped quietly instead of aborting halfway through a change.
+/// is dropped quietly instead of aborting halfway through a change; any
+/// other failure to write (a full disk, a closed descriptor) is remembered
+/// so the command can fail at the end.
 pub struct Output {
     stdout_style: Style,
     stderr_style: Style,
     closed: bool,
+    failed: Option<String>,
 }
 
 impl Output {
@@ -75,6 +78,19 @@ impl Output {
             stdout_style: Style::new(stdout_color),
             stderr_style: Style::new(stderr_color),
             closed: false,
+            failed: None,
+        }
+    }
+
+    /// Why writing to standard output failed, other than a closed pipe.
+    pub fn write_error(&self) -> Option<&str> {
+        self.failed.as_deref()
+    }
+
+    fn note(&mut self, err: &io::Error) {
+        self.closed = true;
+        if err.kind() != io::ErrorKind::BrokenPipe && self.failed.is_none() {
+            self.failed = Some(err.to_string());
         }
     }
 
@@ -108,8 +124,9 @@ impl Output {
             return;
         }
         let mut stdout = io::stdout().lock();
-        if writeln!(stdout, "{}", text.as_ref()).is_err() {
-            self.closed = true;
+        if let Err(err) = writeln!(stdout, "{}", text.as_ref()).and_then(|()| stdout.flush()) {
+            drop(stdout);
+            self.note(&err);
         }
     }
 
@@ -156,6 +173,24 @@ impl Cell {
 /// Lay out rows in aligned columns, separated by two spaces, each line
 /// prefixed with `indent`. The last column is not padded.
 pub fn table(rows: Vec<Vec<Cell>>, indent: &str) -> Vec<String> {
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+    // A column that is empty in every row takes no room.
+    let used: Vec<bool> = (0..columns)
+        .map(|c| {
+            rows.iter()
+                .any(|row| row.get(c).is_some_and(|cell| !cell.plain.is_empty()))
+        })
+        .collect();
+    let rows: Vec<Vec<Cell>> = rows
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .enumerate()
+                .filter(|(c, _)| used[*c])
+                .map(|(_, cell)| cell)
+                .collect()
+        })
+        .collect();
     let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
     let widths: Vec<usize> = (0..columns)
         .map(|c| {
@@ -304,6 +339,28 @@ mod tests {
         let lines = table(rows, "  ");
         assert_eq!(lines[0], "  \x1b[32mgit\x1b[0m          one");
         assert_eq!(lines[1], "  code-review  two");
+    }
+
+    #[test]
+    fn empty_columns_take_no_room() {
+        let lines = table(
+            vec![
+                vec![
+                    Cell::plain("="),
+                    Cell::plain("git"),
+                    Cell::plain(""),
+                    Cell::plain("same"),
+                ],
+                vec![
+                    Cell::plain("✓"),
+                    Cell::plain("pdf"),
+                    Cell::plain(""),
+                    Cell::plain("new"),
+                ],
+            ],
+            "",
+        );
+        assert_eq!(lines, ["=  git  same", "✓  pdf  new"]);
     }
 
     #[test]

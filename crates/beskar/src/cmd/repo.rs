@@ -159,6 +159,9 @@ fn conflict_advice(app: &App, policy: ConflictPolicy) -> &'static str {
         ConflictPolicy::Ask if !app.env.interactive => {
             "Conflicts need a decision and there is no terminal to ask on. Run again with --on-conflict keep (keep local copies) or --on-conflict replace (take the library versions)."
         }
+        ConflictPolicy::Abort => {
+            "Conflicts need a decision. Run again with --on-conflict keep (keep local copies), --on-conflict replace (take the library versions) or --on-conflict ask (choose one by one)."
+        }
         _ => {
             "Conflicts need a decision. Run again with --on-conflict keep (keep local copies) or --on-conflict replace (take the library versions), or in a terminal to be asked."
         }
@@ -180,7 +183,7 @@ fn policy_for(app: &mut App, m: &Matches, beskar: &Beskar) -> Result<ConflictPol
 
 pub fn add(app: &mut App, m: &Matches) -> Outcome {
     let beskar = app.load()?;
-    let path = app.path_arg(m.arg(0).unwrap_or("."));
+    let path = app.path_arg(m.arg(0).unwrap_or("."))?;
     let added = beskar.add_repo(&path)?;
     app.data(|| added_json(&added));
     let style = app.out.style();
@@ -232,7 +235,7 @@ fn added_json(added: &RepoAdded) -> Json {
 pub fn remove(app: &mut App, m: &Matches) -> Outcome {
     let beskar = app.load()?;
     let dry_run = m.has("dry-run");
-    let path = app.path_arg(m.arg(0).unwrap_or("."));
+    let path = app.path_arg(m.arg(0).unwrap_or("."))?;
     let purge = m.has("purge");
     let policy = policy_for(app, m, &beskar)?;
     let removed = {
@@ -255,8 +258,13 @@ pub fn remove(app: &mut App, m: &Matches) -> Outcome {
                 let stops =
                     update.plan.conflicts().next().is_some() && policy_note(app, policy).is_none();
                 if stops || !update.plan.blocked.is_empty() {
+                    let because = if stops {
+                        "some skills have local changes that need a decision"
+                    } else {
+                        "some skills are blocked"
+                    };
                     app.out.line(format!(
-                        "Dry run: {place} would stay registered, because some skills could not be deleted."
+                        "Dry run: {place} would stay registered, because {because}."
                     ));
                     if stops {
                         app.out.line(conflict_advice(app, policy));
@@ -693,14 +701,30 @@ pub fn update_many(
             UpdateResult::Planned => {
                 print_plan(app, &update.plan, Some(policy));
                 print_blockers(app, &update.plan);
+                // Steps that only touch the registry (recording a copy that
+                // already matches, forgetting one that is gone) are not
+                // shown, so they do not count as changes either.
+                let visible = update.plan.steps.iter().any(|s| {
+                    s.changes_files()
+                        || !matches!(
+                            s.action,
+                            Action::Unchanged
+                                | Action::Unmanaged
+                                | Action::Forget
+                                | Action::Record
+                                | Action::KeepLocal
+                        )
+                });
                 if update.has_errors() {
                     failed += 1;
                 } else if update.plan.conflicts().next().is_some()
                     && policy_note(app, policy).is_none()
                 {
                     stopped += 1;
-                } else {
+                } else if visible {
                     changed += 1;
+                } else {
+                    unchanged += 1;
                 }
             }
             UpdateResult::Stopped => {
@@ -1054,6 +1078,7 @@ fn file_diff_json(file: &FileDiff) -> Json {
     Json::obj([
         ("path", Json::from(file.path.as_str())),
         ("change", Json::from(change)),
+        ("mode_changed", Json::Bool(file.mode_changed)),
         ("hunks", hunks),
     ])
 }
@@ -1084,6 +1109,9 @@ pub fn render_diff(skill: &SkillId, diffs: &[FileDiff], style: Style) -> Vec<Str
                 continue;
             }
             _ => {}
+        }
+        if file.mode_changed {
+            lines.push(style.bold(&format!("executable bit changed: {path}")));
         }
         let Some(hunks) = &file.hunks else {
             lines.push(style.bold(&format!("binary files {old} and {new} differ")));

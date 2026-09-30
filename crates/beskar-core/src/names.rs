@@ -69,6 +69,20 @@ pub fn fix_hint(raw: &str) -> Option<String> {
             "BSK has no `[a, b]` lists: write one line per name, repeating the key".to_string(),
         );
     }
+    let parts: Vec<&str> = raw
+        .split([',', ' '])
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.len() > 1 && parts.iter().all(|part| problem(part).is_none()) {
+        return Some(format!(
+            "one name per line: repeat the key for each of {}",
+            parts
+                .iter()
+                .map(|part| format!("`{part}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     let unquoted = raw.trim_matches(['"', '\'']);
     if unquoted != raw && problem(unquoted).is_none() {
         return Some(format!("names are written without quotes: `{unquoted}`"));
@@ -211,6 +225,10 @@ mod tests {
             fix_hint("[git, pdf]")
                 .unwrap()
                 .starts_with("BSK has no `[a, b]` lists")
+        );
+        assert_eq!(
+            fix_hint("git, testing").as_deref(),
+            Some("one name per line: repeat the key for each of `git`, `testing`")
         );
         assert_eq!(
             fix_hint("\"git\"").as_deref(),

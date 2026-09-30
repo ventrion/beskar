@@ -33,9 +33,12 @@ pub struct FileDiff {
     /// Path relative to the skill directory, `/`-separated.
     pub path: String,
     pub change: FileChange,
-    /// Line differences when both sides are text; `None` for binary files,
-    /// symlinks and mode changes.
+    /// Line differences when both sides are text (a symbolic link counts
+    /// as the one line `-> target`); `None` for binary files and mode
+    /// changes.
     pub hunks: Option<Vec<Hunk>>,
+    /// Whether the executable bit differs too.
+    pub mode_changed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,11 +73,13 @@ pub fn compare(old: &Path, new: &Path, ignore: &Ignore) -> io::Result<Vec<FileDi
                 path: path.clone(),
                 change: FileChange::Removed,
                 hunks: text(a)?.map(|text| line_diff(&text, "", 3)),
+                mode_changed: false,
             },
             (None, Some(b)) => FileDiff {
                 path: path.clone(),
                 change: FileChange::Added,
                 hunks: text(b)?.map(|text| line_diff("", &text, 3)),
+                mode_changed: false,
             },
             (Some(a), Some(b)) => match compare_entries(a, b)? {
                 Some(diff) => FileDiff {
@@ -105,6 +110,7 @@ fn compare_entries(a: &TreeEntry, b: &TreeEntry) -> io::Result<Option<FileDiff>>
         path: String::new(),
         change: FileChange::Modified,
         hunks,
+        mode_changed: false,
     };
     match (a.kind, b.kind) {
         (EntryKind::File { executable: x }, EntryKind::File { executable: y }) => {
@@ -114,12 +120,16 @@ fn compare_entries(a: &TreeEntry, b: &TreeEntry) -> io::Result<Option<FileDiff>>
                     path: String::new(),
                     change: FileChange::ModeChanged,
                     hunks: None,
+                    mode_changed: true,
                 }));
             }
-            Ok(Some(modified(match (as_text(&old, a), as_text(&new, b)) {
-                (Some(old), Some(new)) => Some(line_diff(old, new, 3)),
-                _ => None,
-            })))
+            Ok(Some(FileDiff {
+                mode_changed: x != y,
+                ..modified(match (as_text(&old, a), as_text(&new, b)) {
+                    (Some(old), Some(new)) => Some(line_diff(old, new, 3)),
+                    _ => None,
+                })
+            }))
         }
         (EntryKind::Symlink, EntryKind::Symlink) => {
             let (old, new) = (fs::read_link(&a.path)?, fs::read_link(&b.path)?);
@@ -135,13 +145,15 @@ fn compare_entries(a: &TreeEntry, b: &TreeEntry) -> io::Result<Option<FileDiff>>
             path: String::new(),
             change: FileChange::TypeChanged,
             hunks: None,
+            mode_changed: false,
         })),
     }
 }
 
 fn text(entry: &TreeEntry) -> io::Result<Option<String>> {
     if entry.kind == EntryKind::Symlink {
-        return Ok(None);
+        let target = fs::read_link(&entry.path)?;
+        return Ok(Some(format!("-> {}\n", target.display())));
     }
     let bytes = fs::read(&entry.path)?;
     Ok(as_text(&bytes, entry).map(str::to_string))

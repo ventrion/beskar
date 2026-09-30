@@ -18,7 +18,7 @@ use crate::json::{self, Json};
 use crate::output::{Cell, clean, table, truncate};
 
 pub fn init(app: &mut App, m: &Matches) -> Outcome {
-    let path = m.arg(0).map(|path| app.path_arg(path));
+    let path = m.arg(0).map(|path| app.path_arg(path)).transpose()?;
     let setup = app.with_home(|home| setup::init_library(home, path.as_deref()))??;
     app.data(|| init_json(&setup));
     let line = library_state_line(app, &setup);
@@ -53,7 +53,7 @@ fn imported_name(imported: Imported) -> &'static str {
 
 pub fn add(app: &mut App, m: &Matches) -> Outcome {
     let beskar = app.load()?;
-    let path = app.path_arg(m.arg(0).expect("arity checked"));
+    let path = app.path_arg(m.arg(0).expect("arity checked"))?;
     let added = beskar.add_skill(&path, m.value("name"), m.has("replace"))?;
     app.data(|| {
         Json::obj([
@@ -107,7 +107,7 @@ pub fn add(app: &mut App, m: &Matches) -> Outcome {
 
 pub fn scan(app: &mut App, m: &Matches) -> Outcome {
     let beskar = app.load()?;
-    let root = app.path_arg(m.arg(0).expect("arity checked"));
+    let root = app.path_arg(m.arg(0).expect("arity checked"))?;
     let scan = beskar.scan(&root, m.has("replace"))?;
     let importable = scan.importable().count();
     let what = count(importable, "skill");

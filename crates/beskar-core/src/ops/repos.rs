@@ -314,7 +314,12 @@ impl Beskar {
             let mut disabled: Vec<ProfileName> = Vec::new();
             let mut already_enabled = Vec::new();
             let mut not_enabled = Vec::new();
+            let mut seen: Vec<&String> = Vec::new();
             for arg in names {
+                if seen.contains(&arg) {
+                    continue;
+                }
+                seen.push(arg);
                 let name = match ProfileName::new(arg) {
                     Ok(name) => name,
                     Err(_) => self.library.find_profile(arg)?,
@@ -507,6 +512,7 @@ impl Beskar {
                 let unregister = mode == Mode::Purge && !update.has_errors();
                 if unregister {
                     registry.remove(&update.repo);
+                    tidy_skills_dir(&self.workspace(&update.repo));
                 }
                 Ok(Some((update, unregister)))
             })?;
@@ -650,6 +656,18 @@ impl Beskar {
     /// Call only while holding the lock.
     fn recover_workspace(&self, root: &Path) {
         self.recover_dir(self.workspace(root).skills_dir());
+    }
+}
+
+/// After a purge, remove the skills directory if nothing is left in it,
+/// and its parent (`.agents`) if that is empty too.
+fn tidy_skills_dir(workspace: &Workspace) {
+    let skills_dir = workspace.skills_dir();
+    if fs::remove_dir(skills_dir).is_ok()
+        && let Some(parent) = skills_dir.parent()
+        && parent != workspace.root()
+    {
+        let _ = fs::remove_dir(parent);
     }
 }
 
@@ -907,6 +925,20 @@ mod tests {
         assert!(removed.unregistered);
         assert!(!world.repo().join(".agents/skills/git").exists());
         assert!(world.beskar.registry().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_purged_workspace_loses_its_empty_skills_directory() {
+        let world = World::new();
+        world.update(ConflictPolicy::Abort);
+        let mut abort = ConflictPolicy::Abort;
+        let removed = world
+            .beskar
+            .remove_repo(&world.repo(), Some(&mut abort), false)
+            .unwrap();
+        assert!(removed.unregistered);
+        assert!(!world.repo().join(".agents").exists());
+        assert!(world.repo().is_dir());
     }
 
     #[test]

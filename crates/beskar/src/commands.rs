@@ -51,7 +51,13 @@ const ON_CONFLICT: Flag = Flag {
     long: "on-conflict",
     short: None,
     value: Some("POLICY"),
-    help: "ask, keep, replace or abort, for skills changed both here and in the library (default: the config's on-conflict)",
+    help: "ask, keep, replace or abort, for skills whose local changes the update would overwrite or delete (default: the config's on-conflict)",
+};
+const PURGE_CONFLICT: Flag = Flag {
+    long: "on-conflict",
+    short: None,
+    value: Some("POLICY"),
+    help: "ask, keep, replace or abort, for installed skills with local changes that --purge would delete (default: the config's on-conflict)",
 };
 const ALL_REPOS: Flag = Flag {
     long: "all",
@@ -65,6 +71,8 @@ const FORCE: Flag = Flag {
     value: None,
     help: "Go ahead even though it undoes changes made elsewhere",
 };
+
+const STATUS_ABOUT: &str = "Compares the workspace with its enabled profiles and the library. Each skill shows as:\n\n  ✓ up to date        + to install       ~ to update\n  - to remove         * changed here     ! conflict, needs a decision\n  ✗ not in the library, or blocked       ? not managed by Beskar";
 
 pub const GROUPS: &[Group] = &[
     Group {
@@ -288,7 +296,7 @@ pub static COMMANDS: &[Command] = &[
                 value: None,
                 help: "Also delete the skills Beskar installed (skills with local changes follow --on-conflict)",
             },
-            ON_CONFLICT,
+            PURGE_CONFLICT,
             DRY_RUN,
         ],
         about: "Unregisters the workspace. Its skills stay in place and are no longer managed, unless\n--purge deletes the ones Beskar installed.",
@@ -309,7 +317,7 @@ pub static COMMANDS: &[Command] = &[
         summary: "Show each skill's state in a workspace",
         arity: NONE,
         flags: &[REPO, ALL_REPOS],
-        about: "Compares the workspace with its enabled profiles and the library. Each skill shows as:\n\n  ✓ up to date        + to install       ~ to update\n  - to remove         * changed here     ! conflict, needs a decision\n  ✗ not in library    ? not managed by Beskar",
+        about: STATUS_ABOUT,
         run: repo::status,
     },
     Command {
@@ -441,7 +449,7 @@ pub static COMMANDS: &[Command] = &[
         summary: "Same as `beskar repo status`",
         arity: NONE,
         flags: &[REPO, ALL_REPOS],
-        about: "Shortcut for `beskar repo status`.",
+        about: STATUS_ABOUT,
         run: repo::status,
     },
     Command {
@@ -514,10 +522,11 @@ pub fn run(app: &mut App, argv: &[String], failure: Option<Failure>) -> u8 {
         None => dispatch(app, &rest),
     };
     if !app.json {
-        return match result {
+        let code = match result {
             Ok(code) => code,
             Err(failure) => report(app, failure),
         };
+        return output_failed(app, code);
     }
     let (code, error) = match result {
         Ok(code) => (code, None),
@@ -542,7 +551,20 @@ pub fn run(app: &mut App, argv: &[String], failure: Option<Failure>) -> u8 {
         document = document.with("notices", Json::Arr(notices));
     }
     app.out.raw(&document.pretty());
-    code
+    output_failed(app, code)
+}
+
+/// A command whose output could not be written (other than to a closed
+/// pipe) fails, even if it did its work, so scripts notice.
+fn output_failed(app: &App, code: u8) -> u8 {
+    match app.out.write_error() {
+        Some(reason) if code == EXIT_OK => {
+            app.out
+                .err_line(format!("error: cannot write the output: {reason}"));
+            EXIT_ERROR
+        }
+        _ => code,
+    }
 }
 
 fn exit_code(error: &beskar_core::Error) -> u8 {
@@ -675,6 +697,7 @@ fn help_command(app: &mut App, topic: &[String]) -> Outcome {
     {
         [] => help::overview(style),
         ["format"] => help::format(style),
+        ["help"] => help::overview(style),
         [name] if GROUPS.iter().any(|g| g.name == *name) => help::group(
             GROUPS.iter().find(|g| g.name == *name).expect("found"),
             style,

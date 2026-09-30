@@ -355,11 +355,16 @@ pub fn stats(app: &mut App, _m: &Matches) -> Outcome {
 }
 
 pub fn update(app: &mut App, m: &Matches) -> Outcome {
+    if m.has("all") && !m.args.is_empty() {
+        return Err(Failure::usage(
+            "pass either --all or the workspaces to update, not both",
+        ));
+    }
     let beskar = app.load()?;
     let registry = beskar.registry()?;
     let mut targets: Vec<PathBuf> = Vec::new();
     for arg in &m.args {
-        let dir = app.path_arg(arg);
+        let dir = app.path_arg(arg)?;
         match registry.containing(&dir).or_else(|| registry.get(&dir)) {
             Some(entry) => targets.push(entry.path.clone()),
             None => {

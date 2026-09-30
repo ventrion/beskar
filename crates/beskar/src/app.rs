@@ -78,9 +78,11 @@ pub struct Env {
 
 impl Env {
     pub fn from_process() -> Env {
+        // An empty path means the working directory is gone; see
+        // `App::cwd`.
         let cwd = env::current_dir()
             .map(|dir| fs::canonicalize(&dir).unwrap_or(dir))
-            .unwrap_or_else(|_| PathBuf::from("."));
+            .unwrap_or_default();
         let var_path = |name: &str| {
             env::var_os(name)
                 .filter(|v| !v.is_empty())
@@ -258,14 +260,29 @@ impl App {
 
     /// A path from the command line: `~` expanded, made absolute against
     /// the working directory, and resolved through symlinks if it exists.
-    pub fn path_arg(&self, arg: &str) -> PathBuf {
+    pub fn path_arg(&self, arg: &str) -> Result<PathBuf, Failure> {
         let expanded = match (&self.env.user_home, arg) {
             (Some(home), "~") => home.clone(),
             (Some(home), _) if arg.starts_with("~/") => home.join(&arg[2..]),
             _ => PathBuf::from(arg),
         };
-        let absolute = normalize(&self.env.cwd.join(expanded));
-        fs::canonicalize(&absolute).unwrap_or(absolute)
+        let absolute = if expanded.is_absolute() {
+            normalize(&expanded)
+        } else {
+            normalize(&self.cwd()?.join(expanded))
+        };
+        Ok(fs::canonicalize(&absolute).unwrap_or(absolute))
+    }
+
+    /// The working directory, which may have been deleted under us.
+    pub fn cwd(&self) -> Result<PathBuf, Failure> {
+        if self.env.cwd.as_os_str().is_empty() {
+            return Err(Failure::Error(
+                Error::not_found("the current directory does not exist any more")
+                    .hint("`cd` to an existing directory, or pass the path with --repo"),
+            ));
+        }
+        Ok(self.env.cwd.clone())
     }
 
     /// A path for display, with `~` for the home directory and control
@@ -287,8 +304,8 @@ impl App {
     pub fn repo_ref(&self, flag: Option<&str>) -> Result<RepoRef, Failure> {
         match flag {
             Some("") => Err(Failure::usage("`--repo` needs a path")),
-            Some(path) => Ok(RepoRef::named(self.path_arg(path))),
-            None => Ok(RepoRef::here(self.env.cwd.clone())),
+            Some(path) => Ok(RepoRef::named(self.path_arg(path)?)),
+            None => Ok(RepoRef::here(self.cwd()?)),
         }
     }
 
