@@ -248,15 +248,19 @@ pub fn disjoint(a: &Path, b: &Path) -> bool {
 }
 
 pub fn relative_destination(path: &Path) -> Result<()> {
-    if path.as_os_str().is_empty()
+    let text = format::path_text(path)?;
+    // Check the text, not rebuilt components: Windows accepts both separators,
+    // and components() hides doubled or trailing ones.
+    if text.is_empty()
+        || text
+            .split(std::path::is_separator)
+            .any(|part| part.is_empty() || part == "." || part == "..")
         || path
             .components()
             .any(|c| !matches!(c, Component::Normal(_)))
-        || path.components().collect::<PathBuf>().as_os_str() != path.as_os_str()
     {
         return Err("agent-skills destination must be a normalized relative path without . or .. components".into());
     }
-    format::path_text(path)?;
     Ok(())
 }
 
@@ -297,5 +301,21 @@ mod tests {
                 .next(),
             registry.repos.keys().next()
         );
+    }
+
+    #[test]
+    fn destinations_are_normalized_relative_paths() {
+        for good in [".agents/skills", "skills", "tools/agent skills/雪"] {
+            assert!(relative_destination(Path::new(good)).is_ok(), "{good}");
+        }
+        for bad in ["", "/abs", "a//b", "a/", "./a", "a/./b", "a/../b", ".."] {
+            assert!(relative_destination(Path::new(bad)).is_err(), "{bad}");
+        }
+        if cfg!(windows) {
+            assert!(relative_destination(Path::new(r".agents\skills")).is_ok());
+            for bad in [r"a\\b", r"a\", r"C:a", r"\a"] {
+                assert!(relative_destination(Path::new(bad)).is_err(), "{bad}");
+            }
+        }
     }
 }

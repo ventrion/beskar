@@ -586,7 +586,7 @@ fn workspace_path(path: &Path) -> Result<PathBuf> {
             path.display()
         ));
     }
-    io(path.display(), fs::canonicalize(&path))
+    Ok(path)
 }
 fn initialize_library(config: &Config) -> Result<()> {
     for path in [

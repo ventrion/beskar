@@ -63,7 +63,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal --target "$TARGET"
       - name: Test
         if: matrix.test
-        run: cargo +stable test --workspace --locked --offline --target "$TARGET"
+        run: cargo +stable test --workspace --locked --offline --no-fail-fast --target "$TARGET"
       - name: Build
         run: cargo +stable build --release --locked --offline --target "$TARGET" -p beskar-cli
       - name: Package

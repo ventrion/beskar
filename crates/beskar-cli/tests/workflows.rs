@@ -34,6 +34,9 @@ struct Sandbox {
 impl Sandbox {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!("beskar-test-{}", tree::unique()));
+        fs::create_dir_all(&root).unwrap();
+        // Match the CLI, which resolves symlinked ancestors such as macOS /var.
+        let root = beskar_core::absolute_path(&root).unwrap();
         let home = root.join("state");
         let repo = root.join("workspace with spaces 雪");
         fs::create_dir_all(&repo).unwrap();
@@ -507,6 +510,37 @@ fn executable_bits_are_copied_and_count_as_local_drift() {
     )
     .unwrap();
     s.fail(&["update"], "local drift");
+}
+
+#[cfg(unix)]
+#[test]
+fn roots_reached_through_symlinked_directories_are_resolved() {
+    let base = Sandbox::new();
+    let real = base.root.join("real");
+    let link = base.root.join("link");
+    fs::create_dir(&real).unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    // Home, workspace and import source are all reached through the link.
+    let s = Sandbox {
+        root: link.clone(),
+        home: link.join("state"),
+        repo: link.join("workspace"),
+    };
+    fs::create_dir(&s.repo).unwrap();
+    s.init();
+    s.add_skill("a", "A");
+    s.activate("coding", &["a"]);
+    s.ok(&["update"]);
+    assert_eq!(
+        fs::read_to_string(real.join("workspace/.agents/skills/a/SKILL.md")).unwrap(),
+        "A"
+    );
+    let config = fs::read_to_string(real.join("state/config.bsk")).unwrap();
+    assert!(config.contains(real.join("state/library").to_str().unwrap()));
+    assert!(!config.contains(link.to_str().unwrap()), "{config}");
+    let repos = s.ok(&["repo", "list"]);
+    assert!(repos.contains(real.join("workspace").to_str().unwrap()));
+    assert!(!repos.contains(link.to_str().unwrap()), "{repos}");
 }
 
 #[cfg(unix)]

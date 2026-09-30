@@ -232,6 +232,10 @@ pub fn sync_dir(path: &Path) -> Result<()> {
     }
 }
 
+/// Normalize a user-supplied root and resolve symlinks in the part that exists.
+///
+/// System directories such as macOS `/var` may be symlinks. Resolving them once
+/// here lets `safe_path` reject every symlink below the roots Beskar manages.
 pub fn absolute(path: &Path) -> Result<PathBuf> {
     if path.as_os_str().is_empty() {
         return Err("path cannot be empty".into());
@@ -251,7 +255,87 @@ pub fn absolute(path: &Path) -> Result<PathBuf> {
             _ => normalized.push(component),
         }
     }
-    safe_path(&normalized)?;
-    format::path_text(&normalized)?;
-    Ok(normalized)
+    let resolved = resolve(&normalized)?;
+    safe_path(&resolved)?;
+    format::path_text(&resolved)?;
+    Ok(resolved)
+}
+
+/// Canonicalize the longest existing prefix and append the missing remainder.
+/// A dangling symlink counts as missing, so `safe_path` still rejects it.
+fn resolve(path: &Path) -> Result<PathBuf> {
+    let mut missing = Vec::new();
+    let mut existing = path;
+    loop {
+        match fs::canonicalize(existing) {
+            Ok(real) => {
+                let mut real = familiar(real);
+                real.extend(missing.iter().rev());
+                return Ok(real);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(
+                    existing
+                        .file_name()
+                        .ok_or_else(|| format!("{}: no existing ancestor", path.display()))?,
+                );
+                existing = existing.parent().ok_or("path needs a parent")?;
+            }
+            Err(e) => return Err(format!("{}: {e}", existing.display())),
+        }
+    }
+}
+
+/// Windows canonicalization returns verbatim `\\?\` paths. Convert them to the
+/// usual form when it names the same file, so they match paths from the shell.
+#[cfg(windows)]
+fn familiar(path: PathBuf) -> PathBuf {
+    use std::path::Prefix;
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return path;
+    };
+    let base = match prefix.kind() {
+        Prefix::VerbatimDisk(drive) => format!("{}:", char::from(drive)),
+        Prefix::VerbatimUNC(server, share) => match (server.to_str(), share.to_str()) {
+            (Some(server), Some(share)) => format!(r"\\{server}\{share}"),
+            _ => return path,
+        },
+        _ => return path,
+    };
+    let rest = components.as_path();
+    // Win32 parsing would strip trailing dots and spaces or map device names.
+    let plain = rest.components().all(|c| match c {
+        Component::Normal(name) => name
+            .to_str()
+            .is_some_and(|name| !name.ends_with(['.', ' ']) && !device_name(name)),
+        _ => true,
+    });
+    if plain {
+        PathBuf::from(base).join(rest)
+    } else {
+        path
+    }
+}
+
+#[cfg(windows)]
+fn device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or_default().trim_end();
+    let numbered = |prefix: &str| {
+        stem.len() == 4
+            && stem
+                .get(..3)
+                .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+            && stem.as_bytes()[3].is_ascii_digit()
+    };
+    ["CON", "PRN", "AUX", "NUL"]
+        .iter()
+        .any(|d| stem.eq_ignore_ascii_case(d))
+        || numbered("COM")
+        || numbered("LPT")
+}
+
+#[cfg(not(windows))]
+fn familiar(path: PathBuf) -> PathBuf {
+    path
 }

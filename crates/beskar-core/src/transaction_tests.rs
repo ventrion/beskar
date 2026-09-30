@@ -12,6 +12,9 @@ struct Sandbox {
 impl Sandbox {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!("beskar-core-test-{}", tree::unique()));
+        fs::create_dir_all(&root).unwrap();
+        // Match callers, which resolve symlinked ancestors such as macOS /var.
+        let root = tree::absolute(&root).unwrap();
         let home = root.join("state");
         let repo = root.join("repo");
         fs::create_dir_all(&repo).unwrap();
