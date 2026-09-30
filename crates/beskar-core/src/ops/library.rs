@@ -72,6 +72,8 @@ pub struct SkillDetails {
 pub struct SkillRemoval {
     pub id: SkillId,
     pub path: PathBuf,
+    /// The version shown; a different one is not deleted.
+    pub fingerprint: Fingerprint,
     /// Profiles that include it; they lose it too.
     pub profiles: Vec<ProfileName>,
 }
@@ -229,6 +231,7 @@ impl Beskar {
         }
         Ok(SkillRemoval {
             path: self.library.skill_dir(&id),
+            fingerprint: self.library.fingerprint(&id)?.expect("the skill exists"),
             id,
             profiles,
         })
@@ -251,7 +254,7 @@ impl Beskar {
                 self.library
                     .remove_from_profile(profile, std::slice::from_ref(id))?;
             }
-            self.library.remove_skill(id)?;
+            self.library.remove_skill(id, removal.fingerprint)?;
             let installed_in = registry
                 .repos()
                 .filter(|r| r.installed.contains_key(id))
@@ -284,4 +287,31 @@ fn skill_dir(beskar: &Beskar, path: &Path) -> Result<PathBuf> {
         )));
     }
     Ok(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Beskar;
+    use crate::ErrorKind;
+    use crate::init::init;
+    use crate::testutil::TempDir;
+
+    #[test]
+    fn a_skill_that_changed_after_the_preview_is_not_deleted() {
+        let tmp = TempDir::new();
+        let home = tmp.path().join(".beskar");
+        init(&home, Some(tmp.path()), None).unwrap();
+        let beskar = Beskar::load(&home, Some(tmp.path())).unwrap();
+        tmp.write(".beskar/library/skills/git/SKILL.md", "v1");
+        let removal = beskar.skill_removal("git", false).unwrap();
+        // Another process replaces the skill while the person reads the
+        // question.
+        tmp.write(".beskar/library/skills/git/SKILL.md", "v2");
+        let error = beskar.remove_skill(&removal).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Conflict);
+        assert_eq!(tmp.read(".beskar/library/skills/git/SKILL.md"), "v2");
+        let removal = beskar.skill_removal("git", false).unwrap();
+        beskar.remove_skill(&removal).unwrap();
+        assert!(!tmp.path().join(".beskar/library/skills/git").exists());
+    }
 }

@@ -308,15 +308,40 @@ impl Library {
             .map_err(|err| Error::io(&err, format_args!("read skill {}", source.display())))
     }
 
-    /// Delete a skill from the library.
-    pub fn remove_skill(&self, id: &SkillId) -> Result<()> {
+    /// Delete a skill from the library, provided it is still version
+    /// `expected`: checked before, and for a real directory once more after
+    /// it is moved out of the way, so a version nobody looked at is never
+    /// deleted. A skill symlinked into the library loses only its link.
+    pub fn remove_skill(&self, id: &SkillId, expected: Fingerprint) -> Result<()> {
         if !self.contains(id) {
             return Err(self
                 .find_skill(id.as_str())
                 .err()
                 .unwrap_or_else(|| Error::not_found(format!("no skill `{id}`"))));
         }
-        fsx::remove_dir(&self.skill_dir(id), &|_| Ok(()))
+        let changed = || {
+            Error::conflict(format!(
+                "the library's `{id}` changed since beskar looked, so it was not deleted"
+            ))
+            .hint("run the command again to see the new state")
+        };
+        if self.fingerprint(id)? != Some(expected) {
+            return Err(changed());
+        }
+        let dir = self.skill_dir(id);
+        let is_link = fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_symlink());
+        fsx::remove_dir(&dir, &|moved| {
+            if is_link {
+                return Ok(());
+            }
+            let now = Fingerprint::of(moved, &self.ignore)
+                .map_err(|err| Error::io(&err, format_args!("read {}", moved.display())))?;
+            if now == expected {
+                Ok(())
+            } else {
+                Err(changed())
+            }
+        })
     }
 
     // ----- Profiles -----
@@ -624,9 +649,10 @@ mod tests {
             Some("PDFs v2")
         );
 
-        library.remove_skill(&id("git")).unwrap();
+        let git = library.fingerprint(&id("git")).unwrap().unwrap();
+        library.remove_skill(&id("git"), git).unwrap();
         assert_eq!(library.skill_ids().unwrap(), [id("pdf")]);
-        let error = library.remove_skill(&id("gti")).unwrap_err();
+        let error = library.remove_skill(&id("gti"), git).unwrap_err();
         assert_eq!(error.kind, ErrorKind::NotFound);
     }
 
