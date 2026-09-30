@@ -609,6 +609,7 @@ impl Beskar {
         let path = self.find_repo(&registry, at)?;
         let entry = registry.get(&path).expect("found above");
         let workspace = self.workspace(&path);
+        sync::check_separate(self, &workspace)?;
         let id = existing_skill(self, &workspace, entry, name)?;
         let present = workspace.fingerprint(&id, self.ignore())?;
         let library = self.library.fingerprint(&id)?;

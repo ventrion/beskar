@@ -49,10 +49,14 @@ impl Json {
         Json::Int(i64::try_from(n).unwrap_or(i64::MAX))
     }
 
-    /// Add a field to an object; anything else is left as it is.
+    /// Set a field of an object, replacing one of the same name; anything
+    /// that is not an object is left as it is.
     pub fn with(mut self, key: &str, value: Json) -> Json {
         if let Json::Obj(fields) = &mut self {
-            fields.push((key.to_string(), value));
+            match fields.iter_mut().find(|(k, _)| k == key) {
+                Some((_, slot)) => *slot = value,
+                None => fields.push((key.to_string(), value)),
+            }
         }
         self
     }

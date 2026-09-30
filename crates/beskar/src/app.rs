@@ -72,8 +72,9 @@ pub struct Env {
     pub stdout_tty: bool,
     pub stdout_color: bool,
     pub stderr_color: bool,
-    /// `$BESKAR_LOCK_TIMEOUT`, overriding the config's `lock-timeout`.
-    pub lock_timeout: Option<Duration>,
+    /// `$BESKAR_LOCK_TIMEOUT`, overriding the config's `lock-timeout`, or
+    /// the text it holds if that is not a number of seconds.
+    pub lock_timeout: Option<Result<Duration, String>>,
 }
 
 impl Env {
@@ -110,7 +111,8 @@ impl Env {
             stderr_color: color && io::stderr().is_terminal(),
             lock_timeout: env::var("BESKAR_LOCK_TIMEOUT")
                 .ok()
-                .and_then(|text| parse_seconds(text.trim())),
+                .filter(|text| !text.trim().is_empty())
+                .map(|text| parse_seconds(text.trim()).ok_or(text)),
         }
     }
 }
@@ -192,9 +194,24 @@ impl App {
         let dir = self.home()?;
         Ok((
             dir,
-            self.env.lock_timeout.unwrap_or(DEFAULT_LOCK_TIMEOUT),
+            self.lock_timeout()?.unwrap_or(DEFAULT_LOCK_TIMEOUT),
             self.notifier(),
         ))
+    }
+
+    /// `$BESKAR_LOCK_TIMEOUT`, if it is set.
+    fn lock_timeout(&self) -> Result<Option<Duration>, Failure> {
+        match &self.env.lock_timeout {
+            None => Ok(None),
+            Some(Ok(timeout)) => Ok(Some(*timeout)),
+            Some(Err(text)) => Err(Failure::Error(
+                Error::invalid(format!(
+                    "BESKAR_LOCK_TIMEOUT is `{}`, not a number of seconds",
+                    crate::output::clean(text)
+                ))
+                .hint("set it to a whole number such as 300, or 0 not to wait"),
+            )),
+        }
     }
 
     /// Run `f` with the [`Home`] setup commands need.
@@ -250,7 +267,7 @@ impl App {
             let home = self.home()?;
             let mut beskar =
                 Beskar::load(&home, self.env.user_home.as_deref())?.with_notifier(self.notifier());
-            if let Some(timeout) = self.env.lock_timeout {
+            if let Some(timeout) = self.lock_timeout()? {
                 beskar.config.lock_timeout = timeout;
             }
             self.loaded = Some(beskar);

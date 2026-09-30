@@ -102,11 +102,15 @@ impl Output {
     }
 
     /// Write `text` to standard output as it is, even when silenced.
-    pub fn raw(&self, text: &str) {
+    pub fn raw(&mut self, text: &str) {
         let mut stdout = io::stdout().lock();
-        let _ = stdout
+        if let Err(err) = stdout
             .write_all(text.as_bytes())
-            .and_then(|()| stdout.flush());
+            .and_then(|()| stdout.flush())
+        {
+            drop(stdout);
+            self.note(&err);
+        }
     }
 
     /// Style for text going to standard output.

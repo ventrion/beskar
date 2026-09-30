@@ -576,6 +576,7 @@ fn exit_code(error: &beskar_core::Error) -> u8 {
 
 fn dispatch(app: &mut App, argv: &[String]) -> Outcome {
     let Some(first) = argv.first() else {
+        app.command = Some("help".to_string());
         app.text(help::overview(app.out.style()));
         return Ok(EXIT_OK);
     };

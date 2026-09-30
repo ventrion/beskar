@@ -178,7 +178,7 @@ fn conflict_advice(app: &App, policy: ConflictPolicy) -> &'static str {
 /// The conflict policy for a command, and whether it may ask: an explicit
 /// `--on-conflict ask` also asks on standard input that is not a terminal
 /// (answers piped in by a script), while the configured `ask` needs one.
-fn policy_for(app: &mut App, m: &Matches, beskar: &Beskar) -> Result<ConflictPolicy, Failure> {
+pub fn policy_for(app: &mut App, m: &Matches, beskar: &Beskar) -> Result<ConflictPolicy, Failure> {
     let policy = conflict_policy(m, beskar)?;
     if policy == ConflictPolicy::Ask && m.value("on-conflict").is_some() && !app.json {
         app.env.interactive = true;
@@ -700,6 +700,25 @@ pub fn update_many(
         };
         let update = match result {
             Ok(update) => update,
+            Err(error) if targets.len() == 1 => {
+                // One workspace, and it could not be planned: that is the
+                // command's failure, reported like any other error.
+                if app.json {
+                    let repo = Json::obj([
+                        ("repo", Json::path(path)),
+                        ("result", Json::from("error")),
+                        ("error", json::error(&error)),
+                    ]);
+                    app.data(|| {
+                        Json::obj([
+                            ("dry_run", Json::Bool(dry_run)),
+                            ("policy", Json::from(policy.as_str())),
+                            ("repos", Json::arr([repo])),
+                        ])
+                    });
+                }
+                return Err(error.into());
+            }
             Err(error) => {
                 print_nested_error(app, &error);
                 if app.json {

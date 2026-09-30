@@ -204,23 +204,30 @@ fn check_skills_dir(beskar: &Beskar, entry: &RepoEntry) -> Result<()> {
 /// not exist yet, since the first update would create it there.
 pub fn check_separate(beskar: &Beskar, workspace: &Workspace) -> Result<()> {
     let skills_dir = fsx::resolve(workspace.skills_dir());
-    for (root, what) in [
-        (beskar.library.root(), "the library"),
-        (beskar.config.home.as_path(), "Beskar's home directory"),
-    ] {
-        let root = fsx::resolve(root);
-        if skills_dir.starts_with(&root) || root.starts_with(&skills_dir) {
-            return Err(Error::invalid(format!(
-                "{} leads into {what} at {}, so Beskar would be managing its own files",
-                beskar.display(workspace.skills_dir()),
-                beskar.display(&root)
-            ))
-            .hint(
-                "make the workspace's skills directory a real directory, not a link into the library",
-            ));
-        }
+    let library = fsx::resolve(beskar.library.root());
+    let home = fsx::resolve(&beskar.config.home);
+    // The library usually sits inside the home, so the more specific name
+    // is checked first in each direction.
+    let problem = if skills_dir.starts_with(&library) {
+        Some(("leads into the library", library))
+    } else if skills_dir.starts_with(&home) {
+        Some(("leads into Beskar's home directory", home))
+    } else if home.starts_with(&skills_dir) {
+        Some(("contains Beskar's home directory", home))
+    } else if library.starts_with(&skills_dir) {
+        Some(("contains the library", library))
+    } else {
+        None
+    };
+    match problem {
+        Some((what, root)) => Err(Error::invalid(format!(
+            "{} {what} at {}, so Beskar would be managing its own files",
+            beskar.display(workspace.skills_dir()),
+            beskar.display(&root)
+        ))
+        .hint("make the workspace's skills directory a real directory of its own, not a link")),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 /// What happened to one skill.
@@ -655,6 +662,8 @@ pub fn promote(
 /// Discard local changes: put the library version of a wanted skill in
 /// place of the workspace copy.
 pub fn restore(beskar: &Beskar, entry: &mut RepoEntry, id: &SkillId) -> Result<Done> {
+    check_separate(beskar, &beskar.workspace(&entry.path))?;
+    check_skills_dir(beskar, entry)?;
     if beskar.library.fingerprint(id)?.is_none() {
         beskar.library.find_skill(id.as_str())?;
     }

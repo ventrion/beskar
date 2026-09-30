@@ -8,7 +8,7 @@ use beskar_core::usage::SkillUse;
 use beskar_core::{Error, ProfileName, SkillId};
 
 use super::repo::update_many;
-use super::{conflict_policy, count, entry_json, join_and, plan_json};
+use super::{count, entry_json, join_and, plan_json};
 use crate::app::{App, EXIT_OK, Failure, Outcome};
 use crate::args::Matches;
 use crate::json::{self, Json};
@@ -382,7 +382,7 @@ pub fn update(app: &mut App, m: &Matches) -> Outcome {
     }
     targets.sort();
     targets.dedup();
-    let policy = conflict_policy(m, &beskar)?;
+    let policy = super::repo::policy_for(app, m, &beskar)?;
     update_many(app, &beskar, &targets, m.has("dry-run"), policy)
 }
 
