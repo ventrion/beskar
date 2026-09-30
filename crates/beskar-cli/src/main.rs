@@ -66,6 +66,8 @@ fn main() {
 }
 fn run(arguments: Vec<OsString>) -> Result<Report, (u8, String)> {
     let mut args = args::Args::parse(arguments.into_iter()).map_err(|e| (2, e))?;
+    let topic = usize::from(args.words.first().is_some_and(|s| s == "help"));
+    normalize_alias(&mut args.words[topic..]);
     if args.flag("version") {
         return Ok(Report::message(format!(
             "beskar {}",
@@ -80,14 +82,16 @@ fn run(arguments: Vec<OsString>) -> Result<Report, (u8, String)> {
         let text = spec::help(&args.words).map_err(|e| (2, e))?;
         return Ok(Report::new(text.clone(), text.into()));
     }
-    if args.words.first().is_some_and(|s| s == "repo")
-        && args
-            .words
+    let (command, size) = spec::find(&args).map_err(|e| (2, e))?;
+    commands::run(&args, command.path, &args.words[size..]).map_err(|e| (1, e))
+}
+
+fn normalize_alias(words: &mut [String]) {
+    if words.first().is_some_and(|s| s == "repo")
+        && words
             .get(1)
             .is_some_and(|s| matches!(s.as_str(), "diff" | "promote"))
     {
-        args.words[0] = "skill".into();
+        words[0] = "skill".into();
     }
-    let (command, size) = spec::find(&args).map_err(|e| (2, e))?;
-    commands::run(&args, command.path, &args.words[size..]).map_err(|e| (1, e))
 }

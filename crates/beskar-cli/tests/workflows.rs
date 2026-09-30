@@ -128,6 +128,20 @@ fn snapshot(path: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 }
 
 #[test]
+fn repo_aliases_share_canonical_help_in_both_forms() {
+    let s = Sandbox::new();
+    for command in ["diff", "promote"] {
+        for flags in [&[][..], &["--json"][..]] {
+            let canonical = s.ok(&[&["skill", command, "--help"], flags].concat());
+            for words in [["repo", command, "--help"], ["help", "repo", command]] {
+                assert_eq!(s.ok(&[&words, flags].concat()), canonical);
+            }
+        }
+    }
+    assert!(!s.home.exists(), "help must not initialize state");
+}
+
+#[test]
 fn end_to_end_union_intent_and_self_contained_copies() {
     let s = Sandbox::new();
     s.init();
