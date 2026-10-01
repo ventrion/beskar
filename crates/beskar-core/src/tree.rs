@@ -165,9 +165,19 @@ pub fn copy(source: &Path, target: &Path) -> Result<()> {
         // Files retain all permissions; directory access stays usable for future updates.
         sync_dir(target)?;
     } else if meta.is_file() {
-        io(target.display(), fs::copy(source, target))?;
-        let file = io(target.display(), fs::File::open(target))?;
-        io(target.display(), file.sync_all())?;
+        // Write through one handle: Windows flushes only handles with write access,
+        // and a copied read-only attribute would block a second, writable open.
+        let mut input = io(source.display(), fs::File::open(source))?;
+        let mut output = io(
+            target.display(),
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(target),
+        )?;
+        io(target.display(), std::io::copy(&mut input, &mut output))?;
+        io(target.display(), output.set_permissions(meta.permissions()))?;
+        io(target.display(), output.sync_all())?;
     } else {
         return Err(format!(
             "{}: only regular files and directories are supported",

@@ -408,3 +408,28 @@ fn an_edit_during_the_rename_is_retained_with_its_recovery_journal() {
     assert!(s.home.join("transaction.bsk").exists());
     assert!(backup.parent().unwrap().join("new/file").exists());
 }
+
+#[test]
+fn read_only_files_are_staged_and_keep_their_permissions() {
+    use crate::transaction::Transaction;
+    let s = Sandbox::new();
+    s.init();
+    let source = s.root.join("source");
+    fs::create_dir(&source).unwrap();
+    let file = source.join("SKILL.md");
+    fs::write(&file, "text").unwrap();
+    let mut permissions = fs::metadata(&file).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&file, permissions).unwrap();
+    let hash = tree::fingerprint(&source).unwrap();
+    let target = s.repo.join("skill");
+    let mut transaction = Transaction::new(&s.home);
+    transaction
+        .copy(&target, &source, &s.repo, None, &hash)
+        .unwrap();
+    transaction.commit().unwrap();
+    let copied = target.join("SKILL.md");
+    assert_eq!(fs::read_to_string(&copied).unwrap(), "text");
+    assert!(fs::metadata(&copied).unwrap().permissions().readonly());
+    assert_eq!(tree::fingerprint(&target).unwrap(), hash);
+}

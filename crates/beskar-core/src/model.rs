@@ -276,17 +276,24 @@ mod tests {
         ] {
             assert!(Profile::decode(&format::parse(text).unwrap()).is_err());
         }
+        // Use a host-absolute path, so each case fails for its own reason.
+        let root = if cfg!(windows) { r"C:\tmp" } else { "/tmp" };
+        let repo = format::quote(root);
+        assert!(
+            Registry::decode(&format::parse(&format!("beskar 1\nrepo {repo}\nend")).unwrap())
+                .is_ok()
+        );
         for text in [
-            "beskar 1\nrepo /tmp\nprofile a",
-            "beskar 1\nend",
-            "beskar 1\nrepo /tmp\ninstalled a bad\nend",
-            "beskar 1\nrepo /tmp\nend\nrepo /tmp\nend",
+            format!("beskar 1\nrepo {repo}\nprofile a"),
+            "beskar 1\nend".into(),
+            format!("beskar 1\nrepo {repo}\ninstalled a bad\nend"),
+            format!("beskar 1\nrepo {repo}\nend\nrepo {repo}\nend"),
         ] {
-            assert!(Registry::decode(&format::parse(text).unwrap()).is_err());
+            assert!(Registry::decode(&format::parse(&text).unwrap()).is_err());
         }
         let registry = Registry {
             repos: BTreeMap::from([(
-                PathBuf::from("/tmp/雪 # workspace"),
+                Path::new(root).join("雪 # workspace"),
                 Repository {
                     profiles: BTreeSet::from(["coding".into()]),
                     ..Default::default()

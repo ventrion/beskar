@@ -120,6 +120,10 @@ fn snapshot(path: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
             if child.is_dir() {
                 out.insert(relative, Vec::new());
                 walk(root, &child, out);
+            } else if child.to_string_lossy().ends_with(".lock") {
+                // Windows refuses reads while another handle holds the lock.
+                assert_eq!(fs::metadata(&child).unwrap().len(), 0, "{relative:?}");
+                out.insert(relative, Vec::new());
             } else {
                 out.insert(relative, fs::read(child).unwrap());
             }
