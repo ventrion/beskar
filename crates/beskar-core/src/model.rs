@@ -119,6 +119,39 @@ impl Profile {
     }
 }
 
+/// Beskar's record about a library skill. It lives outside the skill directory,
+/// so it never changes the skill's content or fingerprint.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SkillMetadata {
+    /// Library skills that Beskar installs wherever it installs this skill.
+    pub requires: BTreeSet<String>,
+}
+
+impl SkillMetadata {
+    pub fn decode(records: &[Record]) -> Result<Self> {
+        let mut result = Self::default();
+        for r in records {
+            if !r.is("requires", 2) {
+                return Err(r.error("expected 'requires <skill>'"));
+            }
+            format::name(&r.fields[1]).map_err(|e| r.error(&e))?;
+            if !result.requires.insert(r.fields[1].clone()) {
+                return Err(r.error("duplicate requirement"));
+            }
+        }
+        Ok(result)
+    }
+    pub fn encode(&self) -> String {
+        let mut out = String::from(
+            "beskar 1\n# Skills this skill needs. Beskar installs them wherever it installs this skill.\n",
+        );
+        for skill in &self.requires {
+            out.push_str(&format!("requires {skill}\n"));
+        }
+        out
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Repository {
     /// Where the recorded copies were actually deployed, even if config later changes.
@@ -276,6 +309,22 @@ mod tests {
         ] {
             assert!(Profile::decode(&format::parse(text).unwrap()).is_err());
         }
+        for text in [
+            "beskar 1\nrequires a\nrequires a",
+            "beskar 1\nskill a",
+            "beskar 1\nrequires",
+            "beskar 1\nrequires a b",
+            "beskar 1\nrequires ../bad",
+        ] {
+            assert!(SkillMetadata::decode(&format::parse(text).unwrap()).is_err());
+        }
+        let metadata = SkillMetadata {
+            requires: BTreeSet::from(["git".into(), "testing".into()]),
+        };
+        assert_eq!(
+            SkillMetadata::decode(&format::parse(&metadata.encode()).unwrap()).unwrap(),
+            metadata
+        );
         // Use a host-absolute path, so each case fails for its own reason.
         let root = if cfg!(windows) { r"C:\tmp" } else { "/tmp" };
         let repo = format::quote(root);

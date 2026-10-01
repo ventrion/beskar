@@ -1,13 +1,13 @@
 use crate::{
     Result, diff, format, io,
-    model::{Config, Profile, Registry, disjoint},
+    model::{Config, Profile, Registry, SkillMetadata, disjoint},
     reconcile::{self, Plan, Policy},
     store::{Lock, Store},
     transaction::Transaction,
     tree,
 };
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -23,6 +23,8 @@ pub struct Import {
     pub name: String,
     pub source: PathBuf,
     pub fingerprint: String,
+    /// Library skills to record as requirements of the imported skill.
+    pub requires: BTreeSet<String>,
 }
 #[derive(Clone, Debug)]
 pub struct SkillInfo {
@@ -30,6 +32,10 @@ pub struct SkillInfo {
     pub path: PathBuf,
     pub fingerprint: String,
     pub profiles: Vec<String>,
+    /// Skills that this skill names in its metadata.
+    pub requires: Vec<String>,
+    /// Library skills that name this skill in their metadata.
+    pub required_by: Vec<String>,
     pub content: Option<String>,
     pub usage: Vec<Usage>,
 }
@@ -38,6 +44,7 @@ pub struct Usage {
     pub path: PathBuf,
     pub installed: bool,
     pub profiles: BTreeSet<String>,
+    pub required_by: BTreeSet<String>,
 }
 #[derive(Clone, Debug)]
 pub struct Stats {
@@ -173,6 +180,8 @@ impl Beskar {
             path,
             fingerprint,
             profiles,
+            requires: self.store.metadata(name)?.requires.into_iter().collect(),
+            required_by: self.store.required_by(name)?,
             content,
             usage: self.skill_usage(name)?,
         })
@@ -195,6 +204,13 @@ impl Beskar {
                     "skill {name} already exists; import under a different --name"
                 ));
             }
+            let metadata = self.store.metadata_path(name)?;
+            if tree::exists(&metadata)? {
+                return Err(format!(
+                    "{}: metadata for skill {name} exists without the skill; remove it or import under a different --name",
+                    metadata.display()
+                ));
+            }
             if !disjoint(&source, &self.config().library) {
                 return Err("cannot import from inside the library or an ancestor of it".into());
             }
@@ -202,9 +218,18 @@ impl Beskar {
                 name: name.clone(),
                 fingerprint: tree::fingerprint(&source)?,
                 source,
+                requires: BTreeSet::new(),
             });
         }
         Ok(imports)
+    }
+    /// Validate one import together with the library skills it requires.
+    pub fn prepare_import(&self, name: &str, source: &Path, requires: &[String]) -> Result<Import> {
+        let mut import = self
+            .prepare_imports(&[(name.into(), source.into())])?
+            .remove(0);
+        import.requires = self.check_requirements(name, requires)?;
+        Ok(import)
     }
     pub fn scan(&self, path: &Path) -> Result<Vec<Import>> {
         let path = workspace_path(path)?;
@@ -225,6 +250,15 @@ impl Beskar {
         {
             return Err("import sources changed since preview; retry".into());
         }
+        for import in imports {
+            self.check_requirements(
+                &import.name,
+                &import.requires.iter().cloned().collect::<Vec<_>>(),
+            )?;
+        }
+        if imports.iter().any(|i| !i.requires.is_empty()) {
+            self.store.create_metadata_directory()?;
+        }
         let mut transaction = Transaction::new(self.home());
         self.store.guard_state(&mut transaction)?;
         for import in imports {
@@ -235,6 +269,16 @@ impl Beskar {
                 None,
                 &import.fingerprint,
             )?;
+            if !import.requires.is_empty() {
+                let metadata = SkillMetadata {
+                    requires: import.requires.clone(),
+                };
+                transaction.text(
+                    &self.store.metadata_path(&import.name)?,
+                    &metadata.encode(),
+                    None,
+                )?;
+            }
         }
         transaction.commit()
     }
@@ -250,13 +294,69 @@ impl Beskar {
                 ));
             }
         }
+        if let Some(dependent) = self.store.required_by(name)?.first() {
+            return Err(format!(
+                "skill {name} is required by skill {dependent}; remove that requirement first"
+            ));
+        }
         let hash = tree::fingerprint(&target)?;
+        let metadata = self.store.metadata_path(name)?;
+        tree::safe_path(&metadata)?;
+        let metadata_hash = tree::optional_hash(&metadata)?;
         if !dry {
             let mut transaction = Transaction::new(self.home());
             transaction.remove(&target, target.parent().unwrap(), Some(hash))?;
+            if metadata_hash.is_some() {
+                transaction.remove(&metadata, metadata.parent().unwrap(), metadata_hash)?;
+            }
             transaction.commit()?;
         }
         Ok(())
+    }
+    /// Add or remove requirements. Workspaces change only at the next update.
+    pub fn edit_requirements(&self, name: &str, skills: &[String], add: bool) -> Result<()> {
+        self.require_skill(name)?;
+        let mut metadata = self.store.metadata(name)?;
+        let expected = metadata.clone();
+        if add {
+            metadata
+                .requires
+                .extend(self.check_requirements(name, skills)?);
+        } else {
+            for skill in skills {
+                format::name(skill)?;
+                metadata.requires.remove(skill);
+            }
+        }
+        self.store.save_metadata(name, &metadata, &expected)
+    }
+    /// Every skill that installing this skill also installs.
+    pub fn requirements(&self, name: &str) -> Result<BTreeSet<String>> {
+        self.require_skill(name)?;
+        self.store.requirements(name)
+    }
+    /// Skills that a profile installs only because its skills require them.
+    pub fn profile_dependencies(&self, name: &str) -> Result<BTreeMap<String, BTreeSet<String>>> {
+        Ok(self
+            .store
+            .desired(&BTreeSet::from([name.to_string()]))?
+            .skills
+            .into_iter()
+            .filter(|(_, reasons)| reasons.profiles.is_empty())
+            .map(|(skill, reasons)| (skill, reasons.required_by))
+            .collect())
+    }
+    fn check_requirements(&self, name: &str, skills: &[String]) -> Result<BTreeSet<String>> {
+        let mut requires = BTreeSet::new();
+        for skill in skills {
+            format::name(skill)?;
+            if skill == name {
+                return Err(format!("skill {name} cannot require itself"));
+            }
+            self.require_skill(skill)?;
+            requires.insert(skill.clone());
+        }
+        Ok(requires)
     }
     pub fn create_profile(&self, name: &str, skills: &[String]) -> Result<()> {
         let path = self.store.profile_path(name)?;
@@ -370,10 +470,11 @@ impl Beskar {
         format::name(name)?;
         Ok(reconcile::skill_usage(&self.store, name)?
             .into_iter()
-            .map(|(path, (installed, profiles))| Usage {
+            .map(|(path, (installed, reasons))| Usage {
                 path,
                 installed,
-                profiles,
+                profiles: reasons.profiles,
+                required_by: reasons.required_by,
             })
             .collect())
     }
@@ -382,7 +483,10 @@ impl Beskar {
         let profiles = self.profiles()?;
         let mut used = BTreeSet::new();
         for profile in &profiles {
-            used.extend(self.profile(profile)?.skills);
+            for skill in self.profile(profile)?.skills {
+                used.extend(self.store.requirements(&skill)?);
+                used.insert(skill);
+            }
         }
         for repo in self.registry().repos.values() {
             used.extend(repo.installed.keys().cloned());
@@ -498,14 +602,29 @@ impl Beskar {
         };
         match self.skills() {
             Ok(skills) => {
-                for skill in skills {
+                for skill in &skills {
                     if let Err(e) = self
                         .store
-                        .skill_path(&skill)
+                        .skill_path(skill)
                         .and_then(|path| tree::fingerprint(&path))
                     {
                         health.problems.push(e);
                     }
+                    match self.store.metadata(skill) {
+                        Ok(metadata) => {
+                            for dependency in metadata.requires {
+                                if !skills.contains(&dependency) {
+                                    health.problems.push(format!(
+                                        "skill {skill} requires missing skill {dependency}"
+                                    ));
+                                }
+                            }
+                        }
+                        Err(e) => health.problems.push(e),
+                    }
+                }
+                if let Err(e) = self.orphaned_metadata(&skills, &mut health.problems) {
+                    health.problems.push(e);
                 }
             }
             Err(e) => health.problems.push(e),
@@ -539,6 +658,28 @@ impl Beskar {
             }
         }
         health
+    }
+    /// A metadata file without its skill blocks a later import of that name.
+    fn orphaned_metadata(&self, skills: &[String], problems: &mut Vec<String>) -> Result<()> {
+        let directory = self.config().library.join("metadata");
+        tree::safe_path(&directory)?;
+        if !tree::exists(&directory)? {
+            return Ok(());
+        }
+        for child in tree::children(&directory)? {
+            let described = child
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_suffix(".bsk"))
+                .is_some_and(|name| skills.iter().any(|skill| skill == name));
+            if !described {
+                problems.push(format!(
+                    "{}: metadata describes no library skill",
+                    child.display()
+                ));
+            }
+        }
+        Ok(())
     }
     /// Editing paths never silently abandons recorded copies or overwrites another registry.
     pub fn set_config(&mut self, key: &str, value: &str) -> Result<()> {

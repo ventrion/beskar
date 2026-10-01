@@ -68,6 +68,23 @@ skill documentation
 
 CLI profile edits preserve existing comments and record order. Adding a skill appends it if missing. Removing a skill removes its record and retains any inline comment as a comment line.
 
+## Skill metadata
+
+`LIBRARY/metadata/NAME.bsk` describes the library skill `NAME`. It sits outside the skill directory, so it never changes the skill's content, fingerprint, or installed copies. The `metadata/` directory is optional. A skill without a metadata file has no requirements.
+
+```text
+beskar 1
+# code-review runs scripts from these skills.
+requires git
+requires testing
+```
+
+`requires NAME` is the only allowed record. Every named skill must exist in the library. A skill cannot require itself. Duplicate records are rejected. Cycles are allowed.
+
+A workspace's desired skills are the skills of its enabled profiles plus every skill they require, directly or through other requirements. Beskar calculates this set when it plans an update, so profiles keep only the skills a user selected. When no desired skill requires a dependency any more, the next update removes it under the usual drift rules. A plan records the fingerprint of each metadata file it read, including files that did not exist. Applying the plan fails if any of them changed.
+
+`library remove` refuses a skill that another skill requires. When it removes a skill, the same transaction removes the skill's metadata file. Importing under a name that already has a metadata file fails, and `doctor` reports such files. CLI edits preserve comments, record order, and line endings, as profile edits do.
+
 ## Registry
 
 The registry groups records in explicit `repo` / `end` blocks. Indentation is optional and does not create nesting.

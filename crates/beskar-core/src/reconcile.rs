@@ -1,4 +1,10 @@
-use crate::{Result, model::Repository, store::Store, transaction::Transaction, tree};
+use crate::{
+    Result,
+    model::Repository,
+    store::{Reasons, Store},
+    transaction::Transaction,
+    tree,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
@@ -32,6 +38,7 @@ pub struct SkillPlan {
     pub(crate) current: Option<String>,
     pub(crate) desired: Option<String>,
     pub(crate) profiles: BTreeSet<String>,
+    pub(crate) required_by: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,6 +52,7 @@ pub struct Plan {
     policy: Policy,
     resolutions: BTreeMap<String, Policy>,
     profile_fingerprints: BTreeMap<PathBuf, String>,
+    metadata_fingerprints: BTreeMap<PathBuf, Option<String>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -173,6 +181,10 @@ impl SkillPlan {
     pub fn profiles(&self) -> &BTreeSet<String> {
         &self.profiles
     }
+    /// Desired skills that require this one. Empty when only profiles select it.
+    pub fn required_by(&self) -> &BTreeSet<String> {
+        &self.required_by
+    }
 }
 
 impl Plan {
@@ -253,6 +265,7 @@ pub fn plan(store: &Store, path: &Path, policy: Policy) -> Result<Plan> {
     let target = path.join(&store.config.agent_skills);
     tree::safe_path(&target)?;
     let names: BTreeSet<_> = desired
+        .skills
         .keys()
         .chain(repo.installed.keys())
         .cloned()
@@ -267,6 +280,7 @@ pub fn plan(store: &Store, path: &Path, policy: Policy) -> Result<Plan> {
         policy,
         resolutions: BTreeMap::new(),
         profile_fingerprints,
+        metadata_fingerprints: desired.metadata.clone(),
     };
     if tree::exists(&target)? {
         for child in tree::children(&target)? {
@@ -283,7 +297,8 @@ pub fn plan(store: &Store, path: &Path, policy: Policy) -> Result<Plan> {
     for name in names {
         let local = target.join(&name);
         let current = tree::optional_hash(&local)?;
-        let library = if desired.contains_key(&name) {
+        let reasons = desired.skills.get(&name).cloned();
+        let library = if reasons.is_some() {
             Some(tree::fingerprint(&store.skill_path(&name)?)?)
         } else {
             None
@@ -302,10 +317,15 @@ pub fn plan(store: &Store, path: &Path, policy: Policy) -> Result<Plan> {
                 result.next.installed.remove(&name);
             }
         }
+        let Reasons {
+            profiles,
+            required_by,
+        } = reasons.unwrap_or_default();
         result.skills.push(SkillPlan {
             baseline: baseline.cloned(),
             state,
-            profiles: desired.get(&name).cloned().unwrap_or_default(),
+            profiles,
+            required_by,
             name,
             action,
             reason,
@@ -337,6 +357,7 @@ pub fn apply(store: &mut Store, plans: &[Plan]) -> Result<()> {
         if fresh.skills != p.skills
             || fresh.unmanaged != p.unmanaged
             || fresh.profile_fingerprints != p.profile_fingerprints
+            || fresh.metadata_fingerprints != p.metadata_fingerprints
         {
             return Err(format!(
                 "{} changed since planning; retry",
@@ -353,6 +374,9 @@ pub fn apply(store: &mut Store, plans: &[Plan]) -> Result<()> {
     for plan in plans {
         for (path, hash) in &plan.profile_fingerprints {
             transaction.expect(path, Some(hash.clone()))?;
+        }
+        for (path, hash) in &plan.metadata_fingerprints {
+            transaction.expect(path, hash.clone())?;
         }
         let target = plan.path.join(&store.config.agent_skills);
         for skill in &plan.skills {
@@ -398,19 +422,17 @@ pub fn plan_all(store: &Store, paths: &[PathBuf], policy: Policy) -> Result<Vec<
     paths.iter().map(|path| plan(store, path, policy)).collect()
 }
 
-pub fn skill_usage(
-    store: &Store,
-    name: &str,
-) -> Result<BTreeMap<PathBuf, (bool, BTreeSet<String>)>> {
+pub fn skill_usage(store: &Store, name: &str) -> Result<BTreeMap<PathBuf, (bool, Reasons)>> {
     let mut usage = BTreeMap::new();
     for (path, repo) in &store.registry.repos {
-        let desired = store.desired(&repo.profiles)?;
-        if repo.installed.contains_key(name) || desired.contains_key(name) {
+        let mut desired = store.desired(&repo.profiles)?;
+        let reasons = desired.skills.remove(name);
+        if repo.installed.contains_key(name) || reasons.is_some() {
             usage.insert(
                 path.clone(),
                 (
                     repo.installed.contains_key(name),
-                    desired.get(name).cloned().unwrap_or_default(),
+                    reasons.unwrap_or_default(),
                 ),
             );
         }

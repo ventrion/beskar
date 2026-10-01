@@ -48,7 +48,7 @@ Every command supports `--help` and `--json`. `beskar help format` describes the
 | --- | --- |
 | Setup | `init`, `doctor`, `doctor --recover` |
 | Configuration | `config show`, `path`, `set KEY VALUE` |
-| Library | `library init`, `add PATH`, `scan PATH`, `list`, `show NAME`, `remove NAME` |
+| Library | `library init`, `add PATH`, `scan PATH`, `list`, `show NAME`, `remove NAME`, `require NAME SKILL...`, `unrequire NAME SKILL...` |
 | Profiles | `profile create NAME [SKILL...]`, `delete`, `list`, `show`, `add NAME SKILL...`, `remove NAME SKILL...` |
 | Workspaces | `repo add [PATH]`, `remove [PATH]`, `list`, `status`, `enable PROFILE...`, `disable PROFILE...`, `toggle PROFILE...`, `update` |
 | Registry | `registry list`, `status`, `stats`, `where`, `update --all`, `prune` |
@@ -59,7 +59,7 @@ Repository commands use the nearest registered ancestor of the current directory
 
 `library add` accepts a directory with any contents; `SKILL.md` is optional. Use `--name NAME` when its directory name is unsuitable. `library scan` discovers directories containing `SKILL.md`, stops descending at each skill, and skips `.git` directories while searching. Scan previews a batch before import and requires `--yes` when no terminal is attached. `--dry-run` performs validation without importing.
 
-Names use lowercase letters, digits, hyphens, or underscores. `library show` displays content, a fingerprint, profile membership, and workspace usage. Removing a referenced library skill or enabled profile requires removing its references first.
+Names use lowercase letters, digits, hyphens, or underscores. `library show` displays content, a fingerprint, profile membership, requirements, and workspace usage. Beskar refuses to remove a library skill that a profile references or another skill requires, and a profile that a workspace enables. Remove those references first.
 
 ```sh
 beskar registry list --profile coding
@@ -68,6 +68,18 @@ beskar registry stats
 ```
 
 `repo remove` unregisters a workspace and preserves its copies. Re-registering makes those existing copies unmanaged. `registry prune` removes only records whose workspace paths no longer exist. Library imports and removals, promotion, updates, and pruning support dry runs.
+
+## Dependencies
+
+Some skills only work together with other skills. Record that in the library, not in the skill:
+
+```sh
+beskar library require code-review git testing
+beskar library add ~/new-skill --requires git,testing
+beskar library unrequire code-review testing
+```
+
+Beskar keeps these records in `library/metadata/NAME.bsk` and never writes into skill directories. Profiles list only the skills you chose. Each update installs those skills plus everything they require, directly or through other requirements. When nothing requires a dependency any more, the next update removes it, and local edits to it still need a conflict decision. `profile add` names the skills that come along. `profile show`, `status`, and `registry where` mark them with `[required by: ...]`. Requirements may form cycles.
 
 ## Local changes
 
@@ -109,6 +121,7 @@ State defaults to `~/.beskar`. `--home PATH` overrides `BESKAR_HOME`, which over
   library/
     skills/
     profiles/
+    metadata/
 ```
 
 Beskar uses versioned `.bsk` records. Paths with spaces or special characters are quoted. There are no inferred types, indentation rules, or environment substitutions.
@@ -149,7 +162,7 @@ Use `config set agent-skills .claude/skills` before installing copies. If instal
 {"ok": true, "data": {}, "error": null}
 ```
 
-`data` contains the command's structured result. Update reports include repository paths, skill states, proposed actions, fingerprints, and profile membership. Failed updates retain their conflict reports. Errors include a `kind` and `message`; human-readable diagnostics also go to standard error.
+`data` contains the command's structured result. Update reports include repository paths, skill states, proposed actions, fingerprints, profile membership, and the skills that require each dependency. Failed updates retain their conflict reports. Errors include a `kind` and `message`; human-readable diagnostics also go to standard error.
 
 Exit codes are 0 for success, 1 for an operation failure or unresolved conflict, and 2 for invalid command syntax. Dry runs fail when the corresponding update would be blocked. Piping output into a program that closes early does not panic.
 

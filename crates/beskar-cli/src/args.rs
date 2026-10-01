@@ -49,6 +49,7 @@ impl Args {
                     "registry",
                     "agent-skills",
                     "name",
+                    "requires",
                     "repo",
                     "conflict",
                     "on-conflict",

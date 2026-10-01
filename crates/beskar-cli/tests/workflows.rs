@@ -1236,3 +1236,305 @@ fn recovery_respects_workspace_locks_even_with_an_incomplete_registry() {
     s.ok(&["doctor", "--recover"]);
     assert_eq!(fs::read_to_string(target).unwrap(), "old");
 }
+
+fn metadata_file(s: &Sandbox, name: &str) -> PathBuf {
+    s.home.join("library/metadata").join(format!("{name}.bsk"))
+}
+
+#[test]
+fn dependencies_install_transitively_and_leave_with_their_last_dependent() {
+    let s = Sandbox::new();
+    s.init();
+    for name in ["review", "git", "testing", "shell", "unused"] {
+        s.add_skill(name, name);
+    }
+    let before = tree::fingerprint(&s.library_skill("review")).unwrap();
+    s.ok(&["library", "require", "review", "git", "testing"]);
+    s.ok(&["library", "require", "git", "shell"]);
+    assert_eq!(
+        before,
+        tree::fingerprint(&s.library_skill("review")).unwrap(),
+        "metadata must stay outside the skill directory"
+    );
+    assert!(metadata_file(&s, "review").is_file());
+    s.ok(&["profile", "create", "coding"]);
+    assert!(
+        s.ok(&["profile", "add", "coding", "review"])
+            .contains("review also installs: git, shell, testing")
+    );
+    assert_eq!(
+        beskar_core::Profile::decode(
+            &format::read(&s.home.join("library/profiles/coding.bsk")).unwrap()
+        )
+        .unwrap()
+        .skills
+        .into_iter()
+        .collect::<Vec<_>>(),
+        ["review"],
+        "profiles keep only the selected skills"
+    );
+    let shown = s.ok(&["profile", "show", "coding"]);
+    assert!(
+        shown.contains("Dependency: git [required by: review]"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("Dependency: shell [required by: git]"),
+        "{shown}"
+    );
+    s.ok(&["repo", "add", "."]);
+    s.ok(&["repo", "enable", "coding"]);
+    let preview = s.ok(&["update", "--dry-run"]);
+    assert!(
+        preview.contains("+ shell  missing installation [not-installed] [required by: git]\n"),
+        "{preview}"
+    );
+    assert!(
+        s.ok(&["update", "--dry-run", "--json"])
+            .contains("\"required_by\"")
+    );
+    s.ok(&["update"]);
+    for name in ["review", "git", "testing", "shell"] {
+        assert!(s.local_skill(name).is_dir(), "{name}");
+    }
+    assert!(!s.local_skill("unused").exists());
+    assert!(
+        s.ok(&["registry", "where", "--skill", "shell"])
+            .contains("[required by: git]")
+    );
+    let git = s.ok(&["library", "show", "git"]);
+    assert!(git.contains("Requires: shell\n"), "{git}");
+    assert!(git.contains("Required by: review\n"), "{git}");
+
+    s.ok(&["library", "unrequire", "review", "testing"]);
+    s.ok(&["update"]);
+    assert!(!s.local_skill("testing").exists());
+    assert!(s.local_skill("shell").is_dir());
+    assert!(s.ok(&["registry", "stats"]).contains("Unused skills     2"));
+
+    s.ok(&["profile", "remove", "coding", "review"]);
+    s.ok(&["update"]);
+    for name in ["review", "git", "shell"] {
+        assert!(!s.local_skill(name).exists(), "{name}");
+    }
+    s.ok(&["doctor"]);
+}
+
+#[test]
+fn local_drift_in_a_dependency_blocks_its_removal() {
+    let s = Sandbox::new();
+    s.init();
+    s.add_skill("review", "R");
+    s.add_skill("git", "G");
+    s.ok(&["library", "require", "review", "git"]);
+    s.activate("coding", &["review"]);
+    s.ok(&["update"]);
+    fs::write(s.local_skill("git").join("SKILL.md"), "local").unwrap();
+    s.ok(&["library", "unrequire", "review", "git"]);
+    s.fail(&["update"], "local drift");
+    assert!(s.local_skill("git").exists());
+    s.ok(&["update", "--conflict", "keep"]);
+    assert_eq!(
+        fs::read_to_string(s.local_skill("git").join("SKILL.md")).unwrap(),
+        "local"
+    );
+}
+
+#[test]
+fn dependency_cycles_install_once_and_invalid_requirements_are_rejected() {
+    let s = Sandbox::new();
+    s.init();
+    s.add_skill("a", "A");
+    s.add_skill("b", "B");
+    s.ok(&["library", "require", "a", "b"]);
+    s.ok(&["library", "require", "b", "a"]);
+    s.activate("coding", &["a"]);
+    s.ok(&["update"]);
+    assert!(s.local_skill("a").is_dir());
+    assert!(s.local_skill("b").is_dir());
+    let status = s.ok(&["status"]);
+    assert!(status.contains("Up to date"), "{status}");
+    assert!(
+        status.contains("= a  clean [clean] [profiles: coding] [required by: b]"),
+        "{status}"
+    );
+
+    let before = snapshot(&s.root);
+    s.fail(&["library", "require", "a", "a"], "cannot require itself");
+    s.fail(&["library", "require", "a", "ghost"], "unknown skill ghost");
+    s.fail(&["library", "require", "ghost", "a"], "unknown skill ghost");
+    s.fail(&["library", "remove", "b"], "required by skill a");
+    assert_eq!(before, snapshot(&s.root));
+
+    fs::write(
+        metadata_file(&s, "b"),
+        "beskar 1\nrequires a\nrequires ghost\n",
+    )
+    .unwrap();
+    let before = snapshot(&s.root);
+    s.fail(&["update"], "skill b requires missing skill ghost");
+    s.fail(&["doctor"], "skill b requires missing skill ghost");
+    let shown = s.output(&["profile", "show", "coding"]);
+    assert!(!shown.status.success());
+    let shown = String::from_utf8_lossy(&shown.stdout);
+    assert!(shown.contains("Profile: coding\n"), "{shown}");
+    assert!(
+        shown.contains("! skill b requires missing skill ghost"),
+        "{shown}"
+    );
+    assert_eq!(before, snapshot(&s.root));
+    fs::write(metadata_file(&s, "b"), "beskar 1\nrequires b\n").unwrap();
+    s.fail(&["update"], "skill b cannot require itself");
+}
+
+#[test]
+fn imports_record_requirements_and_removal_deletes_metadata() {
+    let s = Sandbox::new();
+    s.init();
+    s.add_skill("git", "G");
+    let source = s.root.join("review source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("SKILL.md"), "review").unwrap();
+    let path = source.to_str().unwrap();
+    let before = snapshot(&s.root);
+    let preview = s.ok(&[
+        "library",
+        "add",
+        path,
+        "--name",
+        "review",
+        "--requires",
+        "git",
+        "--dry-run",
+    ]);
+    assert!(preview.contains("    requires git\n"), "{preview}");
+    s.fail(
+        &[
+            "library",
+            "add",
+            path,
+            "--name",
+            "review",
+            "--requires",
+            "git,ghost",
+        ],
+        "unknown skill ghost",
+    );
+    s.fail(
+        &[
+            "library",
+            "add",
+            path,
+            "--name",
+            "review",
+            "--requires",
+            "review",
+        ],
+        "cannot require itself",
+    );
+    s.fail(
+        &["library", "scan", path, "--requires", "git"],
+        "--requires is not valid for this command",
+    );
+    assert_eq!(before, snapshot(&s.root));
+    s.ok(&[
+        "library",
+        "add",
+        path,
+        "--name",
+        "review",
+        "--requires",
+        "git",
+    ]);
+    assert_eq!(
+        fs::read_to_string(s.library_skill("review").join("SKILL.md")).unwrap(),
+        "review"
+    );
+    assert!(
+        fs::read_to_string(metadata_file(&s, "review"))
+            .unwrap()
+            .contains("\nrequires git\n")
+    );
+    s.fail(&["library", "remove", "git"], "required by skill review");
+    s.ok(&["library", "remove", "review"]);
+    assert!(!metadata_file(&s, "review").exists());
+    s.ok(&["library", "remove", "git"]);
+
+    // Metadata left behind without its skill must not attach to a new import.
+    fs::write(metadata_file(&s, "review"), "beskar 1\n").unwrap();
+    s.fail(&["doctor"], "metadata describes no library skill");
+    s.fail(
+        &["library", "add", path, "--name", "review"],
+        "exists without the skill",
+    );
+}
+
+#[test]
+fn requirement_edits_preserve_comments_and_existing_record_order() {
+    let s = Sandbox::new();
+    s.init();
+    for name in ["main", "a", "b", "c"] {
+        s.add_skill(name, name);
+    }
+    s.ok(&["library", "unrequire", "main", "a"]);
+    assert!(
+        !metadata_file(&s, "main").exists(),
+        "a no-op edit must not create metadata"
+    );
+    s.ok(&["library", "require", "main", "a"]);
+    let file = metadata_file(&s, "main");
+    let original = "# Notes\r\nbeskar 1\r\n\r\n  requires b # shell scripts\r\nrequires a\r\n";
+    fs::write(&file, original).unwrap();
+    s.ok(&["library", "require", "main", "c"]);
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        format!("{original}requires c\r\n")
+    );
+    s.ok(&["library", "unrequire", "main", "b"]);
+    let edited = fs::read_to_string(&file).unwrap();
+    assert!(edited.contains("  # shell scripts\r\n"), "{edited}");
+    assert!(!edited.contains("requires b"), "{edited}");
+    assert_eq!(
+        beskar_core::SkillMetadata::decode(&format::parse(&edited).unwrap())
+            .unwrap()
+            .requires
+            .into_iter()
+            .collect::<Vec<_>>(),
+        ["a", "c"]
+    );
+}
+
+#[test]
+fn stale_plans_reject_edited_or_created_metadata() {
+    use beskar_core::{Beskar, Policy};
+    for change in ["edited", "created"] {
+        let s = Sandbox::new();
+        s.init();
+        s.add_skill("a", "A");
+        s.add_skill("b", "B");
+        s.ok(&["library", "require", "a", "b"]);
+        s.activate("coding", &["a"]);
+        s.ok(&["update"]);
+        let mut app = Beskar::open(&s.home, false).unwrap();
+        let plans = app
+            .plan(std::slice::from_ref(&s.repo), Policy::Abort)
+            .unwrap();
+        if change == "edited" {
+            use std::io::Write;
+            fs::OpenOptions::new()
+                .append(true)
+                .open(metadata_file(&s, "a"))
+                .unwrap()
+                .write_all(b"# edited after preview\n")
+                .unwrap();
+        } else {
+            fs::write(metadata_file(&s, "b"), "beskar 1\n").unwrap();
+        }
+        let before = snapshot(&s.root);
+        assert!(
+            app.apply(&plans).is_err(),
+            "stale {change} metadata applied"
+        );
+        assert_eq!(before, snapshot(&s.root), "{change}");
+    }
+}
