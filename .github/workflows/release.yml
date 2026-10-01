@@ -1,12 +1,12 @@
 name: Release
 
-# A pushed tag vX.Y.Z publishes a GitHub release. Pull requests that touch
-# this file and manual runs build and test the same archives without publishing.
+# A pushed tag vX.Y.Z publishes a GitHub release. Pull requests that change
+# this workflow or the completion skill, and manual runs, build without publishing.
 on:
   push:
     tags: ["v*"]
   pull_request:
-    paths: [.github/workflows/release.yml]
+    paths: [.github/workflows/release.yml, 'skills/beskar-completions/**']
   workflow_dispatch:
 
 permissions:
@@ -74,6 +74,8 @@ jobs:
           [[ $TARGET == *windows* ]] && exe=beskar.exe
           mkdir -p "dist/$NAME"
           cp "target/$TARGET/release/$exe" README.md "dist/$NAME/"
+          mkdir -p "dist/$NAME/skills"
+          cp -R skills/beskar-completions "dist/$NAME/skills/"
           cd dist
           if [[ $TARGET == *windows* ]]; then
             7z a -tzip "$NAME.zip" "$NAME"

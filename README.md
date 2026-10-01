@@ -16,6 +16,26 @@ cargo install --path crates/beskar-cli --offline
 
 Or run `cargo build --release --offline` and use `target/release/beskar`.
 
+## Shell completion
+
+The [beskar-completions skill](skills/beskar-completions/SKILL.md) guides a coding
+agent through generating and installing completion for your installed Beskar
+version. It covers Bash, Zsh, Fish, PowerShell, Elvish, and Nushell without adding
+dependencies to Beskar. The skill is included in the source tree and packaged
+with the binary in release archives.
+
+From an extracted release or a checkout, ask your coding agent:
+
+```text
+Read skills/beskar-completions/SKILL.md and set up Beskar completion for my shell.
+```
+
+You can also copy the `beskar-completions` folder into your agent's skill directory.
+The agent tests the generated script in the target shell before installing it.
+Tab completion then uses that script without an agent running. Commands, options,
+fixed choices, and paths are covered; live profile and skill names are outside
+the default setup. Ask the agent to refresh completions after upgrading Beskar.
+
 ## First use
 
 ```sh
