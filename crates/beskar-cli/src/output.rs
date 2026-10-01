@@ -1,5 +1,6 @@
 use crate::json::Json;
 use beskar_core::{Action, Plan, Usage};
+use std::collections::BTreeSet;
 
 pub struct Report {
     pub text: String,
@@ -29,6 +30,7 @@ pub fn usage(items: &[Usage]) -> Json {
             ("path", Json::path(&item.path)),
             ("installed", item.installed.into()),
             ("profiles", Json::strings(&item.profiles)),
+            ("required_by", Json::strings(&item.required_by)),
         ])
     }))
 }
@@ -49,6 +51,7 @@ pub fn plans(plans: &[Plan]) -> Json {
                         ("current", skill.current().into()),
                         ("desired", skill.desired().into()),
                         ("profiles", Json::strings(skill.profiles())),
+                        ("required_by", Json::strings(skill.required_by())),
                     ])
                 })),
             ),
@@ -69,17 +72,12 @@ pub fn plan_text(plan: &Plan, unchanged: bool) -> String {
             Action::Keep => "k",
             Action::Conflict => "!",
         };
-        let profiles = skill
-            .profiles()
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
         text.push_str(&format!(
-            "  {symbol} {}  {} [{}] [profiles: {profiles}]\n",
+            "  {symbol} {}  {} [{}]{}\n",
             skill.name(),
             skill.reason(),
-            skill.state().as_str()
+            skill.state().as_str(),
+            reasons(skill.profiles(), skill.required_by())
         ));
     }
     for name in plan.unmanaged() {
@@ -89,4 +87,28 @@ pub fn plan_text(plan: &Plan, unchanged: bool) -> String {
         text.push_str("  Up to date.\n");
     }
     text
+}
+pub fn join<'a>(names: impl IntoIterator<Item = &'a String>) -> String {
+    names
+        .into_iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+/// Why a skill is wanted. A skill wanted for no reason keeps an empty profile list.
+pub fn reasons(profiles: &BTreeSet<String>, dependents: &BTreeSet<String>) -> String {
+    if profiles.is_empty() && !dependents.is_empty() {
+        required_by(dependents)
+    } else {
+        format!(" [profiles: {}]{}", join(profiles), required_by(dependents))
+    }
+}
+/// A suffix naming the skills that require this one, or nothing.
+pub fn required_by<'a>(names: impl IntoIterator<Item = &'a String>) -> String {
+    let names = join(names);
+    if names.is_empty() {
+        names
+    } else {
+        format!(" [required by: {names}]")
+    }
 }

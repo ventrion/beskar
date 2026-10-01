@@ -75,12 +75,12 @@ pub const COMMANDS: &[Command] = &[
     ),
     command!(
         "library add",
-        "PATH [--name NAME] [--dry-run]",
+        "PATH [--name NAME] [--requires SKILL,...] [--dry-run]",
         "Import a skill directory",
         1,
         1,
         ["dry-run"],
-        ["name"]
+        ["name", "requires"]
     ),
     command!(
         "library scan",
@@ -98,6 +98,24 @@ pub const COMMANDS: &[Command] = &[
         1,
         1,
         ["dry-run"],
+        []
+    ),
+    command!(
+        "library require",
+        "NAME SKILL...",
+        "Install SKILLs wherever NAME is installed",
+        2,
+        usize::MAX,
+        [],
+        []
+    ),
+    command!(
+        "library unrequire",
+        "NAME SKILL...",
+        "Stop installing SKILLs because of NAME",
+        2,
+        usize::MAX,
+        [],
         []
     ),
     command!(

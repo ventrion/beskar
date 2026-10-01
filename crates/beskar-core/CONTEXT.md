@@ -16,6 +16,14 @@ _Avoid_: plugin, package
 A named set of skills expressing a use case.
 _Avoid_: installation, bundle
 
+**Skill metadata**:
+Beskar's library record about one skill, kept outside the skill directory.
+_Avoid_: manifest, frontmatter
+
+**Dependency**:
+A library skill that another skill's metadata requires. It is desired wherever a skill that requires it is desired.
+_Avoid_: prerequisite, profile entry
+
 **Repository**:
 A local workspace where enabled profiles determine which skills should be installed. Git is optional.
 _Avoid_: library

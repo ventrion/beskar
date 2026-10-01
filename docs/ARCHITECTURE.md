@@ -16,7 +16,7 @@ beskar-cli ──> beskar-core ──> bsk
 
 ## State and reconciliation
 
-The library and profiles define desired content. The registry records enabled profiles and the last installed fingerprints. Repository files are observed materialized state. None of these substitutes for another.
+The library, profiles, and skill metadata define desired content. Profiles name the skills a user selected, and metadata adds the skills those require ([ADR 0004](adr/0004-resolve-skill-dependencies-from-library-metadata.md)). The registry records enabled profiles and the last installed fingerprints. Repository files are observed materialized state. None of these substitutes for another.
 
 A pure decision table classifies the recorded, current, and desired fingerprints. Conflict policy is applied separately. Missing tracked copies count as drift, and unrelated destinations remain unmanaged under every policy. Keeping a copy retains the old baseline, so a later run still sees its drift. `synced` does not advance for a kept conflict or an unchanged update.
 
@@ -38,7 +38,7 @@ Locks coordinate Beskar processes. Editors do not participate in them. Fingerpri
 
 The versioned record grammar uses quoting only when values need it. Paths containing whitespace, quotes, backslashes, `#`, or line breaks round-trip without relying on shell expansion. Config and profile edits preserve comments and existing line endings. The registry is generated bookkeeping and is rewritten deterministically.
 
-Skills are opaque directories. Copies and fingerprints include every regular file and empty directory, including `.git` metadata and generated files. This avoids the ambiguity of ignoring content during drift detection and then deleting it during replacement. Symlinks and special files are rejected. No Git repository, classifier, or metadata schema is required.
+Skills are opaque directories. Copies and fingerprints include every regular file and empty directory, including `.git` metadata and generated files. This avoids the ambiguity of ignoring content during drift detection and then deleting it during replacement. Symlinks and special files are rejected. No Git repository, classifier, or metadata inside a skill is required. Requirements between skills live in separate library files.
 
 ## Verification
 

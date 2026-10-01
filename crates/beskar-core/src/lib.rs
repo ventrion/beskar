@@ -11,7 +11,7 @@ mod tree;
 
 pub use app::*;
 pub use diff::{Change, Difference};
-pub use model::{Config, Profile, Registry, Repository};
+pub use model::{Config, Profile, Registry, Repository, SkillMetadata};
 pub use reconcile::{Action, Plan, Policy, SkillPlan, State};
 pub use tree::fingerprint;
 pub type Result<T> = std::result::Result<T, String>;

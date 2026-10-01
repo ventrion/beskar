@@ -1,6 +1,6 @@
 use crate::{
     Result, format, io,
-    model::{Config, Profile, Registry, disjoint},
+    model::{Config, Profile, Registry, SkillMetadata, disjoint},
     tree,
 };
 use std::{
@@ -169,13 +169,8 @@ impl Store {
             }
             Self::acquire(&mut self.locks, &config.library.join(".beskar.lock"))?;
             for repo in self.registry.repos.values() {
-                for name in &repo.profiles {
-                    let profile = Profile::decode(&format::read(
-                        &config.library.join("profiles").join(format!("{name}.bsk")),
-                    )?)?;
-                    for skill in profile.skills {
-                        tree::fingerprint(&config.library.join("skills").join(skill))?;
-                    }
+                for skill in resolve(&config.library, &repo.profiles)?.skills.keys() {
+                    tree::fingerprint(&skill_dir(&config.library, skill)?)?;
                 }
             }
         }
@@ -260,21 +255,20 @@ impl Store {
     }
 
     pub fn skill_path(&self, name: &str) -> Result<PathBuf> {
-        format::name(name)?;
-        Ok(self.config.library.join("skills").join(name))
+        skill_dir(&self.config.library, name)
     }
     pub fn profile_path(&self, name: &str) -> Result<PathBuf> {
-        format::name(name)?;
-        Ok(self
-            .config
-            .library
-            .join("profiles")
-            .join(format!("{name}.bsk")))
+        profile_file(&self.config.library, name)
+    }
+    pub fn metadata_path(&self, name: &str) -> Result<PathBuf> {
+        metadata_file(&self.config.library, name)
     }
     pub fn profile(&self, name: &str) -> Result<Profile> {
-        let path = self.profile_path(name)?;
-        tree::safe_path(&path)?;
-        Profile::decode(&format::read(&path)?).map_err(|e| format!("{}: {e}", path.display()))
+        read_profile(&self.config.library, name)
+    }
+    /// A skill without a metadata file has no requirements.
+    pub fn metadata(&self, name: &str) -> Result<SkillMetadata> {
+        Ok(read_metadata(&self.config.library, name)?.0)
     }
     pub fn save_profile(&self, name: &str, profile: &Profile, expected: &Profile) -> Result<()> {
         let path = self.profile_path(name)?;
@@ -285,32 +279,13 @@ impl Store {
         if &previous != expected {
             return Err("profile changed since reading; retry".into());
         }
-        let removed_lines: BTreeSet<_> = records
-            .iter()
-            .filter(|r| !profile.skills.contains(&r.fields[1]))
-            .map(|r| r.line)
-            .collect();
-        let mut edited = String::new();
-        for (index, line) in source.split_inclusive('\n').enumerate() {
-            if !removed_lines.contains(&(index + 1)) {
-                edited.push_str(line);
-            } else if let Some(comment) = line.find('#') {
-                // Valid skill names contain no #, so this is an inline comment.
-                edited.push_str(&line[..line.len() - line.trim_start().len()]);
-                edited.push_str(&line[comment..]);
-            }
-        }
-        let ending = if source.contains("\r\n") {
-            "\r\n"
-        } else {
-            "\n"
-        };
-        for skill in profile.skills.difference(&previous.skills) {
-            if !edited.ends_with('\n') {
-                edited.push_str(ending);
-            }
-            edited.push_str(&format!("skill {skill}{ending}"));
-        }
+        let edited = edit_names(
+            &source,
+            &records,
+            "skill",
+            &previous.skills,
+            &profile.skills,
+        );
         if edited != source {
             let mut transaction = crate::transaction::Transaction::new(&self.home);
             self.guard_state(&mut transaction)?;
@@ -318,6 +293,67 @@ impl Store {
             transaction.commit()?;
         }
         Ok(())
+    }
+    /// Create the metadata file on first use. Edits keep comments like profile edits.
+    pub fn save_metadata(
+        &self,
+        name: &str,
+        metadata: &SkillMetadata,
+        expected: &SkillMetadata,
+    ) -> Result<()> {
+        let path = self.metadata_path(name)?;
+        tree::safe_path(&path)?;
+        let old = tree::optional_hash(&path)?;
+        let source = if old.is_some() {
+            io(path.display(), fs::read_to_string(&path))?
+        } else {
+            SkillMetadata::default().encode()
+        };
+        let records = format::parse(&source)?;
+        let previous = SkillMetadata::decode(&records)?;
+        if &previous != expected {
+            return Err("skill metadata changed since reading; retry".into());
+        }
+        if &previous == metadata {
+            return Ok(());
+        }
+        let edited = edit_names(
+            &source,
+            &records,
+            "requires",
+            &previous.requires,
+            &metadata.requires,
+        );
+        self.create_metadata_directory()?;
+        let mut transaction = crate::transaction::Transaction::new(&self.home);
+        self.guard_state(&mut transaction)?;
+        transaction.text(&path, &edited, old)?;
+        transaction.commit()
+    }
+    /// Metadata is optional, so libraries created before it existed have no directory.
+    pub fn create_metadata_directory(&self) -> Result<()> {
+        let path = self.config.library.join("metadata");
+        tree::safe_path(&path)?;
+        io(path.display(), fs::create_dir_all(&path))
+    }
+    /// Other library skills whose metadata names this skill directly. A
+    /// self-requirement is invalid metadata, not a dependent; doctor reports it.
+    pub fn required_by(&self, name: &str) -> Result<Vec<String>> {
+        let mut dependents = Vec::new();
+        for skill in self.skills()? {
+            if skill != name && self.metadata(&skill)?.requires.contains(name) {
+                dependents.push(skill);
+            }
+        }
+        Ok(dependents)
+    }
+    /// Every skill that installing this skill also installs, excluding the skill itself.
+    pub fn requirements(&self, name: &str) -> Result<BTreeSet<String>> {
+        let mut desired = Desired::default();
+        desired.skills.insert(name.into(), Reasons::default());
+        desired.add_requirements(&self.config.library)?;
+        desired.skills.remove(name);
+        Ok(desired.skills.into_keys().collect())
     }
     pub fn skills(&self) -> Result<Vec<String>> {
         self.names(&self.config.library.join("skills"), false)
@@ -348,22 +384,8 @@ impl Store {
         }
         Ok(names)
     }
-    pub fn desired(
-        &self,
-        profiles: &BTreeSet<String>,
-    ) -> Result<BTreeMap<String, BTreeSet<String>>> {
-        let mut skills = BTreeMap::<String, BTreeSet<String>>::new();
-        for name in profiles {
-            for skill in self.profile(name)?.skills {
-                let path = self.skill_path(&skill)?;
-                tree::safe_path(&path)?;
-                if !path.is_dir() {
-                    return Err(format!("profile {name} references missing skill {skill}"));
-                }
-                skills.entry(skill).or_default().insert(name.clone());
-            }
-        }
-        Ok(skills)
+    pub fn desired(&self, profiles: &BTreeSet<String>) -> Result<Desired> {
+        resolve(&self.config.library, profiles)
     }
 
     pub fn validate_deployment(&self, path: &Path) -> Result<()> {
@@ -408,4 +430,148 @@ impl Store {
         }
         Ok(())
     }
+}
+
+/// Why a repository wants a skill.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reasons {
+    /// Enabled profiles that list the skill.
+    pub profiles: BTreeSet<String>,
+    /// Desired skills whose metadata requires it.
+    pub required_by: BTreeSet<String>,
+}
+
+/// The skills that enabled profiles need, with every metadata file read to find them.
+#[derive(Clone, Debug, Default)]
+pub struct Desired {
+    pub skills: BTreeMap<String, Reasons>,
+    /// Absent files are recorded too, so a plan can detect one created later.
+    pub metadata: BTreeMap<PathBuf, Option<String>>,
+}
+
+impl Desired {
+    /// Add requirements until the set is closed. Cycles are allowed: the result is a set.
+    fn add_requirements(&mut self, library: &Path) -> Result<()> {
+        let mut pending: Vec<String> = self.skills.keys().cloned().collect();
+        while let Some(skill) = pending.pop() {
+            let path = metadata_file(library, &skill)?;
+            if self.metadata.contains_key(&path) {
+                continue;
+            }
+            let (metadata, hash) = read_metadata(library, &skill)?;
+            if metadata.requires.contains(&skill) {
+                return Err(format!(
+                    "{}: skill {skill} cannot require itself",
+                    path.display()
+                ));
+            }
+            self.metadata.insert(path, hash);
+            for dependency in metadata.requires {
+                if !library_skill_exists(library, &dependency)? {
+                    return Err(format!("skill {skill} requires missing skill {dependency}"));
+                }
+                self.skills
+                    .entry(dependency.clone())
+                    .or_default()
+                    .required_by
+                    .insert(skill.clone());
+                pending.push(dependency);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Profiles name the skills a user selected. Metadata adds what those skills require.
+pub fn resolve(library: &Path, profiles: &BTreeSet<String>) -> Result<Desired> {
+    let mut desired = Desired::default();
+    for name in profiles {
+        for skill in read_profile(library, name)?.skills {
+            if !library_skill_exists(library, &skill)? {
+                return Err(format!("profile {name} references missing skill {skill}"));
+            }
+            desired
+                .skills
+                .entry(skill)
+                .or_default()
+                .profiles
+                .insert(name.clone());
+        }
+    }
+    desired.add_requirements(library)?;
+    Ok(desired)
+}
+
+fn skill_dir(library: &Path, name: &str) -> Result<PathBuf> {
+    format::name(name)?;
+    Ok(library.join("skills").join(name))
+}
+fn profile_file(library: &Path, name: &str) -> Result<PathBuf> {
+    format::name(name)?;
+    Ok(library.join("profiles").join(format!("{name}.bsk")))
+}
+fn metadata_file(library: &Path, name: &str) -> Result<PathBuf> {
+    format::name(name)?;
+    Ok(library.join("metadata").join(format!("{name}.bsk")))
+}
+fn library_skill_exists(library: &Path, name: &str) -> Result<bool> {
+    let path = skill_dir(library, name)?;
+    tree::safe_path(&path)?;
+    Ok(path.is_dir())
+}
+fn read_profile(library: &Path, name: &str) -> Result<Profile> {
+    let path = profile_file(library, name)?;
+    tree::safe_path(&path)?;
+    Profile::decode(&format::read(&path)?).map_err(|e| format!("{}: {e}", path.display()))
+}
+/// Resolution rejects a self-requirement. Reading does not, so reverse lookups
+/// for other skills and `unrequire` repairs still work on such a file.
+fn read_metadata(library: &Path, name: &str) -> Result<(SkillMetadata, Option<String>)> {
+    let path = metadata_file(library, name)?;
+    tree::safe_path(&path)?;
+    let hash = tree::optional_hash(&path)?;
+    if hash.is_none() {
+        return Ok((SkillMetadata::default(), None));
+    }
+    let metadata = SkillMetadata::decode(&format::read(&path)?)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok((metadata, hash))
+}
+
+/// Rewrite `KEY NAME` records while keeping comments, record order and line endings.
+/// A removed record keeps its inline comment as a comment line.
+fn edit_names(
+    source: &str,
+    records: &[format::Record],
+    key: &str,
+    previous: &BTreeSet<String>,
+    next: &BTreeSet<String>,
+) -> String {
+    let removed_lines: BTreeSet<_> = records
+        .iter()
+        .filter(|r| !next.contains(&r.fields[1]))
+        .map(|r| r.line)
+        .collect();
+    let mut edited = String::new();
+    for (index, line) in source.split_inclusive('\n').enumerate() {
+        if !removed_lines.contains(&(index + 1)) {
+            edited.push_str(line);
+        } else if let Some(comment) = line.find('#') {
+            // Valid names contain no #, so this is an inline comment.
+            edited.push_str(&line[..line.len() - line.trim_start().len()]);
+            edited.push_str(&line[comment..]);
+        }
+    }
+    let ending = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    for name in next.difference(previous) {
+        if !edited.ends_with('\n') {
+            edited.push_str(ending);
+        }
+        edited.push_str(&format!("{key} {name}{ending}"));
+    }
+    edited
 }

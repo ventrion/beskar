@@ -111,6 +111,15 @@ pub fn run(args: &Args, command: &str, words: &[String]) -> Result<Report> {
             for profile in &skill.profiles {
                 text.push_str(&format!("Profile: {profile}\n"));
             }
+            if !skill.requires.is_empty() {
+                text.push_str(&format!("Requires: {}\n", output::join(&skill.requires)));
+            }
+            if !skill.required_by.is_empty() {
+                text.push_str(&format!(
+                    "Required by: {}\n",
+                    output::join(&skill.required_by)
+                ));
+            }
             text.push_str(&usage_text(&skill.usage));
             if let Some(content) = &skill.content {
                 text.push_str(&format!("\n{content}\n"));
@@ -122,6 +131,8 @@ pub fn run(args: &Args, command: &str, words: &[String]) -> Result<Report> {
                     ("path", Json::path(&skill.path)),
                     ("fingerprint", skill.fingerprint.into()),
                     ("profiles", Json::strings(skill.profiles)),
+                    ("requires", Json::strings(skill.requires)),
+                    ("required_by", Json::strings(skill.required_by)),
                     ("usage", output::usage(&skill.usage)),
                     ("content", skill.content.into()),
                 ]),
@@ -132,23 +143,30 @@ pub fn run(args: &Args, command: &str, words: &[String]) -> Result<Report> {
             let imports = if command == "library scan" {
                 app.scan(&source)?
             } else {
-                app.prepare_imports(&[(
-                    match args.value("name") {
-                        Some(name) => name.to_string(),
-                        None => core::skill_name(&source)?,
-                    },
-                    source,
-                )])?
+                let name = match args.value("name") {
+                    Some(name) => name.to_string(),
+                    None => core::skill_name(&source)?,
+                };
+                // Names cannot contain commas, so the list needs no quoting.
+                let requires: Vec<String> = args
+                    .value("requires")
+                    .map(|list| list.split(',').map(String::from).collect())
+                    .unwrap_or_default();
+                vec![app.prepare_import(&name, &source, &requires)?]
             };
             let mut text = format!("Found {} skills.\n", imports.len());
             for item in &imports {
                 text.push_str(&format!("  {}  {}\n", item.name, item.source.display()));
+                if !item.requires.is_empty() {
+                    text.push_str(&format!("    requires {}\n", output::join(&item.requires)));
+                }
             }
             let data = Json::arr(imports.iter().map(|i| {
                 Json::obj([
                     ("name", i.name.clone().into()),
                     ("source", Json::path(&i.source)),
                     ("fingerprint", i.fingerprint.clone().into()),
+                    ("requires", Json::strings(&i.requires)),
                 ])
             }));
             if args.flag("dry-run") {
@@ -189,6 +207,13 @@ pub fn run(args: &Args, command: &str, words: &[String]) -> Result<Report> {
                 }
             )))
         }
+        "library require" | "library unrequire" => {
+            app.edit_requirements(&words[0], &words[1..], command == "library require")?;
+            Ok(Report::message(format!(
+                "Saved metadata for {}. Run beskar update --all to apply.",
+                words[0]
+            )))
+        }
         "profile list" => {
             let mut text = String::new();
             let mut data = Vec::new();
@@ -212,25 +237,52 @@ pub fn run(args: &Args, command: &str, words: &[String]) -> Result<Report> {
                 .filter(|(_, r)| r.profiles.contains(name))
                 .map(|(p, _)| p)
                 .collect();
+            // Show a broken profile anyway: this command is how a user inspects it.
+            let (dependencies, problem) = match app.profile_dependencies(name) {
+                Ok(dependencies) => (dependencies, None),
+                Err(error) => (Default::default(), Some(error)),
+            };
             let mut text = format!(
                 "Profile: {name}\nPath: {}\n{}",
                 app.profile_path(name)?.display(),
                 lines(&profile.skills.iter().cloned().collect::<Vec<_>>())
             );
+            for (skill, required_by) in &dependencies {
+                text.push_str(&format!(
+                    "Dependency: {skill}{}\n",
+                    output::required_by(required_by)
+                ));
+            }
             for repo in &repos {
                 text.push_str(&format!("Used by: {}\n", repo.display()));
             }
-            Ok(Report::new(
+            if let Some(problem) = &problem {
+                text.push_str(&format!("! {problem}\n"));
+            }
+            let report = Report::new(
                 text,
                 Json::obj([
                     ("name", name.clone().into()),
                     ("skills", Json::strings(profile.skills)),
                     (
+                        "dependencies",
+                        Json::arr(dependencies.iter().map(|(skill, required_by)| {
+                            Json::obj([
+                                ("name", skill.clone().into()),
+                                ("required_by", Json::strings(required_by)),
+                            ])
+                        })),
+                    ),
+                    (
                         "repositories",
                         Json::arr(repos.into_iter().map(|p| Json::path(p))),
                     ),
                 ]),
-            ))
+            );
+            Ok(match problem {
+                Some(problem) => report.fail(problem),
+                None => report,
+            })
         }
         "profile create" => {
             app.create_profile(&words[0], &words[1..])?;
@@ -241,8 +293,25 @@ pub fn run(args: &Args, command: &str, words: &[String]) -> Result<Report> {
             Ok(Report::message(format!("Deleted profile {}", words[0])))
         }
         "profile add" | "profile remove" => {
-            app.edit_profile(&words[0], &words[1..], command == "profile add")?;
-            Ok(Report::message(format!("Saved profile {}", words[0])))
+            let add = command == "profile add";
+            // Resolve before saving, so broken metadata fails the command without an edit.
+            let mut notes = String::new();
+            if add {
+                for skill in &words[1..] {
+                    let requirements = app.requirements(skill)?;
+                    if !requirements.is_empty() {
+                        notes.push_str(&format!(
+                            "\n{skill} also installs: {}",
+                            output::join(&requirements)
+                        ));
+                    }
+                }
+            }
+            app.edit_profile(&words[0], &words[1..], add)?;
+            Ok(Report::message(format!(
+                "Saved profile {}{notes}",
+                words[0]
+            )))
         }
         "repo add" | "repo remove" => {
             if !words.is_empty() && args.value("repo").is_some() {
@@ -455,14 +524,14 @@ fn usage_text(items: &[core::Usage]) -> String {
         .iter()
         .map(|u| {
             format!(
-                "  {}  {} [profiles: {}]\n",
+                "  {}  {}{}\n",
                 u.path.display(),
                 if u.installed {
                     "tracked installation"
                 } else {
                     "desired, not installed"
                 },
-                u.profiles.iter().cloned().collect::<Vec<_>>().join(", ")
+                output::reasons(&u.profiles, &u.required_by)
             )
         })
         .collect()
