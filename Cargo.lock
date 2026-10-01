@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "beskar-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "beskar-core",
  "bsk",
@@ -12,11 +12,11 @@ dependencies = [
 
 [[package]]
 name = "beskar-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bsk",
 ]
 
 [[package]]
 name = "bsk"
-version = "0.2.0"
+version = "0.2.1"
