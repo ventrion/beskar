@@ -6,7 +6,9 @@ The library is portable. The registry is machine-local. Agents see the copies in
 
 ## Install
 
-Rust 1.89 or newer is required.
+[Releases](https://github.com/ventrion/beskar/releases/latest) include prebuilt archives for Linux, macOS, and Windows on x86_64 and ARM64. The Linux builds are statically linked. Unpack the archive for your platform and put `beskar` (`beskar.exe` on Windows) on your `PATH`. `SHA256SUMS` lists the checksum of each archive. The binaries are unsigned. If macOS blocks one downloaded through a browser, run `xattr -d com.apple.quarantine beskar`.
+
+To build from source, Rust 1.89 or newer is required.
 
 ```sh
 cargo install --path crates/beskar-cli --offline
@@ -165,7 +167,7 @@ Recovery removes temporary copies from interrupted staging, restores originals f
 
 Kernel locks coordinate the home, library, registry, and each registered repository, including across different Beskar homes. Locks release when the process exits or is killed. Their empty files remain: `.lock` in the home, `.beskar.lock` in library and repository roots, and `<registry-file>.lock`. Do not delete these files while Beskar runs. Exclude them from Git when applicable.
 
-Skills contain regular files and directories. Beskar fingerprints all their contents, including `.git` and caches, and rejects symlinks and special files. Paths must be UTF-8. File ownership, extended attributes, and directory permissions are not replicated. Directory entries are synced on Unix; rename durability on other systems depends on their filesystem. The implementation has been tested on Linux.
+Skills contain regular files and directories. Beskar fingerprints all their contents, including `.git` and caches, and rejects symlinks and special files. Symlinks in the directories that contain the home, library, registry, a workspace, or an import source, such as `/var` on macOS, are resolved once and Beskar records the resolved path. Paths must be UTF-8. File ownership, extended attributes, and directory permissions are not replicated. Directory entries are synced on Unix; rename durability on other systems depends on their filesystem. The test suite runs on Linux, macOS, and Windows.
 
 ## Development
 
@@ -175,6 +177,8 @@ cargo clippy --workspace --all-targets --offline -- -D warnings
 cargo fmt --all --check
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --offline
 ```
+
+To release, set `version` in the root `Cargo.toml`, merge the change, then tag that commit `v<version>` and push the tag. The [release workflow](.github/workflows/release.yml) rejects a tag that does not match the version. It runs the tests natively on Linux, macOS, and Windows, builds all six archives, and publishes them with `SHA256SUMS`. Pull requests that change the workflow build the same archives without publishing.
 
 The [architecture](docs/ARCHITECTURE.md) explains the three crates, immutable plans, locking, and recovery. The [consolidation review](docs/CONSOLIDATION.md) records all nine source PRs and why their designs were selected or adapted. Domain vocabulary is in [CONTEXT-MAP.md](CONTEXT-MAP.md).
 
