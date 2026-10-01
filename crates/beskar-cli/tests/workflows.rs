@@ -1,14 +1,19 @@
 use bsk as format;
 mod tree {
     pub use beskar_core::fingerprint;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    // The counter keeps names distinct when tests start within one clock
+    // tick, which on macOS is a microsecond.
     pub fn unique() -> String {
         format!(
-            "{}-{}",
+            "{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         )
     }
     pub fn children(path: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
