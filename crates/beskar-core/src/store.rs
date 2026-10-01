@@ -458,6 +458,12 @@ impl Desired {
                 continue;
             }
             let (metadata, hash) = read_metadata(library, &skill)?;
+            if metadata.requires.contains(&skill) {
+                return Err(format!(
+                    "{}: skill {skill} cannot require itself",
+                    path.display()
+                ));
+            }
             self.metadata.insert(path, hash);
             for dependency in metadata.requires {
                 if !library_skill_exists(library, &dependency)? {
@@ -517,6 +523,8 @@ fn read_profile(library: &Path, name: &str) -> Result<Profile> {
     tree::safe_path(&path)?;
     Profile::decode(&format::read(&path)?).map_err(|e| format!("{}: {e}", path.display()))
 }
+/// Resolution rejects a self-requirement. Reading does not, so reverse lookups
+/// for other skills and `unrequire` repairs still work on such a file.
 fn read_metadata(library: &Path, name: &str) -> Result<(SkillMetadata, Option<String>)> {
     let path = metadata_file(library, name)?;
     tree::safe_path(&path)?;
@@ -526,12 +534,6 @@ fn read_metadata(library: &Path, name: &str) -> Result<(SkillMetadata, Option<St
     }
     let metadata = SkillMetadata::decode(&format::read(&path)?)
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    if metadata.requires.contains(name) {
-        return Err(format!(
-            "{}: skill {name} cannot require itself",
-            path.display()
-        ));
-    }
     Ok((metadata, hash))
 }
 

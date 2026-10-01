@@ -613,7 +613,11 @@ impl Beskar {
                     match self.store.metadata(skill) {
                         Ok(metadata) => {
                             for dependency in metadata.requires {
-                                if !skills.contains(&dependency) {
+                                if &dependency == skill {
+                                    health
+                                        .problems
+                                        .push(format!("skill {skill} cannot require itself"));
+                                } else if !skills.contains(&dependency) {
                                     health.problems.push(format!(
                                         "skill {skill} requires missing skill {dependency}"
                                     ));

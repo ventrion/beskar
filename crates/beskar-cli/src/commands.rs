@@ -293,20 +293,25 @@ pub fn run(args: &Args, command: &str, words: &[String]) -> Result<Report> {
             Ok(Report::message(format!("Deleted profile {}", words[0])))
         }
         "profile add" | "profile remove" => {
-            app.edit_profile(&words[0], &words[1..], command == "profile add")?;
-            let mut message = format!("Saved profile {}", words[0]);
-            if command == "profile add" {
+            let add = command == "profile add";
+            // Resolve before saving, so broken metadata fails the command without an edit.
+            let mut notes = String::new();
+            if add {
                 for skill in &words[1..] {
                     let requirements = app.requirements(skill)?;
                     if !requirements.is_empty() {
-                        message.push_str(&format!(
+                        notes.push_str(&format!(
                             "\n{skill} also installs: {}",
                             output::join(&requirements)
                         ));
                     }
                 }
             }
-            Ok(Report::message(message))
+            app.edit_profile(&words[0], &words[1..], add)?;
+            Ok(Report::message(format!(
+                "Saved profile {}{notes}",
+                words[0]
+            )))
         }
         "repo add" | "repo remove" => {
             if !words.is_empty() && args.value("repo").is_some() {

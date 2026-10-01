@@ -1374,6 +1374,11 @@ fn dependency_cycles_install_once_and_invalid_requirements_are_rejected() {
     let before = snapshot(&s.root);
     s.fail(&["update"], "skill b requires missing skill ghost");
     s.fail(&["doctor"], "skill b requires missing skill ghost");
+    // A failed command must not leave the profile edited.
+    s.fail(
+        &["profile", "add", "coding", "b"],
+        "skill b requires missing skill ghost",
+    );
     let shown = s.output(&["profile", "show", "coding"]);
     assert!(!shown.status.success());
     let shown = String::from_utf8_lossy(&shown.stdout);
@@ -1385,6 +1390,15 @@ fn dependency_cycles_install_once_and_invalid_requirements_are_rejected() {
     assert_eq!(before, snapshot(&s.root));
     fs::write(metadata_file(&s, "b"), "beskar 1\nrequires b\n").unwrap();
     s.fail(&["update"], "skill b cannot require itself");
+    s.fail(&["doctor"], "skill b cannot require itself");
+    s.ok(&["library", "unrequire", "b", "b"]);
+    s.ok(&["update"]);
+    // A bad file that no enabled profile reaches must not block other skills.
+    s.add_skill("c", "C");
+    fs::write(metadata_file(&s, "c"), "beskar 1\nrequires c\n").unwrap();
+    assert!(s.ok(&["library", "show", "b"]).contains("Required by: a\n"));
+    s.ok(&["update"]);
+    s.fail(&["doctor"], "skill c cannot require itself");
 }
 
 #[test]
