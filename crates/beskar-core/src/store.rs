@@ -336,11 +336,12 @@ impl Store {
         tree::safe_path(&path)?;
         io(path.display(), fs::create_dir_all(&path))
     }
-    /// Library skills whose metadata names this skill directly.
+    /// Other library skills whose metadata names this skill directly. A
+    /// self-requirement is invalid metadata, not a dependent; doctor reports it.
     pub fn required_by(&self, name: &str) -> Result<Vec<String>> {
         let mut dependents = Vec::new();
         for skill in self.skills()? {
-            if self.metadata(&skill)?.requires.contains(name) {
+            if skill != name && self.metadata(&skill)?.requires.contains(name) {
                 dependents.push(skill);
             }
         }

@@ -1399,6 +1399,14 @@ fn dependency_cycles_install_once_and_invalid_requirements_are_rejected() {
     assert!(s.ok(&["library", "show", "b"]).contains("Required by: a\n"));
     s.ok(&["update"]);
     s.fail(&["doctor"], "skill c cannot require itself");
+    // A self-requirement does not make a skill its own dependent.
+    assert!(
+        !s.ok(&["library", "show", "c"]).contains("Required by:"),
+        "a skill must not list itself as a dependent"
+    );
+    s.ok(&["library", "remove", "c"]);
+    assert!(!metadata_file(&s, "c").exists());
+    s.ok(&["doctor"]);
 }
 
 #[test]
