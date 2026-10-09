@@ -47,11 +47,9 @@ beskar profile create coding code-review testing
 cd ~/projects/my-app
 beskar repo add .
 beskar repo enable coding
-beskar repo update --dry-run
-beskar repo update
 ```
 
-Enabling a profile records what you want. Updating installs its skills. Several enabled profiles produce a union, with one copy of each skill. Copies retain binary content, empty directories, and file permissions, so a workspace keeps working when the library moves or becomes unavailable.
+Enabling a profile records what you want and installs its skills in the same step. `repo disable` and `repo toggle` likewise reconcile the workspace immediately. These commands accept `--conflict POLICY` like `update`; when conflicts block the update, the selection stays saved, no files change, and a later `repo update` finishes the job. Several enabled profiles produce a union, with one copy of each skill. Copies retain binary content, empty directories, and file permissions, so a workspace keeps working when the library moves or becomes unavailable.
 
 After editing a library skill, update all registered workspaces with:
 

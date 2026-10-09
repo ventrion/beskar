@@ -210,30 +210,30 @@ pub const COMMANDS: &[Command] = &[
     ),
     command!(
         "repo enable",
-        "PROFILE... [--repo PATH]",
-        "Enable profiles without installing files",
+        "PROFILE... [--repo PATH] [--conflict POLICY]",
+        "Enable profiles and install their skills",
         1,
         usize::MAX,
         [],
-        ["repo"]
+        ["repo", "conflict"]
     ),
     command!(
         "repo disable",
-        "PROFILE... [--repo PATH]",
-        "Disable profiles without removing files",
+        "PROFILE... [--repo PATH] [--conflict POLICY]",
+        "Disable profiles and remove their skills",
         1,
         usize::MAX,
         [],
-        ["repo"]
+        ["repo", "conflict"]
     ),
     command!(
         "repo toggle",
-        "PROFILE... [--repo PATH]",
-        "Toggle profile selections",
+        "PROFILE... [--repo PATH] [--conflict POLICY]",
+        "Toggle profiles and reconcile skills",
         1,
         usize::MAX,
         [],
-        ["repo"]
+        ["repo", "conflict"]
     ),
     command!(
         "repo update",

@@ -109,7 +109,19 @@ impl Sandbox {
         args.extend_from_slice(skills);
         self.ok(&args);
         self.ok(&["repo", "add", "."]);
-        self.ok(&["repo", "enable", profile]);
+        self.select(profile, beskar_core::ProfileSelection::Enable);
+    }
+    /// Records a profile selection without reconciling, as `repo enable` did
+    /// before it applied changes, so tests can stage a pending plan.
+    fn select(&self, profile: &str, selection: beskar_core::ProfileSelection) {
+        beskar_core::Beskar::open(&self.home, false)
+            .unwrap()
+            .select_profiles(
+                &beskar_core::absolute_path(&self.repo).unwrap(),
+                &[profile.to_string()],
+                selection,
+            )
+            .unwrap();
     }
 }
 impl Drop for Sandbox {
@@ -166,8 +178,8 @@ fn end_to_end_union_intent_and_self_contained_copies() {
     );
     s.ok(&["profile", "create", "research"]);
     s.ok(&["profile", "add", "research", "review"]);
-    s.ok(&["repo", "enable", "research"]);
-    s.ok(&["repo", "update"]);
+    let enabled = s.ok(&["repo", "enable", "research"]);
+    assert!(enabled.contains("Updated 1 repositories."), "{enabled}");
     assert_eq!(
         tree::children(&s.repo.join(".agents/skills"))
             .unwrap()
@@ -186,8 +198,6 @@ fn end_to_end_union_intent_and_self_contained_copies() {
             .is_symlink()
     );
     s.ok(&["repo", "disable", "coding"]);
-    assert!(s.local_skill("testing").exists());
-    s.ok(&["repo", "update"]);
     assert!(!s.local_skill("testing").exists());
     assert!(s.local_skill("review").exists());
     fs::write(
@@ -253,7 +263,9 @@ fn drift_blocks_whole_batch_and_keep_preserves_baseline() {
         "A"
     );
     fs::write(s.local_skill("a").join("SKILL.md"), "keep me").unwrap();
-    s.ok(&["repo", "disable", "coding"]);
+    let before = snapshot(&s.repo);
+    s.fail(&["repo", "disable", "coding"], "local drift");
+    assert_eq!(before, snapshot(&s.repo));
     s.fail(&["update"], "local drift");
     assert!(
         s.local_skill("b").exists(),
@@ -791,7 +803,7 @@ fn removal_plan_does_not_recreate_a_destination_deleted_after_planning() {
     s.add_skill("a", "original");
     s.activate("coding", &["a"]);
     s.ok(&["update"]);
-    s.ok(&["repo", "disable", "coding"]);
+    s.select("coding", beskar_core::ProfileSelection::Disable);
     let mut store = Beskar::open(&s.home, false).unwrap();
     let plan = store
         .plan(std::slice::from_ref(&s.repo), Policy::Abort)
@@ -1011,7 +1023,7 @@ fn conflict_resolutions_are_per_skill_and_never_adopt_unmanaged_files() {
     drop(app);
     s.ok(&["repo", "remove"]);
     s.ok(&["repo", "add"]);
-    s.ok(&["repo", "enable", "coding"]);
+    s.fail(&["repo", "enable", "coding"], "unmanaged destination");
     let app = Beskar::open(&s.home, false).unwrap();
     let mut plans = app
         .plan(std::slice::from_ref(&s.repo), Policy::Abort)
@@ -1283,7 +1295,7 @@ fn dependencies_install_transitively_and_leave_with_their_last_dependent() {
         "{shown}"
     );
     s.ok(&["repo", "add", "."]);
-    s.ok(&["repo", "enable", "coding"]);
+    s.select("coding", beskar_core::ProfileSelection::Enable);
     let preview = s.ok(&["update", "--dry-run"]);
     assert!(
         preview.contains("+ shell  missing installation [not-installed] [required by: git]\n"),

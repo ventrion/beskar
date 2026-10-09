@@ -346,11 +346,13 @@ pub fn run(args: &Args, command: &str, words: &[String]) -> Result<Report> {
                 "repo disable" => ProfileSelection::Disable,
                 _ => ProfileSelection::Toggle,
             };
+            args.policy()?;
             app.select_profiles(&path, words, selection)?;
-            Ok(Report::message(format!(
-                "Saved profiles for {}. Run beskar repo update to apply.",
-                path.display()
-            )))
+            let saved = format!("Saved profiles for {}.", path.display());
+            let mut report =
+                update(&mut app, args, false).map_err(|e| format!("{saved} Update failed: {e}"))?;
+            report.text = format!("{saved}\n{}", report.text);
+            Ok(report)
         }
         "repo list" | "registry list" | "registry where" => {
             list(&app, args, command == "registry where")

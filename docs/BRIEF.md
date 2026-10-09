@@ -433,17 +433,18 @@ A convenience operation may toggle them:
 beskar repo toggle coding
 ```
 
-The important distinction is:
+Each of these changes the desired configuration and then reconciles the
+workspace immediately, so the user does not need a separate update step:
 
 ```text
-enable/disable
-        changes desired configuration
+enable/disable/toggle
+        changes desired configuration, then reconciles
 
 update
         reconciles filesystem state
 ```
 
-For example:
+`update` remains available to re-apply library changes:
 
 ```bash
 beskar repo update
@@ -896,11 +897,8 @@ cd ~/projects/beskar
 # Register it
 beskar repo add .
 
-# Activate coding skills
+# Activate and materialize coding skills
 beskar repo enable coding
-
-# Materialize them
-beskar repo update
 ```
 
 The result:
