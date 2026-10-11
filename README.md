@@ -4,6 +4,8 @@
 
 Keep your agent skills in one place and use the right set in each project.
 
+The name is a nod to beskar, the metal used in Mandalorian armor. A little science fiction for your skill toolkit. This is the way.
+
 Beskar is a local command-line tool for maintaining a skill library, grouping skills into profiles, and installing those profiles in workspaces. When you improve a skill, you can update every workspace that uses it. When a workspace has its own edits, Beskar shows the conflict and lets you decide what to keep.
 
 A **skill** is a directory of instructions, scripts, or other files. A **profile** is a named set of skills, such as `coding` or `review`. A **workspace** is any directory you register with Beskar; it does not need to be a Git repository.
