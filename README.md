@@ -1,64 +1,95 @@
+![Beskar — skill management for AI agents](docs/banner.png)
+
 # Beskar
 
-Beskar keeps one curated library of agent skills, groups them into profiles, and copies selected profiles into local workspaces. It works offline, requires no Git repository, and uses Rust's standard library with no third-party dependencies.
+Keep your agent skills in one place and use the right set in each project.
 
-The library is portable. The registry is machine-local. Agents see the copies in each workspace's `.agents/skills/` directory.
+Beskar is a local command-line tool for maintaining a skill library, grouping skills into profiles, and installing those profiles in workspaces. When you improve a skill, you can update every workspace that uses it. When a workspace has its own edits, Beskar shows the conflict and lets you decide what to keep.
+
+A **skill** is a directory of instructions, scripts, or other files. A **profile** is a named set of skills, such as `coding` or `review`. A **workspace** is any directory you register with Beskar; it does not need to be a Git repository.
+
+Skills are copied into `.agents/skills/` by default. Your agent reads those ordinary files, and the copies keep working even if the library becomes unavailable. Beskar works offline and has no third-party Rust dependencies. It manages local copies and detects changes; it does not provide a version-history store or Git synchronization.
 
 ## Install
 
-[Releases](https://github.com/ventrion/beskar/releases/latest) include prebuilt archives for Linux, macOS, and Windows on x86_64 and ARM64. The Linux builds are statically linked. Unpack the archive for your platform and put `beskar` (`beskar.exe` on Windows) on your `PATH`. `SHA256SUMS` lists the checksum of each archive. The binaries are unsigned. If macOS blocks one downloaded through a browser, run `xattr -d com.apple.quarantine beskar`.
+Download the archive for your platform from [GitHub Releases](https://github.com/ventrion/beskar/releases/latest), unpack it, and put `beskar` (`beskar.exe` on Windows) on your `PATH`.
 
-To build from source, Rust 1.89 or newer is required.
+Releases include Linux, macOS, and Windows builds for x86_64 and ARM64. Linux binaries are statically linked, and `SHA256SUMS` contains the archive checksums. The binaries are unsigned. If macOS blocks a browser download, remove its quarantine attribute with `xattr -d com.apple.quarantine beskar`.
+
+To build from a checkout, use Rust 1.89 or newer:
 
 ```sh
+git clone https://github.com/ventrion/beskar.git
+cd beskar
 cargo install --path crates/beskar-cli --offline
 ```
 
-Or run `cargo build --release --offline` and use `target/release/beskar`.
+You can also run `cargo build --release --offline` and use `target/release/beskar` directly.
 
-## Shell completion
+## Get your first workspace ready
 
-The [beskar-completions skill](skills/beskar-completions/SKILL.md) guides a coding
-agent through generating and installing completion for your installed Beskar
-version. It covers Bash, Zsh, Fish, PowerShell, Elvish, and Nushell without adding
-dependencies to Beskar. The skill is included in the source tree and packaged
-with the binary in release archives.
-
-From an extracted release or a checkout, ask your coding agent:
-
-```text
-Read skills/beskar-completions/SKILL.md and set up Beskar completion for my shell.
-```
-
-You can also copy the `beskar-completions` folder into your agent's skill directory.
-The agent tests the generated script in the target shell before installing it.
-Tab completion then uses that script without an agent running. Commands, options,
-fixed choices, and paths are covered; live profile and skill names are outside
-the default setup. Ask the agent to refresh completions after upgrading Beskar.
-
-## First use
+Start with a directory containing skills you already use. In this example, `~/my-skills` contains skill directories named `code-review` and `testing`, each with a `SKILL.md` file. Substitute your own paths and skill names.
 
 ```sh
+# Create the local library and registry.
 beskar init
+
+# Preview the skills Beskar finds, then import them.
 beskar library scan ~/my-skills --dry-run
 beskar library scan ~/my-skills --yes
+beskar library list
+
+# Group imported skills into a profile.
 beskar profile create coding code-review testing
 
+# Register a project and install the profile there.
 cd ~/projects/my-app
 beskar repo add .
 beskar repo enable coding
+beskar status
 ```
 
-Enabling a profile records what you want and installs its skills in the same step. `repo disable` and `repo toggle` likewise reconcile the workspace immediately. These commands accept `--conflict POLICY` like `update`; when conflicts block the update, the selection stays saved, no files change, and a later `repo update` finishes the job. Several enabled profiles produce a union, with one copy of each skill. Copies retain binary content, empty directories, and file permissions, so a workspace keeps working when the library moves or becomes unavailable.
+Your project now has copies at `.agents/skills/code-review/` and `.agents/skills/testing/`. To use a different agent directory, set `beskar config set agent-skills .claude/skills` **before** installing any copies.
 
-After editing a library skill, update all registered workspaces with:
+Despite the `repo` command name, registering a workspace does not require Git. Commands run from a subdirectory find the nearest registered workspace. Use `--repo PATH` to target a different one. Registered workspaces cannot be nested inside each other.
+
+## Day-to-day use
+
+After editing a skill in the library, preview and apply its updates:
 
 ```sh
 beskar update --all --dry-run
 beskar update --all
 ```
 
-## Commands
+Leave out `--all` to update only the current workspace. Several enabled profiles install the union of their skills, with one copy of each skill and any required dependencies.
+
+Change a workspace's selection with `beskar repo enable PROFILE`, `beskar repo disable PROFILE`, or `beskar repo toggle PROFILE`. Each command saves the selection and updates the copies immediately. If a conflict blocks the update, the selection stays saved, the copies stay unchanged, and you can finish with `beskar repo update` after resolving the conflict.
+
+If you improve a workspace copy, review it before bringing it back into the library:
+
+```sh
+beskar skill diff code-review
+beskar skill promote code-review --dry-run
+beskar skill promote code-review
+beskar update --all
+```
+
+Beskar detects local edits and deleted copies. Interactive updates let you inspect a diff, keep the local copy, replace it, or abort. For scripts, choose a [conflict policy](#working-with-local-edits) explicitly. Destinations Beskar does not own are never overwritten or adopted automatically.
+
+## Shell completion
+
+The included [beskar-completions skill](skills/beskar-completions/SKILL.md) helps a coding agent generate and test completion for Bash, Zsh, Fish, PowerShell, Elvish, or Nushell. It ships in both the source tree and release archives.
+
+From a checkout or extracted release, ask your agent:
+
+```text
+Read skills/beskar-completions/SKILL.md and set up Beskar completion for my shell.
+```
+
+Once installed, completion runs without an agent. It covers commands, options, fixed choices, and paths; live skill and profile names are outside the default setup. Refresh the script after upgrading Beskar.
+
+## Command reference
 
 Every command supports `--help` and `--json`. `beskar help format` describes the file format.
 
@@ -87,9 +118,9 @@ beskar registry stats
 
 `repo remove` unregisters a workspace and preserves its copies. Re-registering makes those existing copies unmanaged. `registry prune` removes only records whose workspace paths no longer exist. Library imports and removals, promotion, updates, and pruning support dry runs.
 
-## Dependencies
+## Skills that depend on other skills
 
-Some skills only work together with other skills. Record that in the library, not in the skill:
+If a skill needs other skills to work, record its requirements in the library:
 
 ```sh
 beskar library require code-review git testing
@@ -99,9 +130,9 @@ beskar library unrequire code-review testing
 
 Beskar keeps these records in `library/metadata/NAME.bsk` and never writes into skill directories. Profiles list only the skills you chose. Each update installs those skills plus everything they require, directly or through other requirements. When nothing requires a dependency any more, the next update removes it, and local edits to it still need a conflict decision. `profile add` names the skills that come along. `profile show`, `status`, and `registry where` mark them with `[required by: ...]`. Requirements may form cycles.
 
-## Local changes
+## Working with local edits
 
-Beskar compares three fingerprints for each installed skill: the last installed version, the current workspace copy, and the current library version. Status distinguishes clean copies, library changes, local drift, and divergence. Deleting a tracked copy also counts as local drift.
+To tell a library update from a local edit, Beskar compares the last installed version with the current workspace copy and the current library version. Status distinguishes clean copies, library changes, local drift, and divergence. Deleting a tracked copy also counts as local drift.
 
 When an update encounters drift, a terminal user can keep the copy, replace or remove it, inspect a diff, or abort. Replacing requires confirmation. All choices are collected before any files change. Without a terminal, the default stops the whole selected batch.
 
@@ -172,7 +203,7 @@ Use `config set agent-skills .claude/skills` before installing copies. If instal
 
 `config set library PATH` selects an existing library whose enabled profiles are valid. Prepare the new location before switching. `config set registry PATH` copies the current registry to a new file, or accepts an existing identical registry; its parent directory must exist. It refuses to replace unrelated state. Both changes are journaled. Alternatively, edit config while Beskar is idle.
 
-## Scripts and agents
+## Automation and coding agents
 
 `--json` emits exactly one result document on standard output:
 
@@ -200,17 +231,31 @@ Kernel locks coordinate the home, library, registry, and each registered reposit
 
 Skills contain regular files and directories. Beskar fingerprints all their contents, including `.git` and caches, and rejects symlinks and special files. Symlinks in the directories that contain the home, library, registry, a workspace, or an import source, such as `/var` on macOS, are resolved once and Beskar records the resolved path. Paths must be UTF-8. File ownership, extended attributes, and directory permissions are not replicated. Directory entries are synced on Unix; rename durability on other systems depends on their filesystem. The test suite runs on Linux, macOS, and Windows.
 
-## Development
+## Contributing
+
+The workspace has three crates: `bsk` parses the record format, `beskar-core` owns domain operations and filesystem transactions, and `beskar-cli` handles commands, prompts, and output. Start with the [architecture guide](docs/ARCHITECTURE.md) to understand how plans, conflict decisions, and recovery fit together.
+
+Run the same checks used by CI:
 
 ```sh
 cargo test --workspace --offline
+cargo build --workspace --release --offline
 cargo clippy --workspace --all-targets --offline -- -D warnings
 cargo fmt --all --check
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --offline
 ```
 
-To release, set `version` in the root `Cargo.toml`, merge the change, then tag that commit `v<version>` and push the tag. The [release workflow](.github/workflows/release.yml) rejects a tag that does not match the version. It runs the tests natively on Linux, macOS, and Windows, builds all six archives, and publishes them with `SHA256SUMS`. Pull requests that change the workflow build the same archives without publishing.
+For people and coding agents working on the source:
 
-The [architecture](docs/ARCHITECTURE.md) explains the three crates, immutable plans, locking, and recovery. The [consolidation review](docs/CONSOLIDATION.md) records all nine source PRs and why their designs were selected or adapted. Domain vocabulary is in [CONTEXT-MAP.md](CONTEXT-MAP.md).
+- [AGENTS.md](AGENTS.md) is the entry point for repository instructions.
+- [CONTEXT-MAP.md](CONTEXT-MAP.md) links to each crate's domain vocabulary and responsibilities.
+- [Issue tracker guide](docs/agents/issue-tracker.md) explains the git-native Rohrpost tracker under `.rohrpost/`; use the `rp` CLI with `--json`.
+- [Triage labels](docs/agents/triage-labels.md) describes how issues become ready for human or agent work.
+- [File format](docs/FORMAT.md) specifies `.bsk` records.
+- [Design decisions](docs/adr/) and the [consolidation review](docs/CONSOLIDATION.md) explain the choices behind the implementation.
 
-The original brief is [docs/BRIEF.md](docs/BRIEF.md). Classification, Git synchronization, and a TUI remain outside this implementation.
+The [original brief](docs/BRIEF.md) includes broader ideas. Classification, Git synchronization, and a TUI remain outside the current implementation.
+
+### Releases
+
+Set `version` in the root `Cargo.toml`, merge the change, then tag that commit `v<version>` and push the tag. The [release workflow](.github/workflows/release.yml) checks that the tag matches the version, tests natively on Linux, macOS, and Windows, and publishes all six archives with `SHA256SUMS`. Pull requests that change the workflow build the archives without publishing.
