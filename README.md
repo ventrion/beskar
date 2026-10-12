@@ -261,3 +261,7 @@ The [original brief](docs/BRIEF.md) includes broader ideas. Classification, Git 
 ### Releases
 
 Set `version` in the root `Cargo.toml`, merge the change, then tag that commit `v<version>` and push the tag. The [release workflow](.github/workflows/release.yml) checks that the tag matches the version, tests natively on Linux, macOS, and Windows, and publishes all six archives with `SHA256SUMS`. Pull requests that change the workflow build the archives without publishing.
+
+## License
+
+Beskar is licensed under the [MIT License](LICENSE).
