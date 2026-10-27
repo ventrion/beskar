@@ -299,6 +299,78 @@ pub const COMMANDS: &[Command] = &[
         []
     ),
     command!(
+        "remote add",
+        "NAME URL [--path PATH] [--ref REF] [--yes] [--dry-run]",
+        "Clone a collection and choose its skills to track",
+        2,
+        2,
+        ["yes", "dry-run"],
+        ["path", "ref"]
+    ),
+    command!(
+        "remote list",
+        "",
+        "List tracked remote collections",
+        0,
+        0,
+        [],
+        []
+    ),
+    command!(
+        "remote show",
+        "NAME",
+        "Show a remote, its tracked skills and pending changes",
+        1,
+        1,
+        [],
+        []
+    ),
+    command!(
+        "remote sync",
+        "NAME | --all [--dry-run] [--conflict POLICY]",
+        "Fetch collections and import upstream changes",
+        0,
+        1,
+        ["all", "dry-run"],
+        ["conflict"]
+    ),
+    command!(
+        "remote track",
+        "NAME SKILL...",
+        "Import a collection skill and its future changes",
+        2,
+        usize::MAX,
+        [],
+        []
+    ),
+    command!(
+        "remote untrack",
+        "NAME SKILL...",
+        "Stop tracking skills; library copies stay local",
+        2,
+        usize::MAX,
+        [],
+        []
+    ),
+    command!(
+        "remote remove",
+        "NAME",
+        "Forget a remote; imported skills stay local",
+        1,
+        1,
+        [],
+        []
+    ),
+    command!(
+        "remote where",
+        "NAME",
+        "Print the local clone path",
+        1,
+        1,
+        [],
+        []
+    ),
+    command!(
         "skill diff",
         "NAME [--repo PATH]",
         "Compare the library with a workspace copy",
@@ -362,6 +434,9 @@ pub fn find(args: &Args) -> Result<(&'static Command, usize)> {
             if command.path == "registry update" && !args.flag("all") {
                 return Err("usage: beskar registry update --all".into());
             }
+            if command.path == "remote sync" && (args.words.len() > size) == args.flag("all") {
+                return Err("usage: beskar remote sync NAME | beskar remote sync --all".into());
+            }
             if args.value("profile").is_some() && args.value("skill").is_some() {
                 return Err("choose exactly one of --profile NAME and --skill NAME".into());
             }
@@ -397,6 +472,6 @@ pub fn help(topic: &[String]) -> Result<String> {
             c.path, c.arguments, c.about
         ));
     }
-    text.push_str("\nConflict policies: ask, abort, keep, replace. --on-conflict is an alias.\nInteractive updates ask; scripts fail unless a policy is explicit.\nRepository commands use the nearest registered ancestor.\nUse beskar help format for the .bsk grammar. No Git or network required.\n");
+    text.push_str("\nConflict policies: ask, abort, keep, replace. --on-conflict is an alias.\nInteractive updates ask; scripts fail unless a policy is explicit.\nRepository commands use the nearest registered ancestor.\nUse beskar help format for the .bsk grammar. No Git or network is required\noutside beskar remote; collections follow docs/COLLECTIONS.md.\n");
     Ok(text)
 }

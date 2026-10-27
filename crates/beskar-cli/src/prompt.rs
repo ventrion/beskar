@@ -1,4 +1,4 @@
-use beskar_core::{Action, Beskar, Plan, Policy, Result, State};
+use beskar_core::{Action, Beskar, Kind, Plan, Policy, RemotePlan, Result, State};
 use std::io::{self, IsTerminal, Write};
 
 pub fn interactive(json: bool) -> bool {
@@ -66,6 +66,63 @@ pub fn resolve(app: &Beskar, plans: &mut [Plan]) -> Result<()> {
                     }
                     _ => eprintln!("Enter a complete option, such as keep or k."),
                 }
+            }
+        }
+    }
+    Ok(())
+}
+/// The same decisions for remote sync conflicts, collected before applying.
+pub fn resolve_remote(app: &Beskar, plan: &mut RemotePlan) -> Result<()> {
+    let conflicts: Vec<_> = plan
+        .items()
+        .iter()
+        .filter(|i| i.action == Action::Conflict)
+        .map(|i| (i.kind, i.name.clone(), i.state, i.desired.is_some()))
+        .collect();
+    for (kind, name, state, wanted) in conflicts {
+        if state == State::Unmanaged {
+            return Err(format!(
+                "{name}: unmanaged library {}; rename or remove it before syncing",
+                kind.as_str()
+            ));
+        }
+        eprintln!(
+            "Conflict: {name}\nRemote: {}\nState: {}",
+            plan.name,
+            state.as_str()
+        );
+        loop {
+            let choice =
+                answer("[k] keep local, [l] replace with collection, [d] diff, [q] abort: ")?;
+            match choice.as_str() {
+                "k" | "keep" => {
+                    plan.resolve(kind, &name, Policy::Keep)?;
+                    break;
+                }
+                "l" | "replace" => {
+                    let question = format!(
+                        "{} local {} {name}? [y/N] ",
+                        if wanted { "Replace" } else { "Delete" },
+                        kind.as_str()
+                    );
+                    if confirm(&question)? {
+                        plan.resolve(kind, &name, Policy::Replace)?;
+                        break;
+                    }
+                }
+                "d" | "diff" => {
+                    if kind == Kind::Skill {
+                        for difference in app.remote_diff(&plan.name, &name)? {
+                            eprint!("{}", difference.text);
+                        }
+                    } else {
+                        eprintln!("Compare profiles with beskar profile show {name}.");
+                    }
+                }
+                "q" | "quit" | "a" | "abort" | "" => {
+                    return Err("sync aborted; no files changed".into());
+                }
+                _ => eprintln!("Enter a complete option, such as keep or k."),
             }
         }
     }

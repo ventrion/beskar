@@ -1,5 +1,5 @@
 use crate::json::Json;
-use beskar_core::{Action, Plan, Usage};
+use beskar_core::{Action, Plan, RemotePlan, Usage};
 use std::collections::BTreeSet;
 
 pub struct Report {
@@ -57,6 +57,64 @@ pub fn plans(plans: &[Plan]) -> Json {
             ),
         ])
     }))
+}
+pub fn remote_plans(plans: &[RemotePlan]) -> Json {
+    Json::arr(plans.iter().map(|plan| {
+        Json::obj([
+            ("name", plan.name.clone().into()),
+            ("url", plan.url.clone().into()),
+            ("root", Json::path(&plan.root)),
+            ("commit", plan.commit.clone().into()),
+            ("untracked", Json::strings(plan.untracked())),
+            (
+                "items",
+                Json::arr(plan.items().iter().map(|item| {
+                    Json::obj([
+                        ("kind", item.kind.as_str().into()),
+                        ("name", item.name.clone().into()),
+                        ("action", item.action.as_str().into()),
+                        ("state", item.state.as_str().into()),
+                        ("reason", item.reason.clone().into()),
+                        ("baseline", item.baseline.clone().into()),
+                        ("current", item.current.clone().into()),
+                        ("desired", item.desired.clone().into()),
+                    ])
+                })),
+            ),
+        ])
+    }))
+}
+pub fn remote_text(plan: &RemotePlan, unchanged: bool) -> String {
+    let mut text = format!("Remote: {} ({})\n", plan.name, plan.url);
+    for item in plan.items() {
+        if !unchanged && item.action == Action::Unchanged {
+            continue;
+        }
+        let symbol = match item.action {
+            Action::Add => "+",
+            Action::Update => "~",
+            Action::Remove => "-",
+            Action::Unchanged => "=",
+            Action::Keep => "k",
+            Action::Conflict => "!",
+        };
+        text.push_str(&format!(
+            "  {symbol} {} {}  {} [{}]\n",
+            item.kind.as_str(),
+            item.name,
+            item.reason,
+            item.state.as_str()
+        ));
+    }
+    for name in plan.untracked() {
+        text.push_str(&format!(
+            "  ? skill {name}  not tracked; beskar remote track\n"
+        ));
+    }
+    if plan.pending() == 0 {
+        text.push_str("  Up to date.\n");
+    }
+    text
 }
 pub fn plan_text(plan: &Plan, unchanged: bool) -> String {
     let mut text = format!("Repository: {}\n", plan.path().display());

@@ -4,7 +4,9 @@ use crate::{
     output::{self, Report},
     prompt,
 };
-use beskar_core::{self as core, Beskar, Config, Plan, Policy, ProfileSelection, Result};
+use beskar_core::{
+    self as core, Beskar, Config, Plan, Policy, ProfileSelection, RemotePlan, Result,
+};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -429,6 +431,167 @@ pub fn run(args: &Args, command: &str, words: &[String]) -> Result<Report> {
                 Json::arr(missing.iter().map(|p| Json::path(p))),
             ))
         }
+        "remote add" => remote_add(&mut app, args, words),
+        "remote list" => {
+            let mut text = String::new();
+            let mut data = Vec::new();
+            for (name, remote) in &app.remotes().remotes {
+                let location = match &remote.path {
+                    Some(path) => format!("{} [{}]", remote.url, path.display()),
+                    None => remote.url.clone(),
+                };
+                text.push_str(&format!(
+                    "{name}  {location}  {} tracked skills, {} profiles\n",
+                    remote.tracked.len(),
+                    remote.profile_synced.len()
+                ));
+                data.push(Json::obj([
+                    ("name", name.clone().into()),
+                    ("url", remote.url.clone().into()),
+                    ("reference", remote.reference.clone().into()),
+                    (
+                        "path",
+                        remote.path.as_deref().map(Json::path).unwrap_or(Json::Null),
+                    ),
+                    ("tracked", Json::strings(&remote.tracked)),
+                    ("profiles", Json::strings(remote.profile_synced.keys())),
+                    ("commit", remote.commit.clone().into()),
+                    (
+                        "last_sync",
+                        remote
+                            .last_sync
+                            .map(|n| Json::Int(n as i64))
+                            .unwrap_or(Json::Null),
+                    ),
+                ]));
+            }
+            Ok(Report::new(text, Json::arr(data)))
+        }
+        "remote show" => {
+            let name = &words[0];
+            let remote = app
+                .remotes()
+                .remotes
+                .get(name)
+                .ok_or_else(|| format!("unknown remote {name}"))?;
+            let clone = app.remote_clone(name)?;
+            let record = Json::obj([
+                ("name", name.clone().into()),
+                ("url", remote.url.clone().into()),
+                ("reference", remote.reference.clone().into()),
+                (
+                    "path",
+                    remote.path.as_deref().map(Json::path).unwrap_or(Json::Null),
+                ),
+                ("clone", Json::path(&clone)),
+                ("tracked", Json::strings(&remote.tracked)),
+                ("profiles", Json::strings(remote.profile_synced.keys())),
+                ("commit", remote.commit.clone().into()),
+                (
+                    "last_sync",
+                    remote
+                        .last_sync
+                        .map(|n| Json::Int(n as i64))
+                        .unwrap_or(Json::Null),
+                ),
+            ]);
+            let mut text = format!(
+                "Remote: {name}\nURL: {}\nRef: {}\nPath: {}\nClone: {}\nTracked: {}\nProfiles: {}\n",
+                remote.url,
+                remote.reference.as_deref().unwrap_or("-"),
+                remote
+                    .path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| ".".into()),
+                clone.display(),
+                output::join(&remote.tracked),
+                output::join(remote.profile_synced.keys()),
+            );
+            match app.remote_plan(name, None, Policy::Abort) {
+                Ok(plan) => {
+                    text.push_str(&output::remote_text(&plan, true));
+                    Ok(Report::new(
+                        text,
+                        Json::obj([
+                            ("remote", record),
+                            ("plans", output::remote_plans(std::slice::from_ref(&plan))),
+                        ]),
+                    ))
+                }
+                Err(e) => {
+                    text.push_str(&format!("! {e}\n"));
+                    Ok(Report::new(text, record).fail(e))
+                }
+            }
+        }
+        "remote sync" => {
+            let names: Vec<String> = if args.flag("all") {
+                app.remotes().remotes.keys().cloned().collect()
+            } else {
+                vec![words[0].clone()]
+            };
+            if names.is_empty() {
+                return Ok(Report::message("No remotes are tracked."));
+            }
+            let mut plans = Vec::new();
+            for name in &names {
+                let record = app
+                    .remotes()
+                    .remotes
+                    .get(name)
+                    .ok_or_else(|| format!("unknown remote {name}"))?;
+                let reference = record.reference.clone().ok_or_else(|| {
+                    format!("remote {name} has no recorded reference; remove and re-add it")
+                })?;
+                let clone = app.remote_clone(name)?;
+                let commit = if !clone.is_dir() {
+                    crate::git::clone(&record.url, Some(&reference), &clone)?.commit
+                } else {
+                    crate::git::fetch(&clone, &reference)?
+                };
+                plans.push(app.remote_plan(name, Some(&commit), args.policy()?)?);
+            }
+            sync_apply(&mut app, plans, args)
+        }
+        "remote track" | "remote untrack" => {
+            let add = command == "remote track";
+            app.remote_track(&words[0], &words[1..], add)?;
+            let names = output::join(words[1..].iter());
+            Ok(Report::message(if add {
+                format!(
+                    "Tracking {names}. Run beskar remote sync {} to import them.",
+                    words[0]
+                )
+            } else {
+                format!("Untracked {names}. Their library copies are locally maintained now.")
+            }))
+        }
+        "remote remove" => {
+            let clone = app.remote_clone(&words[0])?;
+            app.remote_remove(&words[0])?;
+            Ok(Report::message(format!(
+                "Forgot remote {}. Imported skills stay in the library; the clone remains at {}.",
+                words[0],
+                clone.display()
+            )))
+        }
+        "remote where" => {
+            app.remotes()
+                .remotes
+                .get(&words[0])
+                .ok_or_else(|| format!("unknown remote {}", words[0]))?;
+            let clone = app.remote_clone(&words[0])?;
+            let note = if clone.is_dir() {
+                String::new()
+            } else {
+                " (not cloned yet)".into()
+            };
+            Ok(Report::new(
+                format!("{}{note}\n", clone.display()),
+                Json::path(&clone),
+            ))
+        }
         "skill diff" => {
             let differences = app.differences(&repository(&app, args)?, &words[0])?;
             let text: String = if differences.is_empty() {
@@ -577,6 +740,127 @@ fn list(app: &Beskar, args: &Args, require_filter: bool) -> Result<Report> {
         ]));
     }
     Ok(Report::new(text, Json::arr(data)))
+}
+/// Clone a collection, record it, and import its skills. A dry run leaves no
+/// remote record and removes the clone it created.
+fn remote_add(app: &mut Beskar, args: &Args, words: &[String]) -> Result<Report> {
+    let name = words[0].clone();
+    let url = words[1].clone();
+    if !crate::git::available() {
+        return Err("git is not on PATH; beskar remote needs Git".into());
+    }
+    let clone = app.remote_clone(&name)?;
+    if clone.exists() {
+        return Err(format!(
+            "{}: clone already exists; delete it or choose another name",
+            clone.display()
+        ));
+    }
+    let checkout = crate::git::clone(&url, args.value("ref"), &clone)?;
+    app.remote_add(
+        &name,
+        &url,
+        Some(checkout.reference.clone()),
+        args.value("path").map(PathBuf::from),
+    )?;
+    let candidates = app.remote_candidates(&name)?;
+    let data = Json::obj([
+        ("name", name.clone().into()),
+        ("url", url.clone().into()),
+        ("commit", checkout.commit.clone().into()),
+        ("skills", Json::strings(&candidates)),
+    ]);
+    let mut text = format!(
+        "Cloned {} at {}\nFound {} trackable skills.\n",
+        url,
+        &checkout.commit[..12.min(checkout.commit.len())],
+        candidates.len()
+    );
+    for skill in &candidates {
+        text.push_str(&format!("  {skill}\n"));
+    }
+    if candidates.is_empty() {
+        text.push_str(
+            "Nothing new to track; the remote is recorded. Track skills later with beskar remote track.\n",
+        );
+        return Ok(Report::new(text, data));
+    }
+    if args.flag("dry-run") {
+        app.remote_remove(&name)?;
+        fs::remove_dir_all(&clone).map_err(|e| format!("{}: {e}", clone.display()))?;
+        return Ok(Report::new(format!("{text}No files changed.\n"), data));
+    }
+    if !args.flag("yes") {
+        if !prompt::interactive(args.flag("json")) {
+            return Ok(Report::new(text, data).fail(
+                "remote add needs --yes in non-interactive environments; preview with --dry-run",
+            ));
+        }
+        eprint!("{text}");
+        if !prompt::confirm(&format!("Track {} skills? [y/N] ", candidates.len()))? {
+            app.remote_remove(&name)?;
+            fs::remove_dir_all(&clone).map_err(|e| format!("{}: {e}", clone.display()))?;
+            return Ok(Report::message("No files changed."));
+        }
+    }
+    app.remote_track(&name, &candidates, true)?;
+    let plan = app.remote_plan(&name, Some(&checkout.commit), Policy::Abort)?;
+    let mut report = sync_apply(app, vec![plan], args)?;
+    report.text = format!("{text}{}", report.text);
+    Ok(report)
+}
+
+/// Resolve conflicts interactively, then apply every plan. Plans are prepared
+/// for all remotes before any of them changes.
+fn sync_apply(app: &mut Beskar, mut plans: Vec<RemotePlan>, args: &Args) -> Result<Report> {
+    let mut resolution_error = None;
+    if plans.iter().any(|p| p.conflicts())
+        && !args.flag("dry-run")
+        && matches!(args.value("conflict"), None | Some("ask"))
+        && prompt::interactive(args.flag("json"))
+    {
+        for plan in &mut plans {
+            if let Err(e) = prompt::resolve_remote(app, plan) {
+                resolution_error = Some(e);
+                break;
+            }
+        }
+    }
+    let mut text: String = plans
+        .iter()
+        .map(|p| output::remote_text(p, false))
+        .collect();
+    let blocked = plans.iter().any(|p| p.conflicts()) || resolution_error.is_some();
+    if args.flag("dry-run") {
+        text.push_str("No files changed.\n");
+    } else if !blocked {
+        for plan in &plans {
+            app.remote_apply(plan)?;
+        }
+        text.push_str(&format!(
+            "Synced {} remotes. Run beskar update --all to deploy to workspaces.\n",
+            plans.len()
+        ));
+    }
+    let report = Report::new(
+        text,
+        Json::obj([
+            ("dry_run", args.flag("dry-run").into()),
+            ("applied", (!blocked && !args.flag("dry-run")).into()),
+            ("remotes", output::remote_plans(&plans)),
+        ]),
+    );
+    if blocked {
+        Ok(report.fail(resolution_error.unwrap_or_else(|| {
+            if args.flag("dry-run") {
+                "dry run found conflicts".into()
+            } else {
+                "sync blocked by conflicts; no files changed".into()
+            }
+        })))
+    } else {
+        Ok(report)
+    }
 }
 fn update(app: &mut Beskar, args: &Args, global: bool) -> Result<Report> {
     let paths = targets(app, args, global)?;

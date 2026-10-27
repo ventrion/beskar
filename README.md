@@ -79,6 +79,18 @@ beskar update --all
 
 Beskar detects local edits and deleted copies. Interactive updates let you inspect a diff, keep the local copy, replace it, or abort. For scripts, choose a [conflict policy](#working-with-local-edits) explicitly. Destinations Beskar does not own are never overwritten or adopted automatically.
 
+## Remote collections
+
+Track Git repositories that publish Beskar-shaped skills — your own collection for multi-machine syncing, or an organization's shared set. The library stays locally maintained; a remote supplies only the skills you track from it.
+
+```sh
+beskar remote add acme https://github.com/acme/agent-skills --yes
+beskar remote sync --all
+beskar update --all
+```
+
+A collection is a repository with a `skills/` directory and optional `profiles/` and `metadata/` directories — the same shape as your library. `--path` tracks one folder of a larger repository. Sync fetches the clone under `~/.beskar/remotes/`, compares each tracked skill against the library, and applies the same clean / changed / drift / diverged states and `--conflict` policies as workspace updates. Upstream removals honor local references. Contributing back is a manual Git workflow from the path `beskar remote where` prints. The [collections guide](docs/COLLECTIONS.md) describes the layout and semantics, and `template/collection/` is a starter repository template. Remote commands are the only ones that need Git or the network.
+
 ## Shell completion
 
 The included [beskar-completions skill](skills/beskar-completions/SKILL.md) helps a coding agent generate and test completion for Bash, Zsh, Fish, PowerShell, Elvish, or Nushell. It ships in both the source tree and release archives.
@@ -103,6 +115,7 @@ Every command supports `--help` and `--json`. `beskar help format` describes the
 | Profiles | `profile create NAME [SKILL...]`, `delete`, `list`, `show`, `add NAME SKILL...`, `remove NAME SKILL...` |
 | Workspaces | `repo add [PATH]`, `remove [PATH]`, `list`, `status`, `enable PROFILE...`, `disable PROFILE...`, `toggle PROFILE...`, `update` |
 | Registry | `registry list`, `status`, `stats`, `where`, `update --all`, `prune` |
+| Remotes | `remote add NAME URL`, `list`, `show`, `sync NAME|--all`, `track NAME SKILL...`, `untrack NAME SKILL...`, `remove`, `where` |
 | Local edits | `skill diff NAME`, `skill promote NAME` |
 | Shortcuts | `status [--all]`, `update [--all]`, `repo diff`, `repo promote` |
 
@@ -254,6 +267,7 @@ For people and coding agents working on the source:
 - [Issue tracker guide](docs/agents/issue-tracker.md) explains the git-native Rohrpost tracker under `.rohrpost/`; use the `rp` CLI with `--json`.
 - [Triage labels](docs/agents/triage-labels.md) describes how issues become ready for human or agent work.
 - [File format](docs/FORMAT.md) specifies `.bsk` records.
+- [Remote collections](docs/COLLECTIONS.md) describe the collection layout and sync semantics; `template/collection/` is the starter.
 - [Design decisions](docs/adr/) and the [consolidation review](docs/CONSOLIDATION.md) explain the choices behind the implementation.
 
 The [original brief](docs/BRIEF.md) includes broader ideas. Classification, Git synchronization, and a TUI remain outside the current implementation.

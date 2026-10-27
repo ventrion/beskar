@@ -55,6 +55,8 @@ impl Args {
                     "on-conflict",
                     "profile",
                     "skill",
+                    "path",
+                    "ref",
                 ]
                 .contains(&key)
                 {

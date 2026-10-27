@@ -1,6 +1,6 @@
 use crate::{
     Result, format, io,
-    model::{Config, Profile, Registry, SkillMetadata, disjoint},
+    model::{Config, Profile, Registry, RemoteBook, SkillMetadata, disjoint},
     tree,
 };
 use std::{
@@ -48,10 +48,12 @@ pub struct Store {
     pub home: PathBuf,
     pub config: Config,
     pub registry: Registry,
+    pub remotes: RemoteBook,
     _lock: Lock,
     locks: BTreeMap<PathBuf, Lock>,
     registry_hash: String,
     config_hash: String,
+    remotes_hash: Option<String>,
 }
 
 impl Store {
@@ -87,6 +89,8 @@ impl Store {
             for path in lock_paths {
                 Self::acquire(&mut locks, &path)?;
             }
+            // Remote syncs can target remotes.bsk from any configuration.
+            Self::acquire(&mut locks, &home.join("remotes.bsk.lock"))?;
             crate::transaction::recover(&home)?;
         }
         // Recovery may restore or replace the config itself. Load only after it finishes.
@@ -96,18 +100,29 @@ impl Store {
         for path in Self::shared_lock_paths(&config) {
             Self::acquire(&mut locks, &path)?;
         }
+        Self::acquire(&mut locks, &home.join("remotes.bsk.lock"))?;
         let registry = Registry::decode(&format::read(&config.registry)?)
             .map_err(|e| format!("{}: {e}", config.registry.display()))?;
         let registry_hash = tree::fingerprint(&config.registry)?;
         let config_hash = tree::fingerprint(&config_path)?;
+        let remotes_path = home.join("remotes.bsk");
+        let remotes = if tree::exists(&remotes_path)? {
+            RemoteBook::decode(&format::read(&remotes_path)?)
+                .map_err(|e| format!("{}: {e}", remotes_path.display()))?
+        } else {
+            RemoteBook::default()
+        };
+        let remotes_hash = tree::optional_hash(&remotes_path)?;
         let mut store = Self {
             home,
             config,
             registry,
+            remotes,
             _lock: lock,
             locks,
             registry_hash,
             config_hash,
+            remotes_hash,
         };
         for path in store.registry.repos.keys().cloned().collect::<Vec<_>>() {
             store.validate_repo(&path)?;
@@ -122,7 +137,14 @@ impl Store {
         config.validate()?;
         tree::safe_path(&config.library)?;
         tree::safe_path(&config.registry)?;
-        for reserved in ["config.bsk", ".lock", "transaction.bsk"] {
+        for reserved in [
+            "config.bsk",
+            ".lock",
+            "transaction.bsk",
+            "remotes.bsk",
+            "remotes.bsk.lock",
+            "remotes",
+        ] {
             let reserved = home.join(reserved);
             if !disjoint(&config.library, &reserved) || !disjoint(&config.registry, &reserved) {
                 return Err(format!(
@@ -249,6 +271,47 @@ impl Store {
                 &self.config.registry,
                 &registry.encode()?,
                 Some(self.registry_hash.clone()),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn remotes_path(&self) -> PathBuf {
+        self.home.join("remotes.bsk")
+    }
+    /// The Beskar-owned clone directory of one remote.
+    pub fn remote_clone(&self, name: &str) -> Result<PathBuf> {
+        format::name(name)?;
+        Ok(self.home.join("remotes").join(name))
+    }
+    pub fn guard_remotes(&self, transaction: &mut crate::transaction::Transaction) -> Result<()> {
+        transaction.expect(&self.remotes_path(), self.remotes_hash.clone())
+    }
+    pub fn accept_remotes(&mut self, remotes: RemoteBook) -> Result<()> {
+        if remotes != self.remotes {
+            self.remotes_hash = Some(tree::text_fingerprint(&remotes.encode()?));
+        }
+        self.remotes = remotes;
+        Ok(())
+    }
+    pub fn persist_remotes(&mut self, remotes: RemoteBook) -> Result<()> {
+        let mut transaction = crate::transaction::Transaction::new(&self.home);
+        self.stage_remotes(&mut transaction, &remotes)?;
+        transaction.commit()?;
+        self.accept_remotes(remotes)
+    }
+    pub fn stage_remotes(
+        &self,
+        transaction: &mut crate::transaction::Transaction,
+        remotes: &RemoteBook,
+    ) -> Result<()> {
+        self.guard_state(transaction)?;
+        self.guard_remotes(transaction)?;
+        if remotes.encode()? != self.remotes.encode()? {
+            transaction.text(
+                &self.remotes_path(),
+                &remotes.encode()?,
+                self.remotes_hash.clone(),
             )?;
         }
         Ok(())

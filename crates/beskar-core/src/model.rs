@@ -269,11 +269,194 @@ impl Registry {
     }
 }
 
+/// A remote collection: a Git repository, and optionally a folder inside it,
+/// that publishes skills and profiles for import into the local library.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Remote {
+    pub url: String,
+    /// Branch or tag that sync follows. Recorded from the clone when absent.
+    pub reference: Option<String>,
+    /// Folder inside the repository that holds the collection. `None` is the root.
+    pub path: Option<PathBuf>,
+    /// Collection skills whose library copies this remote maintains.
+    pub tracked: BTreeSet<String>,
+    /// Composite fingerprints of the skill directory and metadata last synced.
+    pub synced: BTreeMap<String, String>,
+    /// Imported collection profiles and their last-synced file fingerprints.
+    pub profile_synced: BTreeMap<String, String>,
+    /// Upstream commit the collection was last read from.
+    pub commit: Option<String>,
+    pub last_sync: Option<u64>,
+}
+
+impl Remote {
+    pub fn empty(url: String) -> Self {
+        Self {
+            url,
+            reference: None,
+            path: None,
+            tracked: BTreeSet::new(),
+            synced: BTreeMap::new(),
+            profile_synced: BTreeMap::new(),
+            commit: None,
+            last_sync: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RemoteBook {
+    pub remotes: BTreeMap<String, Remote>,
+}
+
+impl RemoteBook {
+    pub fn decode(records: &[Record]) -> Result<Self> {
+        let mut book = Self::default();
+        let mut current: Option<(String, Remote)> = None;
+        for r in records {
+            if r.is("remote", 2) {
+                if current.is_some() {
+                    return Err(r.error("nested remote; expected end"));
+                }
+                let name = r.fields[1].clone();
+                format::name(&name).map_err(|e| r.error(&e))?;
+                current = Some((name, Remote::empty(String::new())));
+            } else if r.is("end", 1) {
+                let (name, remote) = current
+                    .take()
+                    .ok_or_else(|| r.error("end outside a remote"))?;
+                if remote.url.is_empty() {
+                    return Err(format!("remote {name} needs a url"));
+                }
+                if book.remotes.insert(name, remote).is_some() {
+                    return Err(r.error("duplicate remote"));
+                }
+            } else {
+                let (_, remote) = current
+                    .as_mut()
+                    .ok_or_else(|| r.error("expected 'remote <name>'"))?;
+                if r.is("url", 2) {
+                    if !remote.url.is_empty() {
+                        return Err(r.error("duplicate url"));
+                    }
+                    remote.url = r.fields[1].clone();
+                } else if r.is("ref", 2) {
+                    if remote.reference.is_some() {
+                        return Err(r.error("duplicate ref"));
+                    }
+                    remote.reference = Some(r.fields[1].clone());
+                } else if r.is("path", 2) {
+                    if remote.path.is_some() {
+                        return Err(r.error("duplicate path"));
+                    }
+                    let path = PathBuf::from(&r.fields[1]);
+                    relative_destination(&path).map_err(|e| r.error(&e))?;
+                    remote.path = Some(path);
+                } else if r.is("tracked", 2) {
+                    format::name(&r.fields[1]).map_err(|e| r.error(&e))?;
+                    if !remote.tracked.insert(r.fields[1].clone()) {
+                        return Err(r.error("duplicate tracked skill"));
+                    }
+                } else if r.is("synced", 3) {
+                    format::name(&r.fields[1]).map_err(|e| r.error(&e))?;
+                    if !valid_unit(&r.fields[2]) {
+                        return Err(r.error("expected a lowercase SHA-256 fingerprint"));
+                    }
+                    if remote
+                        .synced
+                        .insert(r.fields[1].clone(), r.fields[2].clone())
+                        .is_some()
+                    {
+                        return Err(r.error("duplicate synced skill"));
+                    }
+                } else if r.is("profile-synced", 3) {
+                    format::name(&r.fields[1]).map_err(|e| r.error(&e))?;
+                    if !valid_hash(&r.fields[2]) {
+                        return Err(r.error("expected a lowercase SHA-256 fingerprint"));
+                    }
+                    if remote
+                        .profile_synced
+                        .insert(r.fields[1].clone(), r.fields[2].clone())
+                        .is_some()
+                    {
+                        return Err(r.error("duplicate synced profile"));
+                    }
+                } else if r.is("commit", 2) {
+                    if remote.commit.is_some() {
+                        return Err(r.error("duplicate commit"));
+                    }
+                    remote.commit = Some(r.fields[1].clone());
+                } else if r.is("synced-at", 2) {
+                    if remote.last_sync.is_some() {
+                        return Err(r.error("duplicate synced-at record"));
+                    }
+                    remote.last_sync = Some(
+                        r.fields[1]
+                            .parse()
+                            .map_err(|_| r.error("synced-at expects Unix seconds"))?,
+                    );
+                } else {
+                    return Err(r.error(
+                        "expected url, ref, path, tracked, synced, profile-synced, commit, synced-at or end",
+                    ));
+                }
+            }
+        }
+        if current.is_some() {
+            return Err("unterminated remote; expected end".into());
+        }
+        Ok(book)
+    }
+
+    pub fn encode(&self) -> Result<String> {
+        let mut out = String::from(
+            "beskar 1\n# Machine-local remote collections and last-synced fingerprints.\n",
+        );
+        for (name, remote) in &self.remotes {
+            out.push_str(&format!("\nremote {}\n", format::quote(name)));
+            out.push_str(&format!("  url {}\n", format::quote(&remote.url)));
+            if let Some(reference) = &remote.reference {
+                out.push_str(&format!("  ref {}\n", format::quote(reference)));
+            }
+            if let Some(path) = &remote.path {
+                out.push_str(&format!(
+                    "  path {}\n",
+                    format::quote(format::path_text(path)?)
+                ));
+            }
+            for skill in &remote.tracked {
+                out.push_str(&format!("  tracked {skill}\n"));
+            }
+            for (skill, hash) in &remote.synced {
+                out.push_str(&format!("  synced {skill} {hash}\n"));
+            }
+            for (profile, hash) in &remote.profile_synced {
+                out.push_str(&format!("  profile-synced {profile} {hash}\n"));
+            }
+            if let Some(commit) = &remote.commit {
+                out.push_str(&format!("  commit {}\n", format::quote(commit)));
+            }
+            if let Some(sync) = remote.last_sync {
+                out.push_str(&format!("  synced-at {sync}\n"));
+            }
+            out.push_str("end\n");
+        }
+        Ok(out)
+    }
+}
+
 pub fn valid_hash(hash: &str) -> bool {
     hash.len() == 64
         && hash
             .bytes()
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+}
+
+/// A synced skill unit is its directory fingerprint, with the metadata file's
+/// appended after a dot when one is part of the unit.
+pub fn valid_unit(hash: &str) -> bool {
+    let parts: Vec<&str> = hash.split('.').collect();
+    parts.len() <= 2 && parts.iter().all(|part| valid_hash(part))
 }
 
 pub fn disjoint(a: &Path, b: &Path) -> bool {
@@ -357,6 +540,41 @@ mod tests {
                 .next(),
             registry.repos.keys().next()
         );
+        let remote = RemoteBook {
+            remotes: BTreeMap::from([(
+                "acme".into(),
+                Remote {
+                    url: "https://example.com/acme skills.git".into(),
+                    reference: Some("main".into()),
+                    path: Some(PathBuf::from("teams/backend")),
+                    tracked: BTreeSet::from(["code-review".into()]),
+                    synced: BTreeMap::from([("code-review".into(), "a".repeat(64))]),
+                    profile_synced: BTreeMap::from([("devel".into(), "b".repeat(64))]),
+                    commit: Some("c0ffee".into()),
+                    last_sync: Some(1791796269),
+                },
+            )]),
+        };
+        assert_eq!(
+            RemoteBook::decode(&format::parse(&remote.encode().unwrap()).unwrap()).unwrap(),
+            remote
+        );
+        for text in [
+            "beskar 1\nremote acme\nend",
+            "beskar 1\nremote acme\nurl u\nref a\nref b\nend",
+            "beskar 1\nremote acme\nurl u\npath /abs\nend",
+            "beskar 1\nremote acme\nurl u\ntracked ../bad\nend",
+            "beskar 1\nremote acme\nurl u\nsynced a bad\nend",
+            "beskar 1\nremote acme\nurl u\nsynced-at soon\nend",
+            "beskar 1\nremote acme\nurl u\nend\nremote acme\nurl u\nend",
+            "beskar 1\nremote acme\nurl u",
+            "beskar 1\nend",
+        ] {
+            assert!(
+                RemoteBook::decode(&format::parse(text).unwrap()).is_err(),
+                "{text}"
+            );
+        }
     }
 
     #[test]

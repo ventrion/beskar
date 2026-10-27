@@ -1,7 +1,8 @@
 use crate::{
-    Result, diff, format, io,
-    model::{Config, Profile, Registry, SkillMetadata, disjoint},
+    Result, collection, diff, format, io,
+    model::{Config, Profile, Registry, Remote, RemoteBook, SkillMetadata, disjoint},
     reconcile::{self, Plan, Policy},
+    remote::{self, RemotePlan},
     store::{Lock, Store},
     transaction::Transaction,
     tree,
@@ -58,6 +59,7 @@ pub struct Stats {
 pub struct Health {
     pub problems: Vec<String>,
     pub repositories: Vec<(PathBuf, usize)>,
+    pub remotes: Vec<(String, usize)>,
 }
 #[derive(Clone, Debug)]
 pub struct Promotion {
@@ -142,6 +144,9 @@ impl Beskar {
     }
     pub fn registry(&self) -> &Registry {
         &self.store.registry
+    }
+    pub fn remotes(&self) -> &RemoteBook {
+        &self.store.remotes
     }
     pub fn initialize_library(&self) -> Result<()> {
         initialize_library(self.config())
@@ -466,6 +471,98 @@ impl Beskar {
     pub fn apply(&mut self, plans: &[Plan]) -> Result<()> {
         reconcile::apply(&mut self.store, plans)
     }
+
+    /// The Beskar-owned clone directory of one remote.
+    pub fn remote_clone(&self, name: &str) -> Result<PathBuf> {
+        self.store.remote_clone(name)
+    }
+    /// Record a remote after the CLI has cloned it. Tracking starts empty.
+    pub fn remote_add(
+        &mut self,
+        name: &str,
+        url: &str,
+        reference: Option<String>,
+        path: Option<PathBuf>,
+    ) -> Result<()> {
+        format::name(name)?;
+        if self.store.remotes.remotes.contains_key(name) {
+            return Err(format!("remote {name} already exists"));
+        }
+        if let Some(path) = &path {
+            crate::model::relative_destination(path)?;
+        }
+        let mut book = self.store.remotes.clone();
+        book.remotes.insert(
+            name.into(),
+            Remote {
+                url: url.into(),
+                reference,
+                path,
+                ..Remote::empty(String::new())
+            },
+        );
+        self.store.persist_remotes(book)
+    }
+    /// Forget a remote's record. Imported skills and profiles stay local.
+    pub fn remote_remove(&mut self, name: &str) -> Result<Remote> {
+        let (book, remote) = remote::remove(&self.store.remotes, name)?;
+        self.store.persist_remotes(book)?;
+        Ok(remote)
+    }
+    pub fn remote_track(&mut self, name: &str, skills: &[String], add: bool) -> Result<()> {
+        let book = remote::track(&self.store, &self.store.remotes, name, skills, add)?;
+        self.store.persist_remotes(book)
+    }
+    /// Collection skills that could be tracked: not tracked yet and not
+    /// already owned by the library.
+    pub fn remote_candidates(&self, name: &str) -> Result<Vec<String>> {
+        let record = self
+            .store
+            .remotes
+            .remotes
+            .get(name)
+            .ok_or_else(|| format!("unknown remote {name}"))?;
+        let root = remote::root(&self.store, record, name)?;
+        let collection = collection::read(&root)?;
+        let mut candidates = Vec::new();
+        for skill in collection.skills.keys() {
+            if record.tracked.contains(skill) || tree::exists(&self.store.skill_path(skill)?)? {
+                continue;
+            }
+            candidates.push(skill.clone());
+        }
+        Ok(candidates)
+    }
+    pub fn remote_plan(
+        &self,
+        name: &str,
+        commit: Option<&str>,
+        policy: Policy,
+    ) -> Result<RemotePlan> {
+        remote::plan(&self.store, name, commit, policy)
+    }
+    pub fn remote_apply(&mut self, plan: &RemotePlan) -> Result<()> {
+        remote::apply(&mut self.store, plan)
+    }
+    pub fn remote_diff(&self, name: &str, skill: &str) -> Result<Vec<diff::Difference>> {
+        let record = self
+            .store
+            .remotes
+            .remotes
+            .get(name)
+            .ok_or_else(|| format!("unknown remote {name}"))?;
+        let root = remote::root(&self.store, record, name)?;
+        let collection = collection::read(&root)?;
+        let source = collection
+            .skills
+            .get(skill)
+            .ok_or_else(|| format!("collection has no skill {skill}"))?;
+        let library = self.store.skill_path(skill)?;
+        if !tree::exists(&library)? {
+            return Err(format!("skill {skill} is not in the library"));
+        }
+        diff::compare(&library, &source.directory)
+    }
     pub fn skill_usage(&self, name: &str) -> Result<Vec<Usage>> {
         format::name(name)?;
         Ok(reconcile::skill_usage(&self.store, name)?
@@ -599,6 +696,7 @@ impl Beskar {
         let mut health = Health {
             problems: Vec::new(),
             repositories: Vec::new(),
+            remotes: Vec::new(),
         };
         match self.skills() {
             Ok(skills) => {
@@ -659,6 +757,21 @@ impl Beskar {
                     health.repositories.push((path.clone(), plan.pending()));
                 }
                 Err(e) => health.problems.push(e),
+            }
+        }
+        for name in self.store.remotes.remotes.keys() {
+            match remote::plan(&self.store, name, None, Policy::Abort) {
+                Ok(plan) => {
+                    for item in plan.items() {
+                        if item.action == reconcile::Action::Conflict {
+                            health
+                                .problems
+                                .push(format!("remote {name} / {}: {}", item.name, item.reason));
+                        }
+                    }
+                    health.remotes.push((name.clone(), plan.pending()));
+                }
+                Err(e) => health.problems.push(format!("remote {name}: {e}")),
             }
         }
         health

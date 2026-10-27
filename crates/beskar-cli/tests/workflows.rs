@@ -1572,3 +1572,141 @@ fn stale_plans_reject_edited_or_created_metadata() {
         assert_eq!(before, snapshot(&s.root), "{change}");
     }
 }
+
+fn git_available() -> bool {
+    Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+fn git(at: &Path, arguments: &[&str]) {
+    let output = Command::new("git")
+        .args([
+            "-c",
+            "user.email=beskar@example.com",
+            "-c",
+            "user.name=Beskar",
+        ])
+        .args(arguments)
+        .current_dir(at)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {:?}: {} {}",
+        arguments,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn write_collection(origin: &Path, alpha: &str, beta: &str) {
+    fs::create_dir_all(origin.join("skills/alpha")).unwrap();
+    fs::create_dir_all(origin.join("skills/beta")).unwrap();
+    fs::write(origin.join("skills/alpha/SKILL.md"), alpha).unwrap();
+    fs::write(origin.join("skills/beta/SKILL.md"), beta).unwrap();
+    fs::create_dir_all(origin.join("profiles")).unwrap();
+    fs::write(origin.join("profiles/team.bsk"), "beskar 1\nskill alpha\n").unwrap();
+    fs::create_dir_all(origin.join("metadata")).unwrap();
+    fs::write(
+        origin.join("metadata/alpha.bsk"),
+        "beskar 1\nrequires beta\n",
+    )
+    .unwrap();
+    git(origin, &["add", "."]);
+    git(origin, &["commit", "-q", "-m", "collection"]);
+}
+
+#[test]
+fn remote_collections_import_sync_and_respect_drift() {
+    if !git_available() {
+        eprintln!("skipping: git is not installed");
+        return;
+    }
+    let s = Sandbox::new();
+    s.init();
+    let origin = s.root.join("origin");
+    fs::create_dir_all(&origin).unwrap();
+    git(&origin, &["init", "-q", "-b", "main"]);
+    write_collection(&origin, "alpha v1\n", "beta v1\n");
+
+    // Adding tracks every new skill and imports content, metadata, profiles.
+    s.ok(&["remote", "add", "team", origin.to_str().unwrap(), "--yes"]);
+    assert!(s.library_skill("alpha").join("SKILL.md").is_file());
+    assert!(s.library_skill("beta").join("SKILL.md").is_file());
+    assert!(s.home.join("library/profiles/team.bsk").is_file());
+    assert!(s.home.join("library/metadata/alpha.bsk").is_file());
+    s.ok(&["remote", "list"]);
+    s.ok(&["remote", "show", "team"]);
+    s.ok(&["remote", "sync", "team"]);
+    let clone = s.home.join("remotes/team");
+    assert!(clone.join(".git").is_dir(), "clone is a Git repository");
+
+    // Imported profiles deploy like local ones, including requirements.
+    s.ok(&["repo", "add", "."]);
+    s.ok(&["repo", "enable", "team"]);
+    assert!(s.local_skill("alpha").is_dir());
+    assert!(s.local_skill("beta").is_dir(), "requirements deploy too");
+
+    // Upstream changes flow through sync into the library.
+    fs::write(origin.join("skills/alpha/SKILL.md"), "alpha v2\n").unwrap();
+    git(&origin, &["add", "."]);
+    git(&origin, &["commit", "-q", "-m", "v2"]);
+    let out = s.ok(&["remote", "sync", "team"]);
+    assert!(out.contains("~ skill alpha"), "{out}");
+    assert_eq!(
+        fs::read_to_string(s.library_skill("alpha").join("SKILL.md")).unwrap(),
+        "alpha v2\n"
+    );
+
+    // Library drift blocks without a policy; keep retains, replace takes v3.
+    fs::write(s.library_skill("alpha").join("SKILL.md"), "alpha local\n").unwrap();
+    s.fail(&["remote", "sync", "team"], "conflicts");
+    let out = s.ok(&["remote", "sync", "team", "--conflict", "keep"]);
+    assert!(out.contains("k skill alpha"), "{out}");
+    assert_eq!(
+        fs::read_to_string(s.library_skill("alpha").join("SKILL.md")).unwrap(),
+        "alpha local\n"
+    );
+    fs::write(origin.join("skills/alpha/SKILL.md"), "alpha v3\n").unwrap();
+    git(&origin, &["add", "."]);
+    git(&origin, &["commit", "-q", "-m", "v3"]);
+    s.ok(&["remote", "sync", "team", "--conflict", "replace"]);
+    assert_eq!(
+        fs::read_to_string(s.library_skill("alpha").join("SKILL.md")).unwrap(),
+        "alpha v3\n"
+    );
+
+    // Upstream removals honor library guards, then apply once resolved.
+    fs::remove_dir_all(origin.join("skills/beta")).unwrap();
+    fs::remove_file(origin.join("metadata/alpha.bsk")).unwrap();
+    git(&origin, &["add", "."]);
+    git(&origin, &["commit", "-q", "-m", "drop beta"]);
+    s.fail(
+        &["remote", "sync", "team", "--conflict", "replace"],
+        "still required",
+    );
+    s.ok(&["library", "unrequire", "alpha", "beta"]);
+    let out = s.ok(&["remote", "sync", "team", "--conflict", "replace"]);
+    assert!(out.contains("- skill beta"), "{out}");
+    assert!(!s.library_skill("beta").exists());
+    assert!(!s.home.join("library/metadata/alpha.bsk").exists());
+
+    // Profile removal is guarded while a workspace enables it.
+    fs::remove_file(origin.join("profiles/team.bsk")).unwrap();
+    git(&origin, &["add", "."]);
+    git(&origin, &["commit", "-q", "-m", "drop profile"]);
+    s.fail(&["remote", "sync", "team"], "still enabled");
+    s.ok(&["repo", "disable", "team"]);
+    s.ok(&["remote", "sync", "team"]);
+    assert!(!s.home.join("library/profiles/team.bsk").exists());
+
+    // Untracking keeps the copy; removing forgets the remote, not the skills.
+    s.ok(&["remote", "untrack", "team", "alpha"]);
+    assert!(s.library_skill("alpha").is_dir());
+    s.ok(&["remote", "remove", "team"]);
+    assert!(s.library_skill("alpha").is_dir());
+    assert!(clone.is_dir(), "the clone remains for contributing back");
+    s.ok(&["doctor"]);
+}

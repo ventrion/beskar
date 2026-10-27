@@ -86,7 +86,11 @@ impl State {
 }
 
 /// Facts are classified before policy is applied. Ownership is never inferred from equal bytes.
-fn classify(baseline: Option<&str>, current: Option<&str>, desired: Option<&str>) -> State {
+pub(crate) fn classify(
+    baseline: Option<&str>,
+    current: Option<&str>,
+    desired: Option<&str>,
+) -> State {
     if baseline.is_none() && current.is_some() {
         return State::Unmanaged;
     }
@@ -116,7 +120,7 @@ fn classify(baseline: Option<&str>, current: Option<&str>, desired: Option<&str>
         State::LibraryChanged
     }
 }
-fn decide(state: State, wanted: bool, policy: Policy) -> (Action, &'static str) {
+pub(crate) fn decide(state: State, wanted: bool, policy: Policy) -> (Action, &'static str) {
     match state {
         State::Unmanaged => (
             Action::Conflict,

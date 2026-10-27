@@ -1,5 +1,6 @@
 mod args;
 mod commands;
+mod git;
 mod json;
 mod output;
 mod prompt;
