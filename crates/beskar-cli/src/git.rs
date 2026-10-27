@@ -13,6 +13,11 @@ pub struct Checkout {
     pub commit: String,
 }
 
+/// Beskar fingerprints content, so clones must be byte-faithful: a checkout
+/// with the user's CRLF conversion would make the same commit produce a
+/// different fingerprint on each platform.
+const NO_CONVERSION: &str = "core.autocrlf=false";
+
 fn run(command: &mut Command) -> Result<String> {
     let output: Output = command
         .output()
@@ -31,7 +36,12 @@ fn run(command: &mut Command) -> Result<String> {
 
 fn git(clone: &Path, arguments: &[&str]) -> Result<String> {
     let mut command = Command::new("git");
-    command.arg("-C").arg(clone).args(arguments);
+    command
+        .arg("-c")
+        .arg(NO_CONVERSION)
+        .arg("-C")
+        .arg(clone)
+        .args(arguments);
     run(&mut command)
 }
 
@@ -46,7 +56,11 @@ pub fn available() -> bool {
 /// default branch becomes the reference sync follows.
 pub fn clone(url: &str, reference: Option<&str>, destination: &Path) -> Result<Checkout> {
     let mut command = Command::new("git");
-    command.arg("clone").arg("--quiet");
+    command
+        .arg("-c")
+        .arg(NO_CONVERSION)
+        .arg("clone")
+        .arg("--quiet");
     if let Some(reference) = reference {
         command.arg("--branch").arg(reference);
     }
